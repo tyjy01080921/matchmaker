@@ -14,7 +14,6 @@ import {
 import {
   makePlayerNameLookup,
   playerDisplayName,
-  teamDisplayName,
   type PlayerNameLookup,
 } from './playerNames'
 import { createSchedulePrintImages } from './printSchedule'
@@ -23,11 +22,13 @@ import type {
   Gender,
   Level,
   Match,
+  MatchNameOverrides,
   MatchResult,
   MatchSettings,
   Player,
   ResultsByMatch,
   Schedule,
+  Team,
 } from './types'
 
 const STORAGE_KEY = 'badminton-matchmaker-v1'
@@ -46,6 +47,7 @@ type StoredState = {
   settings: MatchSettings
   results: ResultsByMatch
   pairMixes: Record<string, number>
+  matchNameOverrides: MatchNameOverrides
 }
 
 const levelLabels: Record<Level, string> = {
@@ -170,6 +172,7 @@ const readStoredState = (): StoredState => {
       settings: defaultSettings,
       results: {},
       pairMixes: {},
+      matchNameOverrides: {},
     }
   }
 
@@ -188,6 +191,7 @@ const readStoredState = (): StoredState => {
       settings,
       results: parsed.results ?? {},
       pairMixes: parsed.pairMixes ?? {},
+      matchNameOverrides: parsed.matchNameOverrides ?? {},
     }
   } catch {
     return {
@@ -195,6 +199,7 @@ const readStoredState = (): StoredState => {
       settings: defaultSettings,
       results: {},
       pairMixes: {},
+      matchNameOverrides: {},
     }
   }
 }
@@ -206,6 +211,7 @@ const storedStateFromSharePayload = (payload: SharePayload): StoredState => ({
   settings: { ...defaultSettings, ...payload.settings },
   results: payload.results ?? {},
   pairMixes: payload.pairMixes ?? {},
+  matchNameOverrides: payload.matchNameOverrides ?? {},
 })
 
 const readSharedState = (): StoredState | null => {
@@ -264,15 +270,18 @@ const winnerLabel = (
   match: Match,
   result: MatchResult | undefined,
   names: PlayerNameLookup,
+  nameOverrides: Record<string, string> = {},
 ) => {
+  const matchTeamDisplayName = (team: Team) =>
+    team
+      .map((player) => nameOverrides[player.id]?.trim() || playerDisplayName(player, names))
+      .join(' + ')
   const a = Number(result?.teamAScore)
   const b = Number(result?.teamBScore)
   if (!result?.completed || !Number.isFinite(a) || !Number.isFinite(b) || a === b) {
     return '대기'
   }
-  return a > b
-    ? teamDisplayName(match.teamA, names)
-    : teamDisplayName(match.teamB, names)
+  return a > b ? matchTeamDisplayName(match.teamA) : matchTeamDisplayName(match.teamB)
 }
 
 const formatDuration = (minutes: number) => {
@@ -455,6 +464,9 @@ function App() {
   const [pairMixes, setPairMixes] = useState<Record<string, number>>(
     initialState.pairMixes,
   )
+  const [matchNameOverrides, setMatchNameOverrides] = useState<MatchNameOverrides>(
+    initialState.matchNameOverrides,
+  )
   const [isSharedMode, setIsSharedMode] = useState(initialContext.isShared)
   const [view, setView] = useState<'schedule' | 'stats'>('schedule')
   const [notice, setNotice] = useState(initialContext.isShared ? '공유본' : '저장됨')
@@ -462,6 +474,8 @@ function App() {
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulkText, setBulkText] = useState('')
   const [printImageUrls, setPrintImageUrls] = useState<string[]>([])
+  const [editingMatchIds, setEditingMatchIds] = useState<Record<string, boolean>>({})
+  const [matchNameDrafts, setMatchNameDrafts] = useState<MatchNameOverrides>({})
 
   const rawSchedule = useMemo(
     () => generateSchedule(players, settings),
@@ -473,8 +487,8 @@ function App() {
   )
   const displayNames = useMemo(() => makePlayerNameLookup(players), [players])
   const stats = useMemo(
-    () => calculateStats(players, schedule, results),
-    [players, schedule, results],
+    () => calculateStats(players, schedule, results, matchNameOverrides),
+    [players, schedule, results, matchNameOverrides],
   )
 
   const activePlayers = players.filter((player) => player.active && player.name.trim())
@@ -482,7 +496,8 @@ function App() {
   const guestPlayers = players.filter((player) => player.isGuest)
   const activeMembers = activePlayers.filter((player) => !player.isGuest)
   const activeGuests = activePlayers.filter((player) => player.isGuest)
-  const requiredPlayers = activeMembers
+  const hasActiveGuests = activeGuests.length > 0
+  const requiredPlayers = hasActiveGuests ? activeMembers : []
   const pendingSpecial = requiredPlayers.filter(
     (player) => !schedule.specialCompletedIds.includes(player.id),
   )
@@ -501,10 +516,16 @@ function App() {
 
     window.localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ players, settings, results, pairMixes }),
+      JSON.stringify({
+        players,
+        settings,
+        results,
+        pairMixes,
+        matchNameOverrides,
+      }),
     )
     setNotice('저장됨')
-  }, [isSharedMode, players, settings, results, pairMixes])
+  }, [isSharedMode, players, settings, results, pairMixes, matchNameOverrides])
 
   useEffect(() => {
     let currentShareToken = getShareTokenFromLocation(window.location)
@@ -526,6 +547,7 @@ function App() {
       setSettings(sharedState.settings)
       setResults(sharedState.results)
       setPairMixes(sharedState.pairMixes)
+      setMatchNameOverrides(sharedState.matchNameOverrides)
       setView('schedule')
       setNotice('공유본')
     }
@@ -545,6 +567,68 @@ function App() {
     setPlayers((current) =>
       current.map((player) => (player.id === id ? { ...player, ...patch } : player)),
     )
+  }
+
+  const matchPlayerName = (match: Match, player: Player) =>
+    matchNameOverrides[match.id]?.[player.id]?.trim() ||
+    playerDisplayName(player, displayNames)
+
+  const matchTeamName = (match: Match, team: Team) =>
+    team.map((player) => matchPlayerName(match, player)).join(' + ')
+
+  const updateMatchNameDraft = (
+    matchId: string,
+    playerId: string,
+    value: string,
+  ) => {
+    setMatchNameDrafts((current) => ({
+      ...current,
+      [matchId]: {
+        ...(current[matchId] ?? {}),
+        [playerId]: value,
+      },
+    }))
+  }
+
+  const openMatchEditor = (match: Match) => {
+    setMatchNameDrafts((current) => {
+      const next = { ...current }
+      const matchDraft = { ...(next[match.id] ?? {}) }
+      for (const player of [...match.teamA, ...match.teamB]) {
+        matchDraft[player.id] =
+          matchDraft[player.id] ?? matchPlayerName(match, player)
+      }
+      next[match.id] = matchDraft
+      return next
+    })
+    setEditingMatchIds((current) => ({ ...current, [match.id]: true }))
+  }
+
+  const saveMatchEditor = (match: Match) => {
+    const nextOverrides = { ...(matchNameOverrides[match.id] ?? {}) }
+    const matchDraft = matchNameDrafts[match.id] ?? {}
+
+    for (const player of [...match.teamA, ...match.teamB]) {
+      const baseName = playerDisplayName(player, displayNames)
+      const nextName = (matchDraft[player.id] ?? baseName).trim()
+      if (nextName && nextName !== baseName) {
+        nextOverrides[player.id] = nextName
+      } else {
+        delete nextOverrides[player.id]
+      }
+    }
+
+    setMatchNameOverrides((current) => {
+      const next = { ...current }
+      if (Object.keys(nextOverrides).length > 0) {
+        next[match.id] = nextOverrides
+      } else {
+        delete next[match.id]
+      }
+      return next
+    })
+    setEditingMatchIds((current) => ({ ...current, [match.id]: false }))
+    setNotice('카드 수정됨')
   }
 
   const setRegularPlayerCount = (targetCount: number) => {
@@ -567,6 +651,7 @@ function App() {
     })
     setResults({})
     setPairMixes({})
+    setMatchNameOverrides({})
   }
 
   const setGuestCount = (targetCount: number) => {
@@ -589,6 +674,7 @@ function App() {
     })
     setResults({})
     setPairMixes({})
+    setMatchNameOverrides({})
   }
 
   const addPlayer = () => {
@@ -603,6 +689,7 @@ function App() {
     setPlayers((current) => current.filter((player) => player.id !== id))
     setResults({})
     setPairMixes({})
+    setMatchNameOverrides({})
   }
 
   const handleReset = () => {
@@ -615,6 +702,7 @@ function App() {
     setSettings(defaultSettings)
     setResults({})
     setPairMixes({})
+    setMatchNameOverrides({})
     setNotice('초기화됨')
   }
 
@@ -622,6 +710,7 @@ function App() {
     setSettings((current) => ({ ...current, seed: current.seed + 1 }))
     setResults({})
     setPairMixes({})
+    setMatchNameOverrides({})
     setNotice('새 대진 생성됨')
   }
 
@@ -633,6 +722,7 @@ function App() {
     }))
     setResults({})
     setPairMixes({})
+    setMatchNameOverrides({})
     setNotice('2시간 대진 생성됨')
   }
 
@@ -685,6 +775,7 @@ function App() {
     )
     setResults({})
     setPairMixes({})
+    setMatchNameOverrides({})
     setBulkText('')
     setNotice(`${parsedPlayers.length}명 입력됨`)
   }
@@ -711,6 +802,7 @@ function App() {
         settings,
         results,
         pairMixes,
+        matchNameOverrides,
       }
       await copyToClipboard(makeShareUrl(window.location.href, sharePayload))
       setNotice('공유 링크 복사됨')
@@ -735,6 +827,7 @@ function App() {
         results,
         schedule,
         settings,
+        matchNameOverrides,
       })
 
       setPrintImageUrls(imageUrls)
@@ -756,7 +849,13 @@ function App() {
   const useSharedCopy = () => {
     window.localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ players, settings, results, pairMixes }),
+      JSON.stringify({
+        players,
+        settings,
+        results,
+        pairMixes,
+        matchNameOverrides,
+      }),
     )
     window.history.replaceState(null, '', getBaseUrl())
     setIsSharedMode(false)
@@ -866,25 +965,31 @@ function App() {
                 min={1}
                 max={12}
                 value={settings.courtCount}
-                onChange={(courtCount) =>
+                onChange={(courtCount) => {
                   setSettings((current) => ({ ...current, courtCount }))
-                }
+                  setResults({})
+                  setPairMixes({})
+                  setMatchNameOverrides({})
+                }}
               />
-              <label className="settings-checkbox">
-                <input
-                  type="checkbox"
-                  checked={settings.singleGuestPerMatch}
-                  onChange={(event) => {
-                    setSettings((current) => ({
-                      ...current,
-                      singleGuestPerMatch: event.target.checked,
-                    }))
-                    setResults({})
-                    setPairMixes({})
-                  }}
-                />
-                스페셜 1 + 참가자 3
-              </label>
+              {guestPlayers.length > 0 ? (
+                <label className="settings-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={settings.singleGuestPerMatch}
+                    onChange={(event) => {
+                      setSettings((current) => ({
+                        ...current,
+                        singleGuestPerMatch: event.target.checked,
+                      }))
+                      setResults({})
+                      setPairMixes({})
+                      setMatchNameOverrides({})
+                    }}
+                  />
+                  스페셜 1 + 참가자 3
+                </label>
+              ) : null}
             </div>
             <div className="metric-grid">
               <div>
@@ -897,9 +1002,11 @@ function App() {
               </div>
               <div>
                 <strong>
-                  {schedule.specialCompletedIds.length}/{requiredPlayers.length}
+                  {hasActiveGuests
+                    ? `${schedule.specialCompletedIds.length}/${requiredPlayers.length}`
+                    : totalMatches}
                 </strong>
-                <span>1회 이상</span>
+                <span>{hasActiveGuests ? '1회 이상' : '대진'}</span>
               </div>
             </div>
           </section>
@@ -1074,29 +1181,31 @@ function App() {
         ) : null}
 
         <section className="workspace">
-          <section className="special-bar">
-            <div>
-              <span className="eyebrow">스페셜 1회 이상</span>
-              <h2>
-                {schedule.specialCompletedIds.length} / {requiredPlayers.length}
-              </h2>
-            </div>
-            <div className="special-summary">
-              {activeGuests.map((guest) => (
-                <span key={guest.id}>
-                  {playerDisplayName(guest, displayNames)}{' '}
-                  {schedule.guestGameCounts[guest.id] ?? 0}경기
-                </span>
-              ))}
-            </div>
-            <div className="pending-line">
-              {pendingSpecial.length > 0
-                ? pendingSpecial
-                    .map((player) => playerDisplayName(player, displayNames))
-                    .join(', ')
-                : '1회 이상 완료'}
-            </div>
-          </section>
+          {hasActiveGuests ? (
+            <section className="special-bar">
+              <div>
+                <span className="eyebrow">스페셜 1회 이상</span>
+                <h2>
+                  {schedule.specialCompletedIds.length} / {requiredPlayers.length}
+                </h2>
+              </div>
+              <div className="special-summary">
+                {activeGuests.map((guest) => (
+                  <span key={guest.id}>
+                    {playerDisplayName(guest, displayNames)}{' '}
+                    {schedule.guestGameCounts[guest.id] ?? 0}경기
+                  </span>
+                ))}
+              </div>
+              <div className="pending-line">
+                {pendingSpecial.length > 0
+                  ? pendingSpecial
+                      .map((player) => playerDisplayName(player, displayNames))
+                      .join(', ')
+                  : '1회 이상 완료'}
+              </div>
+            </section>
+          ) : null}
 
           {schedule.warnings.length > 0 ? (
             <div className="warning-strip">
@@ -1213,6 +1322,38 @@ function App() {
                           completed: false,
                           note: '',
                         }
+                        const isEditingMatch = Boolean(editingMatchIds[match.id])
+                        const matchOverrides = matchNameOverrides[match.id] ?? {}
+                        const renderTeamName = (team: Team, teamLabel: string) =>
+                          isEditingMatch && !isSharedMode ? (
+                            <div className="team-name-edit">
+                              {team.map((player, playerIndex) => (
+                                <input
+                                  key={player.id}
+                                  aria-label={`${teamLabel} ${playerIndex + 1} 이름`}
+                                  value={
+                                    matchNameDrafts[match.id]?.[player.id] ??
+                                    matchPlayerName(match, player)
+                                  }
+                                  onChange={(event) =>
+                                    updateMatchNameDraft(
+                                      match.id,
+                                      player.id,
+                                      event.target.value,
+                                    )
+                                  }
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') saveMatchEditor(match)
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="team-name">
+                              {matchTeamName(match, team)}
+                            </div>
+                          )
+
                         return (
                           <article
                             className={`match-card ${
@@ -1224,22 +1365,33 @@ function App() {
                               <span>코트 {match.court}</span>
                               <div className="match-card-actions">
                                 {!isSharedMode ? (
-                                  <button type="button" onClick={() => mixMatch(match.id)}>
-                                    믹스
-                                  </button>
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        isEditingMatch
+                                          ? saveMatchEditor(match)
+                                          : openMatchEditor(match)
+                                      }
+                                    >
+                                      {isEditingMatch ? '완료' : '수정'}
+                                    </button>
+                                    <button type="button" onClick={() => mixMatch(match.id)}>
+                                      믹스
+                                    </button>
+                                  </>
                                 ) : null}
                                 {match.isSpecial ? <strong>스페셜</strong> : null}
                               </div>
                             </header>
                             <div className={`score-row ${isSharedMode ? 'read-only-score' : ''}`}>
-                              <div className="team-name">
-                                {teamDisplayName(match.teamA, displayNames)}
-                              </div>
+                              {renderTeamName(match.teamA, 'A팀')}
                               {isSharedMode ? (
                                 <span className="score-value">{result.teamAScore || '-'}</span>
                               ) : (
                                 <input
-                                  aria-label={`${teamDisplayName(match.teamA, displayNames)} 점수`}
+                                  className="score-input"
+                                  aria-label={`${matchTeamName(match, match.teamA)} 점수`}
                                   type="number"
                                   min="0"
                                   value={result.teamAScore}
@@ -1252,14 +1404,13 @@ function App() {
                               )}
                             </div>
                             <div className={`score-row ${isSharedMode ? 'read-only-score' : ''}`}>
-                              <div className="team-name">
-                                {teamDisplayName(match.teamB, displayNames)}
-                              </div>
+                              {renderTeamName(match.teamB, 'B팀')}
                               {isSharedMode ? (
                                 <span className="score-value">{result.teamBScore || '-'}</span>
                               ) : (
                                 <input
-                                  aria-label={`${teamDisplayName(match.teamB, displayNames)} 점수`}
+                                  className="score-input"
+                                  aria-label={`${matchTeamName(match, match.teamB)} 점수`}
                                   type="number"
                                   min="0"
                                   value={result.teamBScore}
@@ -1289,7 +1440,7 @@ function App() {
                                   완료
                                 </label>
                               )}
-                              <span>{winnerLabel(match, result, displayNames)}</span>
+                              <span>{winnerLabel(match, result, displayNames, matchOverrides)}</span>
                             </div>
                             {isSharedMode ? (
                               result.note ? (

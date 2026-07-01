@@ -2,7 +2,7 @@
   min-height: 100svh;
   color: var(--ink);
   background:
-    linear-gradient(180deg, rgba(246, 248, 247, 0.92), rgba(255, 255, 255, 0.96)),
+    linear-gradient(180deg, rgba(228, 250, 245, 0.8), rgba(255, 255, 255, 0.96)),
     var(--paper);
 }
 
@@ -16,7 +16,7 @@
   gap: 24px;
   padding: 18px 28px;
   border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(16px);
 }
 
@@ -64,7 +64,7 @@
 }
 
 .event-title:focus {
-  border-bottom-color: var(--green);
+  border-bottom-color: var(--mint);
   outline: 0;
 }
 
@@ -83,8 +83,8 @@
   align-items: center;
   padding: 3px 8px;
   border-radius: 999px;
-  background: var(--soft-green);
-  color: var(--green);
+  background: var(--soft-navy);
+  color: var(--navy);
   font-size: 12px;
   font-weight: 900;
 }
@@ -103,13 +103,14 @@ button {
 }
 
 button:hover {
-  border-color: var(--green);
+  border-color: var(--mint);
+  color: var(--navy);
 }
 
 button:focus-visible,
 input:focus-visible,
 select:focus-visible {
-  outline: 2px solid rgba(24, 104, 92, 0.24);
+  outline: 2px solid rgba(47, 208, 180, 0.34);
   outline-offset: 2px;
 }
 
@@ -120,9 +121,14 @@ input:disabled {
 }
 
 .primary-action {
-  border-color: var(--green);
+  border-color: var(--navy);
   color: #fff;
-  background: var(--green);
+  background: linear-gradient(135deg, var(--navy), #113a63);
+  box-shadow: inset 0 -3px 0 var(--mint);
+}
+
+.primary-action:hover {
+  color: #fff;
 }
 
 .app-shell {
@@ -137,7 +143,7 @@ input:disabled {
 
 .control-panel {
   border-right: 1px solid var(--line);
-  background: rgba(250, 251, 250, 0.86);
+  background: rgba(244, 249, 250, 0.9);
 }
 
 .panel-section {
@@ -194,7 +200,7 @@ h2 {
   width: 16px;
   min-height: 16px;
   margin: 0;
-  accent-color: var(--green);
+  accent-color: var(--mint);
 }
 
 .number-control {
@@ -343,7 +349,7 @@ textarea {
 }
 
 .special-row {
-  border-left-color: var(--orange);
+  border-left-color: var(--mint);
 }
 
 .row-top,
@@ -369,8 +375,8 @@ textarea {
   align-items: center;
   padding: 2px 8px;
   border-radius: 999px;
-  background: var(--soft-orange);
-  color: var(--orange);
+  background: var(--soft-green);
+  color: var(--green);
   font-size: 12px;
   font-weight: 900;
 }
@@ -412,7 +418,7 @@ textarea {
   width: 16px;
   min-height: 16px;
   margin: 0;
-  accent-color: var(--green);
+  accent-color: var(--mint);
 }
 
 .limit-field {
@@ -452,7 +458,7 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 8px;
   background:
-    linear-gradient(90deg, rgba(24, 104, 92, 0.08), transparent 48%),
+    linear-gradient(90deg, rgba(7, 31, 61, 0.08), rgba(47, 208, 180, 0.08) 52%, transparent),
     #fff;
 }
 
@@ -598,7 +604,7 @@ textarea {
   padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  color: var(--green);
+  color: var(--navy);
   background: var(--soft-green);
   font-size: 13px;
   font-weight: 900;
@@ -621,8 +627,8 @@ textarea {
 }
 
 .tab-row button.active {
-  border-bottom-color: var(--green);
-  color: var(--green);
+  border-bottom-color: var(--mint);
+  color: var(--navy);
 }
 
 .tab-row span {
@@ -640,13 +646,14 @@ textarea {
   justify-content: center;
   gap: 12px;
   padding: 16px;
-  border: 1px dashed #93aaa1;
+  border: 1px dashed rgba(12, 143, 127, 0.48);
   border-radius: 8px;
   background: #f7faf8;
 }
 
 .add-round-panel button {
-  background: var(--green);
+  border-color: var(--navy);
+  background: var(--navy);
   color: #fff;
 }
 
@@ -701,7 +708,7 @@ textarea {
 }
 
 .special-match {
-  border-top-color: var(--orange);
+  border-top-color: var(--mint);
 }
 
 .match-card header {
@@ -728,8 +735,8 @@ textarea {
 
 .match-card strong {
   min-height: 22px;
-  background: var(--soft-orange);
-  color: var(--orange);
+  background: var(--soft-green);
+  color: var(--green);
 }
 
 .score-row {
@@ -753,7 +760,21 @@ textarea {
   overflow-wrap: anywhere;
 }
 
-.score-row input {
+.team-name-edit {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.team-name-edit input {
+  min-height: 38px;
+  margin-top: 0;
+  padding: 7px 8px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.score-input {
   margin-top: 0;
   text-align: center;
   font-size: 18px;
@@ -878,124 +899,228 @@ textarea {
 
 @media (max-width: 640px) {
   .app-header {
-    padding: 14px 14px 12px;
-    gap: 12px;
+    padding: 10px;
+    gap: 8px;
   }
 
   .brand-block {
     min-width: 0;
     width: 100%;
+    gap: 10px;
   }
 
   .brand-logo {
-    width: 88px;
+    width: 72px;
   }
 
   .event-title {
     min-width: 0;
-    font-size: 21px;
+    font-size: 18px;
   }
 
   .panel-section,
   .workspace {
-    padding: 14px;
+    padding: 10px;
   }
 
   button {
-    min-height: 44px;
-    padding: 10px 12px;
+    min-height: 34px;
+    padding: 6px 9px;
+    font-size: 13px;
+    white-space: nowrap;
   }
 
   input,
   select,
   textarea {
-    min-height: 44px;
+    min-height: 36px;
+    margin-top: 3px;
+    padding: 5px 7px;
     font-size: 16px;
   }
 
   .header-actions,
   .compact-actions,
   .bulk-actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
+    flex-wrap: nowrap;
     width: 100%;
-    gap: 8px;
+    justify-content: flex-start;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 2px;
   }
 
   .header-actions button,
   .compact-actions button,
   .bulk-actions button {
-    width: 100%;
+    flex: 0 0 auto;
+    width: auto;
   }
 
   .header-status {
-    grid-column: 1 / -1;
+    flex: 0 0 auto;
     justify-content: center;
-    width: 100%;
-  }
-
-  .header-actions .primary-action {
-    grid-column: 1 / -1;
+    width: auto;
   }
 
   .section-heading,
   .round-heading {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
+    gap: 8px;
+    margin-bottom: 8px;
   }
 
-  .settings-grid,
+  .section-heading > div:first-child,
+  .round-heading > span {
+    min-width: 0;
+  }
+
+  .section-heading > div:first-child span,
+  .round-heading > span {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .match-grid {
     grid-template-columns: 1fr;
-    gap: 10px;
+    gap: 8px;
+  }
+
+  .settings-grid {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+    margin-inline: -10px;
+    overflow-x: auto;
+    padding-inline: 10px;
+  }
+
+  .settings-grid .number-control {
+    flex: 0 0 104px;
   }
 
   .settings-checkbox {
-    min-height: 46px;
-    padding: 10px 12px;
+    flex: 0 0 auto;
+    min-height: 36px;
+    align-self: end;
+    padding: 7px 9px;
+    white-space: nowrap;
+  }
+
+  .number-control {
+    gap: 3px;
+  }
+
+  .number-control span {
+    font-size: 11px;
   }
 
   .stepper-control {
-    grid-template-columns: 46px minmax(0, 1fr) 46px;
-    min-height: 46px;
+    grid-template-columns: 32px minmax(36px, 1fr) 32px;
+    min-height: 34px;
   }
 
   .stepper-control button {
-    width: 46px;
-    min-height: 46px;
-    font-size: 20px;
+    width: 32px;
+    min-height: 34px;
+    font-size: 16px;
   }
 
   .stepper-control input {
-    min-height: 46px;
+    min-height: 34px;
   }
 
   .metric-grid {
-    gap: 6px;
+    gap: 5px;
+    margin-top: 8px;
   }
 
   .metric-grid div {
-    min-height: 54px;
-    padding: 9px 8px;
+    min-height: 44px;
+    padding: 7px;
   }
 
   .metric-grid strong {
-    font-size: 20px;
+    font-size: 18px;
+  }
+
+  .bulk-panel {
+    gap: 6px;
+    margin-bottom: 8px;
+    padding: 8px;
+  }
+
+  .bulk-panel textarea {
+    min-height: 92px;
+  }
+
+  .player-list {
+    gap: 6px;
   }
 
   .player-row {
-    gap: 10px;
-    padding: 14px;
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .row-top,
+  .row-flags,
+  .match-footer {
+    gap: 6px;
+  }
+
+  .status-chip,
+  .name-display-hint {
+    min-height: 21px;
+    padding: 2px 6px;
+    font-size: 11px;
+  }
+
+  .icon-button {
+    width: 28px;
+    min-height: 28px;
+  }
+
+  .name-input {
+    min-height: 36px;
   }
 
   .row-fields {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 0.8fr 1fr 0.8fr;
+    gap: 5px;
+  }
+
+  .row-fields.single-field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .row-fields label {
+    font-size: 10px;
+  }
+
+  .row-fields select {
+    min-height: 34px;
+    padding: 4px 5px;
+    font-size: 13px;
   }
 
   .special-bar,
   .time-bar {
-    gap: 10px;
-    padding: 14px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 9px 10px;
+  }
+
+  .special-bar h2,
+  .time-bar h2 {
+    margin-top: 0;
+    font-size: 19px;
+    white-space: nowrap;
   }
 
   .special-summary,
@@ -1008,20 +1133,34 @@ textarea {
   .special-summary span,
   .time-summary span {
     flex: 0 0 auto;
+    min-height: 22px;
+    padding: 2px 7px;
+    font-size: 11px;
+  }
+
+  .pending-line,
+  .time-alert,
+  .time-ok {
+    max-width: 124px;
+    min-height: 24px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .tab-row {
     position: sticky;
     top: 0;
     z-index: 10;
-    margin: 12px -14px 14px;
-    padding: 0 14px;
+    gap: 4px;
+    margin: 8px -10px 10px;
+    padding: 0 10px;
     background: rgba(255, 255, 255, 0.96);
     backdrop-filter: blur(12px);
   }
 
   .tab-row button {
-    min-height: 46px;
+    min-height: 38px;
     padding-inline: 8px;
   }
 
@@ -1029,45 +1168,84 @@ textarea {
     font-size: 12px;
   }
 
+  .round-list {
+    gap: 10px;
+  }
+
   .match-card {
-    padding: 12px;
+    gap: 7px;
+    padding: 9px;
+  }
+
+  .match-card header {
+    min-height: 24px;
+    font-size: 12px;
   }
 
   .score-row {
-    grid-template-columns: minmax(0, 1fr) 66px;
+    grid-template-columns: minmax(0, 1fr) 56px;
+    gap: 6px;
   }
 
   .read-only-score {
-    grid-template-columns: minmax(0, 1fr) 54px;
+    grid-template-columns: minmax(0, 1fr) 48px;
   }
 
   .team-name {
-    min-height: 44px;
+    min-height: 34px;
+    padding: 5px 7px;
+    font-size: 13px;
   }
 
-  .score-row input {
-    min-height: 44px;
+  .team-name-edit {
+    gap: 4px;
+  }
+
+  .team-name-edit input {
+    min-height: 34px;
+    padding: 5px 6px;
+    font-size: 12px;
+  }
+
+  .score-input {
+    min-height: 34px;
     padding-inline: 6px;
-    font-size: 20px;
+    font-size: 16px;
+  }
+
+  .note-input,
+  .note-readonly,
+  .score-value {
+    min-height: 34px;
+  }
+
+  .add-round-panel {
+    justify-content: flex-start;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 10px;
+    white-space: nowrap;
   }
 }
 
 @media (max-width: 380px) {
   .row-fields {
-    grid-template-columns: 1fr;
+    grid-template-columns: 0.8fr 1fr 0.8fr;
   }
 
   .metric-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, 1fr);
   }
 
   .tab-row {
-    flex-wrap: wrap;
-    padding-bottom: 8px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 0;
   }
 
   .tab-row span {
-    width: 100%;
+    flex: 0 0 auto;
+    width: auto;
     margin-left: 0;
   }
 }

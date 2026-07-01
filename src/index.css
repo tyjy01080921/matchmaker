@@ -1,10 +1,13 @@
 :root {
-  --ink: #18211f;
-  --muted: #65716e;
-  --paper: #f6f8f7;
-  --line: #dce3df;
-  --green: #18685c;
-  --soft-green: #e7f2ef;
+  --ink: #0c223d;
+  --muted: #637386;
+  --paper: #f4f9fa;
+  --line: #d7e5e8;
+  --navy: #071f3d;
+  --soft-navy: #e8f0f7;
+  --green: #0c8f7f;
+  --mint: #2fd0b4;
+  --soft-green: #e4faf5;
   --orange: #a75e19;
   --soft-orange: #fff1df;
   --red: #b13d3d;

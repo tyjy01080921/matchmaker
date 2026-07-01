@@ -27,6 +27,11 @@ const makePayload = (): SharePayload => ({
   pairMixes: {
     'r1-c1': 2,
   },
+  matchNameOverrides: {
+    'r1-c1': {
+      'p-minsu': '현장참가자',
+    },
+  },
 })
 
 describe('share links', () => {

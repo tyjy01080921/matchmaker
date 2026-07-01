@@ -1,5 +1,6 @@
 import type {
   Match,
+  MatchNameOverrides,
   MatchSettings,
   Player,
   PlayerStat,
@@ -13,6 +14,7 @@ type HistoryState = {
   games: Record<string, number>
   rests: Record<string, number>
   restStreaks: Record<string, number>
+  playStreaks: Record<string, number>
   partners: Record<string, number>
   opponents: Record<string, number>
   specialCompleted: Set<string>
@@ -46,6 +48,7 @@ const makeHistory = (players: Player[]): HistoryState => ({
   games: emptyCounts(players),
   rests: emptyCounts(players),
   restStreaks: emptyCounts(players),
+  playStreaks: emptyCounts(players),
   partners: {},
   opponents: {},
   specialCompleted: new Set<string>(),
@@ -96,12 +99,46 @@ const teamLevel = (team: Team) =>
 const teamAge = (team: Team) =>
   team.reduce((sum, player) => sum + ageValue(player), 0)
 
+const teamLevelSpread = (team: Team) =>
+  Math.abs(levelValue(team[0]) - levelValue(team[1]))
+
 const genderBalance = (team: Team) =>
   team.reduce((sum, player) => {
     if (player.gender === 'male') return sum + 1
     if (player.gender === 'female') return sum - 1
     return sum
   }, 0)
+
+const genderCounts = (players: Player[]) => ({
+  men: players.filter((player) => !player.isGuest && player.gender === 'male').length,
+  women: players.filter((player) => !player.isGuest && player.gender === 'female').length,
+})
+
+const isMixedRegularTeam = (team: Team) => {
+  const counts = genderCounts(team)
+  return counts.men > 0 && counts.women > 0
+}
+
+const mixedDoublesPenalty = (teamA: Team, teamB: Team) => {
+  const counts = genderCounts([...teamA, ...teamB])
+  const canMakeTwoMixedTeams = counts.men === 2 && counts.women === 2
+  if (!canMakeTwoMixedTeams) return 0
+
+  return (
+    Number(!isMixedRegularTeam(teamA)) +
+    Number(!isMixedRegularTeam(teamB))
+  ) * 80
+}
+
+const groupGenderMixPenalty = (players: Player[]) => {
+  const counts = genderCounts(players)
+  const genderedCount = counts.men + counts.women
+  if (genderedCount < 3 || counts.men === 0 || counts.women === 0) {
+    return genderedCount >= 3 ? 80 : 0
+  }
+
+  return Math.abs(counts.men - counts.women) * 18
+}
 
 const femaleMaleLevelPenalty = (female: Player, male: Player) => {
   const femaleLevel = matchLevelValue(female)
@@ -172,9 +209,11 @@ const scorePairing = (
 
   const levelPenalty = Math.abs(teamLevel(teamA) - teamLevel(teamB)) * 7
   const agePenalty = Math.abs(teamAge(teamA) - teamAge(teamB)) * 1.5
-  const genderPenalty = Math.abs(genderBalance(teamA) - genderBalance(teamB)) * 3
+  const genderPenalty = Math.abs(genderBalance(teamA) - genderBalance(teamB)) * 6
   const mixedPairPenalty =
     mixedGenderLevelPenalty(teamA) + mixedGenderLevelPenalty(teamB)
+  const teamShapePenalty =
+    Math.abs(teamLevelSpread(teamA) - teamLevelSpread(teamB)) * 3
   const guestPenalty =
     Math.abs(teamA.filter((player) => player.isGuest).length - teamB.filter((player) => player.isGuest).length) *
     12
@@ -187,6 +226,8 @@ const scorePairing = (
     agePenalty +
     genderPenalty +
     mixedPairPenalty +
+    mixedDoublesPenalty(teamA, teamB) +
+    teamShapePenalty +
     partnerPenalty +
     opponentPenalty +
     guestPenalty +
@@ -250,6 +291,7 @@ const updateHistoryForMatch = (history: HistoryState, match: Match) => {
   for (const player of players) {
     history.games[player.id] = (history.games[player.id] ?? 0) + 1
     history.restStreaks[player.id] = 0
+    history.playStreaks[player.id] = (history.playStreaks[player.id] ?? 0) + 1
     if (player.isGuest) {
       history.guestGameCounts[player.id] = (history.guestGameCounts[player.id] ?? 0) + 1
     } else if (guestInMatch) {
@@ -281,14 +323,30 @@ const updateHistoryForRests = (
     if (!usedIds.has(player.id)) {
       history.rests[player.id] = (history.rests[player.id] ?? 0) + 1
       history.restStreaks[player.id] = (history.restStreaks[player.id] ?? 0) + 1
+      history.playStreaks[player.id] = 0
     }
   }
 }
+
+const consecutivePlayPenalty = (player: Player, history: HistoryState) => {
+  const streak = history.playStreaks[player.id] ?? 0
+  if (streak <= 0) return 0
+  if (streak === 1) return 90
+  if (streak === 2) return 320
+  return 780 + (streak - 3) * 360
+}
+
+const groupConsecutivePlayPenalty = (players: Player[], history: HistoryState) =>
+  players.reduce(
+    (sum, player) => sum + consecutivePlayPenalty(player, history),
+    0,
+  )
 
 const playerPriority = (player: Player, history: HistoryState, random: () => number) =>
   (history.games[player.id] ?? 0) * 24 -
   (history.restStreaks[player.id] ?? 0) * 18 -
   (history.rests[player.id] ?? 0) * 4 +
+  consecutivePlayPenalty(player, history) +
   levelValue(player) * 0.35 +
   random()
 
@@ -346,9 +404,11 @@ const scoreSpecialRegulars = (
     levelPenalty +
     levelSpread * 10 +
     mixedGenderLevelPenalty(regulars) * 4 +
+    groupGenderMixPenalty(regulars) +
     historyPenalty +
     pendingPenalty +
     repeatGuestPenalty +
+    groupConsecutivePlayPenalty(regulars, history) +
     random()
   )
 }
@@ -526,10 +586,12 @@ const scoreAdaptiveSpecialGroup = (
     regularLevelPenalty +
     (Math.max(...levels) - Math.min(...levels)) * 6 +
     mixedGenderLevelPenalty(regulars) * 4 +
+    groupGenderMixPenalty(regulars) +
     historyPenalty +
     (expectedPendingCount - pendingCount) * 110 -
     firstGuestCount * 40 +
     repeatGuestPenalty +
+    groupConsecutivePlayPenalty(group, history) +
     Math.max(0, guests.length - 1) * 14 +
     random()
   )
@@ -702,6 +764,8 @@ const scoreGroup = (
     Math.max(...gameCounts) * 3 +
     levelSpread * 4 -
     restStreaks.reduce((sum, streak) => sum + streak, 0) * 8 +
+    groupGenderMixPenalty(group) +
+    groupConsecutivePlayPenalty(group, history) +
     Math.max(0, guestCount - 1) * 50 +
     random()
   )
@@ -772,15 +836,7 @@ export const generateSchedule = (
       guestGameCounts: history.guestGameCounts,
     }
   }
-  if (activeGuests.length === 0) {
-    return {
-      rounds: [],
-      warnings: ['스페셜이 1명 이상이어야 대진을 만들 수 있습니다.'],
-      specialCompletedIds: [],
-      guestGameCounts: history.guestGameCounts,
-    }
-  }
-  if (settings.singleGuestPerMatch && activeRegulars.length < 3) {
+  if (activeGuests.length > 0 && settings.singleGuestPerMatch && activeRegulars.length < 3) {
     return {
       rounds: [],
       warnings: ['스페셜 1명 옵션에서는 일반 참가자가 3명 이상 필요합니다.'],
@@ -846,7 +902,8 @@ export const generateSchedule = (
       (guest) => (history.guestGameCounts[guest.id] ?? 0) > 0,
     )
     const reachedTargetRounds = roundNumber >= targetRoundCount
-    const completedMinimumSpecial = allRegularsCompleted && allGuestsPlayed
+    const completedMinimumSpecial =
+      activeGuests.length === 0 || (allRegularsCompleted && allGuestsPlayed)
     if (reachedTargetRounds && completedMinimumSpecial) break
 
     if (
@@ -860,11 +917,14 @@ export const generateSchedule = (
     }
   }
 
-  const pendingSpecial = activePlayers.filter(
-    (player) =>
-      !player.isGuest &&
-      !history.specialCompleted.has(player.id),
-  )
+  const pendingSpecial =
+    activeGuests.length > 0
+      ? activePlayers.filter(
+          (player) =>
+            !player.isGuest &&
+            !history.specialCompleted.has(player.id),
+        )
+      : []
   if (pendingSpecial.length > 0) {
     warnings.push(
       `스페셜 경기 미완료: ${pendingSpecial.map((player) => player.name).join(', ')}`,
@@ -897,11 +957,36 @@ export const calculateStats = (
   players: Player[],
   schedule: Schedule,
   results: ResultsByMatch,
+  matchNameOverrides: MatchNameOverrides = {},
 ): PlayerStat[] => {
   const stats = new Map<string, PlayerStat>()
 
-  for (const player of players.filter((item) => item.active && item.name.trim())) {
-    stats.set(player.id, {
+  const makeManualPlayer = (match: Match, player: Player): Player => {
+    const overrideName = matchNameOverrides[match.id]?.[player.id]?.trim()
+    if (!overrideName) return player
+
+    return {
+      ...player,
+      id: `manual:${overrideName}`,
+      name: overrideName,
+    }
+  }
+
+  const matchStatPlayers = (match: Match) =>
+    matchPlayers(match).map((player) => makeManualPlayer(match, player))
+
+  const replacedPlayersForRound = (round: Round) =>
+    round.matches.flatMap((match) =>
+      matchPlayers(match).filter((player) =>
+        Boolean(matchNameOverrides[match.id]?.[player.id]?.trim()),
+      ),
+    )
+
+  const ensureStat = (player: Player) => {
+    const existing = stats.get(player.id)
+    if (existing) return existing
+
+    const next: PlayerStat = {
       player,
       games: 0,
       rests: 0,
@@ -911,11 +996,22 @@ export const calculateStats = (
       pointsAgainst: 0,
       specialDone: schedule.specialCompletedIds.includes(player.id),
       guestGames: 0,
-    })
+    }
+    stats.set(player.id, next)
+    return next
+  }
+
+  for (const player of players.filter((item) => item.active && item.name.trim())) {
+    ensureStat(player)
   }
 
   for (const round of schedule.rounds) {
-    for (const player of round.resting) {
+    const restingPlayers = uniquePlayers([
+      ...round.resting,
+      ...replacedPlayersForRound(round),
+    ])
+
+    for (const player of restingPlayers) {
       const stat = stats.get(player.id)
       if (stat) stat.rests += 1
     }
@@ -929,11 +1025,14 @@ export const calculateStats = (
         teamAScore !== null &&
         teamBScore !== null &&
         teamAScore !== teamBScore
-      const guestMatch = hasGuest(matchPlayers(match))
+      const playersInMatch = matchStatPlayers(match)
+      const [teamA0, teamA1, teamB0, teamB1] = playersInMatch
+      const teamA: Team = [teamA0, teamA1]
+      const teamB: Team = [teamB0, teamB1]
+      const guestMatch = hasGuest(playersInMatch)
 
-      for (const player of matchPlayers(match)) {
-        const stat = stats.get(player.id)
-        if (!stat) continue
+      for (const player of playersInMatch) {
+        const stat = ensureStat(player)
         stat.games += 1
         if (!player.isGuest && guestMatch) stat.guestGames += 1
       }
@@ -941,17 +1040,15 @@ export const calculateStats = (
       if (!completed || teamAScore === null || teamBScore === null) continue
 
       const teamAWon = teamAScore > teamBScore
-      for (const player of match.teamA) {
-        const stat = stats.get(player.id)
-        if (!stat) continue
+      for (const player of teamA) {
+        const stat = ensureStat(player)
         stat.pointsFor += teamAScore
         stat.pointsAgainst += teamBScore
         if (teamAWon) stat.wins += 1
         else stat.losses += 1
       }
-      for (const player of match.teamB) {
-        const stat = stats.get(player.id)
-        if (!stat) continue
+      for (const player of teamB) {
+        const stat = ensureStat(player)
         stat.pointsFor += teamBScore
         stat.pointsAgainst += teamAScore
         if (teamAWon) stat.losses += 1

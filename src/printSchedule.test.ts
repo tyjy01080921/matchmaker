@@ -101,6 +101,11 @@ describe('printable schedule', () => {
       results: {} satisfies ResultsByMatch,
       schedule,
       settings,
+      matchNameOverrides: {
+        'm-1': {
+          'p-1': '현장참가자',
+        },
+      },
     })
     const svg = decodeURIComponent(
       images[0].replace('data:image/svg+xml;charset=utf-8,', ''),
@@ -108,7 +113,7 @@ describe('printable schedule', () => {
 
     expect(svg).toContain('1경기')
     expect(svg).toContain('1코트')
-    expect(svg).toContain('김민수 1 + 이지연')
+    expect(svg).toContain('현장참가자 + 이지연')
     expect(svg).not.toContain('상태')
     expect(svg).not.toContain('점수')
   })

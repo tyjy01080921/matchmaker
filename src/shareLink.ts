@@ -1,4 +1,9 @@
-import type { MatchSettings, Player, ResultsByMatch } from './types'
+import type {
+  MatchNameOverrides,
+  MatchSettings,
+  Player,
+  ResultsByMatch,
+} from './types'
 
 export const SHARE_PARAM = 'share'
 export const SHARE_MODE_PARAM = 'shared'
@@ -10,6 +15,7 @@ export type SharePayload = {
   settings: MatchSettings
   results: ResultsByMatch
   pairMixes: Record<string, number>
+  matchNameOverrides?: MatchNameOverrides
 }
 
 const textEncoder = new TextEncoder()
@@ -87,7 +93,14 @@ const isSharePayload = (value: unknown): value is SharePayload => {
     typeof payload.results === 'object' &&
     payload.results !== null &&
     typeof payload.pairMixes === 'object' &&
-    payload.pairMixes !== null
+    payload.pairMixes !== null &&
+    (
+      payload.matchNameOverrides === undefined ||
+      (
+        typeof payload.matchNameOverrides === 'object' &&
+        payload.matchNameOverrides !== null
+      )
+    )
   )
 }
 

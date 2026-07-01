@@ -58,6 +58,8 @@ export type MatchResult = {
 
 export type ResultsByMatch = Record<string, MatchResult>
 
+export type MatchNameOverrides = Record<string, Record<string, string>>
+
 export type PlayerStat = {
   player: Player
   games: number

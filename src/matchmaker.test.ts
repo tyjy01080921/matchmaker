@@ -45,6 +45,49 @@ describe('generateSchedule', () => {
     }
   })
 
+  it('creates regular matches when there are no special guests', () => {
+    const players = Array.from({ length: 8 }, (_, index) =>
+      makeTestPlayer(`regular-${index + 1}`, index < 4 ? 'A' : 'B'),
+    )
+    const schedule = generateSchedule(players, {
+      ...defaultSettings,
+      courtCount: 2,
+      singleGuestPerMatch: true,
+      targetRoundCount: 4,
+    })
+
+    expect(schedule.rounds).toHaveLength(4)
+    expect(schedule.warnings).toHaveLength(0)
+    expect(schedule.specialCompletedIds).toHaveLength(0)
+    expect(
+      schedule.rounds
+        .flatMap((round) => round.matches)
+        .every((match) => !match.isSpecial),
+    ).toBe(true)
+  })
+
+  it('pairs two men and two women as mixed doubles when available', () => {
+    const schedule = generateSchedule(
+      [
+        makeTestPlayer('male-a', 'A', 'male'),
+        makeTestPlayer('male-b', 'B', 'male'),
+        makeTestPlayer('female-a', 'A', 'female'),
+        makeTestPlayer('female-b', 'B', 'female'),
+      ],
+      {
+        ...defaultSettings,
+        courtCount: 1,
+        targetRoundCount: 1,
+      },
+    )
+    const match = schedule.rounds[0].matches[0]
+
+    expect(match.teamA.filter((player) => player.gender === 'male')).toHaveLength(1)
+    expect(match.teamA.filter((player) => player.gender === 'female')).toHaveLength(1)
+    expect(match.teamB.filter((player) => player.gender === 'male')).toHaveLength(1)
+    expect(match.teamB.filter((player) => player.gender === 'female')).toHaveLength(1)
+  })
+
   it('auto-generates enough order slots for every regular participant to play with a guest', () => {
     const schedule = generateSchedule(defaultPlayers, {
       ...defaultSettings,
@@ -99,6 +142,18 @@ describe('generateSchedule', () => {
       Math.ceil(regularStats.length / 3),
     )
     expect(regularStats.every((stat) => stat.guestGames >= 2)).toBe(true)
+  })
+
+  it('keeps available courts filled while applying streak penalties', () => {
+    const schedule = generateSchedule(defaultPlayers, defaultSettings)
+    const availableCourts = Math.min(
+      defaultSettings.courtCount,
+      Math.floor(defaultPlayers.filter((player) => player.active).length / 4),
+    )
+
+    for (const round of schedule.rounds) {
+      expect(round.matches).toHaveLength(availableCourts)
+    }
   })
 
   it('moves a guest partner to the opposite team when they meet that guest again', () => {
@@ -328,5 +383,33 @@ describe('generateSchedule', () => {
       expect(stat?.wins).toBe(1)
       expect((stat?.pointsFor ?? 0) - (stat?.pointsAgainst ?? 0)).toBe(3)
     }
+  })
+
+  it('counts match-level renamed participants in stats', () => {
+    const players = [
+      makeTestPlayer('regular-1', 'A'),
+      makeTestPlayer('regular-2', 'B'),
+      makeTestPlayer('regular-3', 'C'),
+      makeTestPlayer('regular-4', 'D'),
+    ]
+    const schedule = generateSchedule(players, {
+      ...defaultSettings,
+      courtCount: 1,
+      targetRoundCount: 1,
+    })
+    const firstMatch = schedule.rounds[0].matches[0]
+    const replacedPlayer = firstMatch.teamA[0]
+    const stats = calculateStats(players, schedule, {}, {
+      [firstMatch.id]: {
+        [replacedPlayer.id]: '현장참가자',
+      },
+    })
+    const originalStat = stats.find((item) => item.player.id === replacedPlayer.id)
+    const manualStat = stats.find((item) => item.player.name === '현장참가자')
+
+    expect(originalStat?.games).toBe(0)
+    expect(originalStat?.rests).toBeGreaterThan(0)
+    expect(manualStat?.games).toBe(1)
+    expect(manualStat?.rests).toBe(0)
   })
 })

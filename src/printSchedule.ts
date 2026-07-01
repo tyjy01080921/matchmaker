@@ -1,5 +1,13 @@
-import { playerDisplayName, teamDisplayName, type PlayerNameLookup } from './playerNames'
-import type { Match, MatchSettings, ResultsByMatch, Round, Schedule } from './types'
+import { playerDisplayName, type PlayerNameLookup } from './playerNames'
+import type {
+  Match,
+  MatchNameOverrides,
+  MatchSettings,
+  ResultsByMatch,
+  Round,
+  Schedule,
+  Team,
+} from './types'
 
 export const A4_IMAGE_WIDTH = 1240
 export const A4_IMAGE_HEIGHT = 1754
@@ -22,6 +30,7 @@ type PrintScheduleOptions = {
   results: ResultsByMatch
   schedule: Schedule
   settings: MatchSettings
+  matchNameOverrides?: MatchNameOverrides
 }
 
 const layout = {
@@ -143,11 +152,19 @@ const drawMatchItem = (
   options: PrintScheduleOptions,
 ) => {
   const { match } = item
+  const matchNames = options.matchNameOverrides?.[match.id] ?? {}
+  const matchTeamDisplayName = (team: Team) =>
+    team
+      .map(
+        (player) =>
+          matchNames[player.id]?.trim() || playerDisplayName(player, options.names),
+      )
+      .join(' + ')
   const values = [
     `${match.round}경기`,
     `${match.court}코트`,
-    teamDisplayName(match.teamA, options.names),
-    teamDisplayName(match.teamB, options.names),
+    matchTeamDisplayName(match.teamA),
+    matchTeamDisplayName(match.teamB),
   ]
 
   let x = 50
