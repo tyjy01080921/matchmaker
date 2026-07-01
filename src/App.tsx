@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
+import amaLogo from './assets/ama-logo.png'
 import { defaultPlayers, defaultSettings } from './defaultData'
 import { calculateStats, generateSchedule } from './matchmaker'
 import {
@@ -770,9 +771,7 @@ function App() {
     <div className="app">
       <header className="app-header">
         <div className="brand-block">
-          <div className="court-mark" aria-hidden="true">
-            <span />
-          </div>
+          <img className="brand-logo" src={amaLogo} alt="" aria-hidden="true" />
           <div>
             {isSharedMode ? (
               <span className="eyebrow">A.M.A Match Maker</span>

@@ -27,21 +27,12 @@
   gap: 14px;
 }
 
-.court-mark {
-  position: relative;
-  flex: 0 0 54px;
-  height: 36px;
-  border: 2px solid var(--green);
-  border-radius: 6px;
-  background:
-    linear-gradient(90deg, transparent 48%, var(--green) 48% 52%, transparent 52%),
-    linear-gradient(0deg, transparent 45%, rgba(24, 104, 92, 0.35) 45% 55%, transparent 55%);
-}
-
-.court-mark span {
-  position: absolute;
-  inset: 8px 11px;
-  border-inline: 1px solid rgba(24, 104, 92, 0.42);
+.brand-logo {
+  flex: 0 0 auto;
+  width: 118px;
+  max-width: 32vw;
+  height: auto;
+  display: block;
 }
 
 .eyebrow {
@@ -896,8 +887,8 @@ textarea {
     width: 100%;
   }
 
-  .court-mark {
-    display: none;
+  .brand-logo {
+    width: 88px;
   }
 
   .event-title {
