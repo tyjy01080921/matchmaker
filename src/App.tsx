@@ -65,6 +65,39 @@ const genderLabels: Record<Gender, string> = {
   none: '무관',
 }
 
+const legacySampleNames: Record<string, string> = {
+  'guest-special': '스페셜 1',
+  'p-minsu': '참가자 1',
+  'p-jiyeon': '참가자 2',
+  'p-taeho': '참가자 3',
+  'p-soobin': '참가자 4',
+  'p-hyunwoo': '참가자 5',
+  'p-nayoung': '참가자 6',
+  'p-junho': '참가자 7',
+  'p-eunji': '참가자 8',
+  'p-doyoon': '참가자 9',
+  'p-yuna': '참가자 10',
+  'p-chulsoo': '참가자 11',
+  'p-harin': '참가자 12',
+}
+
+const legacySampleNameSet = new Set([
+  '스페셜 게스트',
+  '스페셜 선수',
+  '김민수',
+  '이지연',
+  '박태호',
+  '최수빈',
+  '정현우',
+  '강나영',
+  '오준호',
+  '한은지',
+  '윤도윤',
+  '서유나',
+  '이철수',
+  '문하린',
+])
+
 const normalizeLevel = (value: unknown): Level => {
   if (
     value === 'A' ||
@@ -119,8 +152,9 @@ const normalizePlayer = (player: Partial<Player>): Player => {
 const normalizeStoredPlayer = (player: Partial<Player>): Player => {
   const normalized = normalizePlayer(player)
   const legacyAutoName = normalized.name.match(/^게스트\s+(\d+)$/)
-  if (normalized.id === 'guest-special' && normalized.name === '스페셜 게스트') {
-    return { ...normalized, name: '스페셜 선수' }
+  const legacySampleName = legacySampleNames[normalized.id]
+  if (legacySampleName && legacySampleNameSet.has(normalized.name)) {
+    return { ...normalized, name: legacySampleName }
   }
   if (normalized.isGuest && legacyAutoName) {
     return { ...normalized, name: `스페셜 ${legacyAutoName[1]}` }
@@ -906,7 +940,7 @@ function App() {
                     <textarea
                       value={bulkText}
                       onChange={(event) => setBulkText(event.target.value)}
-                      placeholder={'김민수 A 남 30대\n이지연 B 여 40대\n고성현 스페셜'}
+                      placeholder={'참가자 1 A 남 30대\n참가자 2 B 여 40대\n고성현 스페셜'}
                     />
                     <div className="bulk-actions">
                       <button type="button" onClick={() => applyBulkPlayers('append')}>

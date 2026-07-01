@@ -21,6 +21,15 @@ const makeTestPlayer = (
   guestGameLimit: isGuest ? 3 : 0,
 })
 
+describe('defaultPlayers', () => {
+  it('uses generic sample labels except for the named guest players', () => {
+    expect(defaultPlayers.filter((player) => player.isGuest).map((player) => player.name))
+      .toEqual(['고성현', '신백철', '스페셜 1'])
+    expect(defaultPlayers.filter((player) => !player.isGuest).map((player) => player.name))
+      .toEqual(Array.from({ length: 12 }, (_, index) => `참가자 ${index + 1}`))
+  })
+})
+
 describe('generateSchedule', () => {
   it('creates court-limited doubles matches without round duplicates', () => {
     const schedule = generateSchedule(defaultPlayers, defaultSettings)
