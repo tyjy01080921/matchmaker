@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { defaultPlayers, defaultSettings } from './defaultData'
-import { calculateStats, generateSchedule } from './matchmaker'
-import type { Gender, Level, Player } from './types'
+import {
+  defaultPlayers,
+  defaultSettings,
+  defaultTournamentSettings,
+} from './defaultData'
+import {
+  calculateStats,
+  generateSchedule,
+  generateTournamentSchedule,
+} from './matchmaker'
+import type { Gender, Level, Player, TournamentTeam } from './types'
 
 const makeTestPlayer = (
   id: string,
@@ -21,12 +29,22 @@ const makeTestPlayer = (
   guestGameLimit: isGuest ? 3 : 0,
 })
 
+const makeTournamentTeam = (id: string, seed: number | null): TournamentTeam => ({
+  id,
+  name: id,
+  playerNames: '',
+  level: 'B',
+  gender: 'none',
+  seed,
+  active: true,
+})
+
 describe('defaultPlayers', () => {
-  it('uses generic sample labels except for the named guest players', () => {
+  it('uses generic sample labels for meeting players', () => {
     expect(defaultPlayers.filter((player) => player.isGuest).map((player) => player.name))
-      .toEqual(['고성현', '신백철', '스페셜 1'])
+      .toEqual(['참가자 1', '참가자 2', '참가자 3'])
     expect(defaultPlayers.filter((player) => !player.isGuest).map((player) => player.name))
-      .toEqual(Array.from({ length: 12 }, (_, index) => `참가자 ${index + 1}`))
+      .toEqual(Array.from({ length: 12 }, (_, index) => `참가자 ${index + 4}`))
   })
 })
 
@@ -411,5 +429,285 @@ describe('generateSchedule', () => {
     expect(originalStat?.rests).toBeGreaterThan(0)
     expect(manualStat?.games).toBe(1)
     expect(manualStat?.rests).toBe(0)
+  })
+})
+
+describe('generateTournamentSchedule', () => {
+  it('advances a bye team into the next knockout round', () => {
+    const teams = [
+      makeTournamentTeam('seed-1', 1),
+      makeTournamentTeam('seed-2', 2),
+      makeTournamentTeam('seed-3', 3),
+    ]
+    const schedule = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'knockout',
+        includeThirdPlace: false,
+      },
+      {},
+    )
+    const byeMatch = schedule.knockoutMatches.find((match) => match.isBye)
+    const final = schedule.knockoutMatches.find((match) => match.label === '결승')
+
+    expect(byeMatch?.teamAId).toBe('seed-1')
+    expect(final?.teamAId).toBe('seed-1')
+  })
+
+  it('keeps unseeded teams behind seeded teams in knockout placement', () => {
+    const teams = [
+      makeTournamentTeam('unseeded-b', null),
+      makeTournamentTeam('seed-1', 1),
+      makeTournamentTeam('unseeded-a', null),
+      makeTournamentTeam('seed-2', 2),
+    ]
+    const schedule = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'knockout',
+        includeThirdPlace: false,
+      },
+      {},
+    )
+    const semifinals = schedule.knockoutMatches.filter(
+      (match) => match.label !== '결승',
+    )
+
+    expect(semifinals[0].teamAId).toBe('seed-1')
+    expect(semifinals[1].teamAId).toBe('seed-2')
+  })
+
+  it('fills the final after semifinal results are entered', () => {
+    const teams = Array.from({ length: 4 }, (_, index) =>
+      makeTournamentTeam(`team-${index + 1}`, index + 1),
+    )
+    const initial = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'knockout',
+        includeThirdPlace: true,
+      },
+      {},
+    )
+    const semifinals = initial.knockoutMatches.filter(
+      (match) => match.label !== '결승' && match.phase === 'knockout',
+    )
+    const schedule = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'knockout',
+        includeThirdPlace: true,
+      },
+      {
+        [semifinals[0].id]: {
+          teamAScore: '21',
+          teamBScore: '12',
+          completed: true,
+          note: '',
+        },
+        [semifinals[1].id]: {
+          teamAScore: '17',
+          teamBScore: '21',
+          completed: true,
+          note: '',
+        },
+      },
+    )
+    const final = schedule.knockoutMatches.find((match) => match.label === '결승')
+    const thirdPlace = schedule.knockoutMatches.find(
+      (match) => match.phase === 'third-place',
+    )
+
+    expect(final?.teamAId).toBe(semifinals[0].teamAId)
+    expect(final?.teamBId).toBe(semifinals[1].teamBId)
+    expect(thirdPlace?.teamAId).toBe(semifinals[0].teamBId)
+    expect(thirdPlace?.teamBId).toBe(semifinals[1].teamAId)
+  })
+
+  it('ranks group teams by wins, point difference, points, head-to-head, then seed', () => {
+    const teams = [
+      makeTournamentTeam('team-a', 1),
+      makeTournamentTeam('team-b', 2),
+      makeTournamentTeam('team-c', 3),
+    ]
+    const initial = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'group-knockout',
+        groupCount: 1,
+        advancePerGroup: 1,
+        includeThirdPlace: false,
+      },
+      {},
+    )
+    const matchByTeams = (left: string, right: string) => {
+      const match = initial.matches.find(
+        (item) =>
+          item.phase === 'group' &&
+          ((item.teamAId === left && item.teamBId === right) ||
+            (item.teamAId === right && item.teamBId === left)),
+      )
+      expect(match).toBeDefined()
+      return match
+    }
+    const ab = matchByTeams('team-a', 'team-b')
+    const ac = matchByTeams('team-a', 'team-c')
+    const bc = matchByTeams('team-b', 'team-c')
+    const schedule = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'group-knockout',
+        groupCount: 1,
+        advancePerGroup: 1,
+        includeThirdPlace: false,
+      },
+      {
+        [ab!.id]: {
+          teamAScore: ab!.teamAId === 'team-a' ? '21' : '10',
+          teamBScore: ab!.teamAId === 'team-a' ? '10' : '21',
+          completed: true,
+          note: '',
+        },
+        [bc!.id]: {
+          teamAScore: bc!.teamAId === 'team-b' ? '21' : '10',
+          teamBScore: bc!.teamAId === 'team-b' ? '10' : '21',
+          completed: true,
+          note: '',
+        },
+        [ac!.id]: {
+          teamAScore: ac!.teamAId === 'team-c' ? '21' : '20',
+          teamBScore: ac!.teamAId === 'team-c' ? '20' : '21',
+          completed: true,
+          note: '',
+        },
+      },
+    )
+
+    expect(schedule.standings.map((standing) => standing.team.id)).toEqual([
+      'team-a',
+      'team-b',
+      'team-c',
+    ])
+    expect(schedule.qualifiedTeamIds).toEqual(['team-a'])
+  })
+
+  it('creates knockout matches from group qualifiers', () => {
+    const teams = Array.from({ length: 6 }, (_, index) =>
+      makeTournamentTeam(`team-${index + 1}`, index + 1),
+    )
+    const initial = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'group-knockout',
+        groupCount: 2,
+        advancePerGroup: 1,
+        includeThirdPlace: false,
+      },
+      {},
+    )
+    const groupResults = Object.fromEntries(
+      initial.matches
+        .filter((match) => match.phase === 'group')
+        .map((match) => [
+          match.id,
+          {
+            teamAScore: '21',
+            teamBScore: '10',
+            completed: true,
+            note: '',
+          },
+        ]),
+    )
+    const schedule = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'group-knockout',
+        groupCount: 2,
+        advancePerGroup: 1,
+        includeThirdPlace: false,
+      },
+      groupResults,
+    )
+
+    expect(schedule.qualifiedTeamIds).toHaveLength(2)
+    expect(schedule.knockoutMatches).toHaveLength(1)
+    expect(schedule.knockoutMatches[0].label).toBe('결승')
+  })
+
+  it('keeps knockout closed until every group match is completed', () => {
+    const teams = Array.from({ length: 6 }, (_, index) =>
+      makeTournamentTeam(`team-${index + 1}`, index + 1),
+    )
+    const schedule = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'group-knockout',
+        groupCount: 2,
+        advancePerGroup: 1,
+        includeThirdPlace: false,
+      },
+      {},
+    )
+
+    expect(schedule.qualifiedTeamIds).toHaveLength(0)
+    expect(schedule.knockoutMatches).toHaveLength(0)
+    expect(schedule.warnings.some((warning) => warning.includes('조별 경기 미완료'))).toBe(
+      true,
+    )
+  })
+
+  it('calculates team battle winners from sub-match wins', () => {
+    const teams = [makeTournamentTeam('alpha', 1), makeTournamentTeam('beta', 2)]
+    const initial = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'team-battle',
+        teamBattleMatchCount: 3,
+      },
+      {},
+    )
+    const [first, second, third] = initial.matches
+    const schedule = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'team-battle',
+        teamBattleMatchCount: 3,
+      },
+      {
+        [first.id]: {
+          teamAScore: '21',
+          teamBScore: '12',
+          completed: true,
+          note: '',
+        },
+        [second.id]: {
+          teamAScore: '18',
+          teamBScore: '21',
+          completed: true,
+          note: '',
+        },
+        [third.id]: {
+          teamAScore: '21',
+          teamBScore: '19',
+          completed: true,
+          note: '',
+        },
+      },
+    )
+
+    expect(schedule.teamBattleTies[0].winnerTeamId).toBe('alpha')
+    expect(schedule.teamBattleStandings[0].team.id).toBe('alpha')
+    expect(schedule.teamBattleStandings[0].matchWins).toBe(2)
   })
 })

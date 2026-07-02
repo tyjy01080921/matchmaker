@@ -4,6 +4,10 @@ export type Level = 'A' | 'B' | 'C' | 'D' | '스페셜'
 
 export type AgeGroup = '20대' | '30대' | '40대' | '45대' | '50대' | '55대이상'
 
+export type AppMode = 'meeting' | 'tournament'
+
+export type TournamentFormat = 'group-knockout' | 'knockout' | 'team-battle'
+
 export type Player = {
   id: string
   name: string
@@ -22,6 +26,26 @@ export type MatchSettings = {
   seed: number
   singleGuestPerMatch: boolean
   targetRoundCount: number
+}
+
+export type TournamentSettings = {
+  format: TournamentFormat
+  courtCount: number
+  groupCount: number
+  advancePerGroup: number
+  includeThirdPlace: boolean
+  teamBattleMatchCount: number
+  teamBattleSlots: string[]
+}
+
+export type TournamentTeam = {
+  id: string
+  name: string
+  playerNames: string
+  level: Level
+  gender: Gender
+  seed: number | null
+  active: boolean
 }
 
 export type Team = [Player, Player]
@@ -57,6 +81,81 @@ export type MatchResult = {
 }
 
 export type ResultsByMatch = Record<string, MatchResult>
+
+export type TournamentPhase = 'group' | 'knockout' | 'third-place' | 'team-battle'
+
+export type TournamentMatch = {
+  id: string
+  phase: TournamentPhase
+  order: number
+  round: number
+  court: number
+  label: string
+  teamAId?: string
+  teamBId?: string
+  sourceA?: string
+  sourceB?: string
+  groupId?: string
+  bracketRound?: number
+  bracketSlot?: number
+  teamBattleTieId?: string
+  teamBattleSlot?: string
+  isBye?: boolean
+}
+
+export type TournamentMatchResult = MatchResult
+
+export type TournamentResultsByMatch = Record<string, TournamentMatchResult>
+
+export type TournamentGroup = {
+  id: string
+  name: string
+  teamIds: string[]
+}
+
+export type TournamentStanding = {
+  team: TournamentTeam
+  groupId?: string
+  rank: number
+  played: number
+  wins: number
+  losses: number
+  pointsFor: number
+  pointsAgainst: number
+  pointDiff: number
+  seed: number
+}
+
+export type TournamentTeamBattleTie = {
+  id: string
+  label: string
+  teamAId: string
+  teamBId: string
+  teamAWins: number
+  teamBWins: number
+  winnerTeamId?: string
+}
+
+export type TournamentTeamBattleStanding = {
+  team: TournamentTeam
+  rank: number
+  tiesPlayed: number
+  tiesWon: number
+  tiesLost: number
+  matchWins: number
+  matchLosses: number
+}
+
+export type TournamentSchedule = {
+  groups: TournamentGroup[]
+  matches: TournamentMatch[]
+  standings: TournamentStanding[]
+  knockoutMatches: TournamentMatch[]
+  teamBattleTies: TournamentTeamBattleTie[]
+  teamBattleStandings: TournamentTeamBattleStanding[]
+  qualifiedTeamIds: string[]
+  warnings: string[]
+}
 
 export type MatchNameOverrides = Record<string, Record<string, string>>
 
