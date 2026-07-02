@@ -299,7 +299,7 @@ const normalizeTournamentTeam = (
   active: team.active ?? true,
 })
 
-const legacyEnglishTitle = String.fromCharCode(
+const legacyEnglishTitleCodes = [
   83,
   72,
   73,
@@ -318,7 +318,11 @@ const legacyEnglishTitle = String.fromCharCode(
   85,
   82,
   84,
-)
+]
+
+const legacyEnglishTitle = legacyEnglishTitleCodes
+  .map((code) => String.fromCharCode(code))
+  .join('')
 
 const legacyMeetingEventNames = new Set([
   '스페셜 배드민턴 데이',
