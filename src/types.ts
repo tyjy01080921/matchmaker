@@ -82,6 +82,18 @@ export type MatchResult = {
 
 export type ResultsByMatch = Record<string, MatchResult>
 
+export type PrizeDrawResult = {
+  prize: string
+  winnerId: string
+  winnerName: string
+}
+
+export type PrizeDrawState = {
+  prizesText: string
+  allowDuplicateWinners: boolean
+  results: PrizeDrawResult[]
+}
+
 export type TournamentPhase = 'group' | 'knockout' | 'third-place' | 'team-battle'
 
 export type TournamentMatch = {

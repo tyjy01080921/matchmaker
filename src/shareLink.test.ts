@@ -32,6 +32,17 @@ const makePayload = (): SharePayload => ({
       'p-minsu': '현장참가자',
     },
   },
+  prizeDraw: {
+    prizesText: '셔틀콕\n그립',
+    allowDuplicateWinners: false,
+    results: [
+      {
+        prize: '셔틀콕',
+        winnerId: 'guest-ko',
+        winnerName: '참가자 1',
+      },
+    ],
+  },
 })
 
 describe('share links', () => {

@@ -3,6 +3,7 @@ import type {
   MatchNameOverrides,
   MatchSettings,
   Player,
+  PrizeDrawState,
   ResultsByMatch,
   TournamentResultsByMatch,
   TournamentSettings,
@@ -24,6 +25,7 @@ export type SharePayload = {
   tournamentTeams?: TournamentTeam[]
   tournamentSettings?: TournamentSettings
   tournamentResults?: TournamentResultsByMatch
+  prizeDraw?: PrizeDrawState
 }
 
 const textEncoder = new TextEncoder()
@@ -130,6 +132,13 @@ const isSharePayload = (value: unknown): value is SharePayload => {
       (
         typeof payload.tournamentResults === 'object' &&
         payload.tournamentResults !== null
+      )
+    ) &&
+    (
+      payload.prizeDraw === undefined ||
+      (
+        typeof payload.prizeDraw === 'object' &&
+        payload.prizeDraw !== null
       )
     )
   )

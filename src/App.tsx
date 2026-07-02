@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react'
 import './App.css'
 import amaLogo from './assets/ama-logo.png'
 import {
@@ -26,6 +32,7 @@ import {
   type PlayerNameLookup,
 } from './playerNames'
 import { createSchedulePrintImages, createTournamentPrintImages } from './printSchedule'
+import { drawPrizeWinners, parsePrizeList } from './prizeDraw'
 import type {
   AgeGroup,
   AppMode,
@@ -36,6 +43,7 @@ import type {
   MatchResult,
   MatchSettings,
   Player,
+  PrizeDrawState,
   ResultsByMatch,
   Schedule,
   Team,
@@ -58,6 +66,12 @@ const getTargetRoundCount = (settings: MatchSettings) => {
   return Math.max(1, Math.floor(numeric))
 }
 
+const defaultPrizeDrawState: PrizeDrawState = {
+  prizesText: '',
+  allowDuplicateWinners: false,
+  results: [],
+}
+
 type StoredState = {
   appMode: AppMode
   players: Player[]
@@ -65,6 +79,7 @@ type StoredState = {
   results: ResultsByMatch
   pairMixes: Record<string, number>
   matchNameOverrides: MatchNameOverrides
+  prizeDraw: PrizeDrawState
   tournamentTeams: TournamentTeam[]
   tournamentSettings: TournamentSettings
   tournamentResults: TournamentResultsByMatch
@@ -299,6 +314,22 @@ const normalizeTournamentTeam = (
   active: team.active ?? true,
 })
 
+const normalizePrizeDrawState = (
+  value: Partial<PrizeDrawState> | undefined,
+): PrizeDrawState => ({
+  prizesText: typeof value?.prizesText === 'string' ? value.prizesText : '',
+  allowDuplicateWinners: value?.allowDuplicateWinners ?? false,
+  results: Array.isArray(value?.results)
+    ? value.results
+        .map((result) => ({
+          prize: String(result.prize ?? '').trim(),
+          winnerId: String(result.winnerId ?? ''),
+          winnerName: String(result.winnerName ?? '').trim(),
+        }))
+        .filter((result) => result.prize && result.winnerId && result.winnerName)
+    : [],
+})
+
 const legacyEnglishTitleCodes = [
   83,
   72,
@@ -338,6 +369,7 @@ const readStoredState = (): StoredState => {
       results: {},
       pairMixes: {},
       matchNameOverrides: {},
+      prizeDraw: defaultPrizeDrawState,
       tournamentTeams: defaultTournamentTeams,
       tournamentSettings: defaultTournamentSettings,
       tournamentResults: {},
@@ -361,6 +393,7 @@ const readStoredState = (): StoredState => {
       results: parsed.results ?? {},
       pairMixes: parsed.pairMixes ?? {},
       matchNameOverrides: parsed.matchNameOverrides ?? {},
+      prizeDraw: normalizePrizeDrawState(parsed.prizeDraw),
       tournamentTeams: parsed.tournamentTeams?.length
         ? parsed.tournamentTeams.map((team, index) =>
             normalizeTournamentTeam(team, index),
@@ -377,6 +410,7 @@ const readStoredState = (): StoredState => {
       results: {},
       pairMixes: {},
       matchNameOverrides: {},
+      prizeDraw: defaultPrizeDrawState,
       tournamentTeams: defaultTournamentTeams,
       tournamentSettings: defaultTournamentSettings,
       tournamentResults: {},
@@ -393,6 +427,7 @@ const storedStateFromSharePayload = (payload: SharePayload): StoredState => ({
   results: payload.results ?? {},
   pairMixes: payload.pairMixes ?? {},
   matchNameOverrides: payload.matchNameOverrides ?? {},
+  prizeDraw: normalizePrizeDrawState(payload.prizeDraw),
   tournamentTeams: payload.tournamentTeams?.length
     ? payload.tournamentTeams.map((team, index) =>
         normalizeTournamentTeam(team, index),
@@ -741,6 +776,9 @@ function App() {
   const [matchNameOverrides, setMatchNameOverrides] = useState<MatchNameOverrides>(
     initialState.matchNameOverrides,
   )
+  const [prizeDraw, setPrizeDraw] = useState<PrizeDrawState>(
+    initialState.prizeDraw,
+  )
   const [tournamentTeams, setTournamentTeams] = useState<TournamentTeam[]>(
     initialState.tournamentTeams,
   )
@@ -763,6 +801,10 @@ function App() {
   const [tournamentPrintImageUrls, setTournamentPrintImageUrls] = useState<string[]>([])
   const [editingMatchIds, setEditingMatchIds] = useState<Record<string, boolean>>({})
   const [matchNameDrafts, setMatchNameDrafts] = useState<MatchNameOverrides>({})
+  const [rouletteRotation, setRouletteRotation] = useState(0)
+  const [rouletteWinnerName, setRouletteWinnerName] = useState('')
+  const [isRouletteSpinning, setIsRouletteSpinning] = useState(false)
+  const rouletteTimerRef = useRef<number | null>(null)
 
   const rawSchedule = useMemo(
     () => generateSchedule(players, settings),
@@ -792,6 +834,22 @@ function App() {
   )
 
   const activePlayers = players.filter((player) => player.active && player.name.trim())
+  const prizeCandidates = activePlayers.map((player) => ({
+    id: player.id,
+    name: playerDisplayName(player, displayNames),
+  }))
+  const prizeList = parsePrizeList(prizeDraw.prizesText)
+  const drawnPrizeWinnerIds = new Set(
+    prizeDraw.results.map((result) => result.winnerId),
+  )
+  const availableRouletteCandidates = prizeDraw.allowDuplicateWinners
+    ? prizeCandidates
+    : prizeCandidates.filter((candidate) => !drawnPrizeWinnerIds.has(candidate.id))
+  const isRouletteMode = prizeList.length === 0
+  const rouletteNames = prizeCandidates
+  const rouletteWheelStyle = {
+    '--roulette-rotation': `${rouletteRotation}deg`,
+  } as CSSProperties
   const regularPlayers = players.filter((player) => !player.isGuest)
   const guestPlayers = players.filter((player) => player.isGuest)
   const activeMembers = activePlayers.filter((player) => !player.isGuest)
@@ -851,6 +909,7 @@ function App() {
         results,
         pairMixes,
         matchNameOverrides,
+        prizeDraw,
         tournamentTeams,
         tournamentSettings,
         tournamentResults,
@@ -865,6 +924,7 @@ function App() {
     results,
     pairMixes,
     matchNameOverrides,
+    prizeDraw,
     tournamentTeams,
     tournamentSettings,
     tournamentResults,
@@ -892,6 +952,7 @@ function App() {
       setResults(sharedState.results)
       setPairMixes(sharedState.pairMixes)
       setMatchNameOverrides(sharedState.matchNameOverrides)
+      setPrizeDraw(sharedState.prizeDraw)
       setTournamentTeams(sharedState.tournamentTeams)
       setTournamentSettings(sharedState.tournamentSettings)
       setTournamentResults(sharedState.tournamentResults)
@@ -910,6 +971,15 @@ function App() {
       window.clearInterval(shareUrlCheck)
     }
   }, [])
+
+  useEffect(
+    () => () => {
+      if (rouletteTimerRef.current !== null) {
+        window.clearTimeout(rouletteTimerRef.current)
+      }
+    },
+    [],
+  )
 
   const updatePlayer = (id: string, patch: Partial<Player>) => {
     setPlayers((current) =>
@@ -1270,6 +1340,109 @@ function App() {
     setNotice(`${parsedTeams.length}팀 입력됨`)
   }
 
+  const runRouletteDraw = () => {
+    if (isRouletteSpinning) return
+    if (prizeCandidates.length === 0) {
+      setNotice('추첨 대상 없음')
+      return
+    }
+    if (availableRouletteCandidates.length === 0) {
+      setNotice('전원 추첨 완료')
+      return
+    }
+
+    const [result] = drawPrizeWinners(
+      [`${prizeDraw.results.length + 1}번째`],
+      availableRouletteCandidates,
+      true,
+    )
+    if (!result) return
+
+    const winnerIndex = Math.max(
+      0,
+      rouletteNames.findIndex((candidate) => candidate.id === result.winnerId),
+    )
+    const itemAngle = rouletteNames.length > 0 ? 360 / rouletteNames.length : 0
+    const targetRotation = (360 - winnerIndex * itemAngle) % 360
+
+    if (rouletteTimerRef.current !== null) {
+      window.clearTimeout(rouletteTimerRef.current)
+    }
+
+    setIsRouletteSpinning(true)
+    setRouletteWinnerName('')
+    setRouletteRotation((current) => {
+      const normalizedCurrent = ((current % 360) + 360) % 360
+      const offset = (targetRotation - normalizedCurrent + 360) % 360
+      return current + 1440 + offset
+    })
+
+    rouletteTimerRef.current = window.setTimeout(() => {
+      setPrizeDraw((current) => ({
+        ...current,
+        results: [...current.results, result],
+      }))
+      setRouletteWinnerName(result.winnerName)
+      setIsRouletteSpinning(false)
+      setNotice(`${result.winnerName} 당첨`)
+      rouletteTimerRef.current = null
+    }, 2200)
+  }
+
+  const runPrizeDraw = () => {
+    if (isRouletteMode) {
+      runRouletteDraw()
+      return
+    }
+    if (isRouletteSpinning) return
+    if (prizeCandidates.length === 0) {
+      setNotice('추첨 대상 없음')
+      return
+    }
+
+    const results = drawPrizeWinners(
+      prizeList,
+      prizeCandidates,
+      prizeDraw.allowDuplicateWinners,
+    )
+    setPrizeDraw((current) => ({ ...current, results }))
+    setRouletteWinnerName('')
+    setNotice(
+      results.length < prizeList.length
+        ? `${results.length}개 추첨됨`
+        : `${results.length}개 추첨 완료`,
+    )
+  }
+
+  const resetPrizeDrawResults = () => {
+    if (rouletteTimerRef.current !== null) {
+      window.clearTimeout(rouletteTimerRef.current)
+      rouletteTimerRef.current = null
+    }
+    setPrizeDraw((current) => ({ ...current, results: [] }))
+    setIsRouletteSpinning(false)
+    setRouletteWinnerName('')
+    setNotice('추첨 초기화됨')
+  }
+
+  const copyPrizeDrawResults = async () => {
+    if (prizeDraw.results.length === 0) {
+      setNotice('복사할 결과 없음')
+      return
+    }
+
+    try {
+      await copyToClipboard(
+        prizeDraw.results
+          .map((result) => `${result.prize} - ${result.winnerName}`)
+          .join('\n'),
+      )
+      setNotice('추첨 결과 복사됨')
+    } catch {
+      setNotice('결과 복사 실패')
+    }
+  }
+
   const mixMatch = (matchId: string) => {
     setPairMixes((current) => ({
       ...current,
@@ -1294,6 +1467,7 @@ function App() {
         results,
         pairMixes,
         matchNameOverrides,
+        prizeDraw,
         tournamentTeams,
         tournamentSettings,
         tournamentResults,
@@ -1385,6 +1559,7 @@ function App() {
         results,
         pairMixes,
         matchNameOverrides,
+        prizeDraw,
         tournamentTeams,
         tournamentSettings,
         tournamentResults,
@@ -1442,19 +1617,19 @@ function App() {
           {isSharedMode ? (
             <>
               <button type="button" className="primary-action" onClick={useSharedCopy}>
-                {appMode === 'meeting' ? '내 대진 편집' : '내 대회 편집'}
+                편집
               </button>
               <button type="button" onClick={openMySchedule}>
-                새 대진
+                새로
               </button>
               <button type="button" onClick={handleCopyShareLink}>
-                공유 링크 복사
+                공유
               </button>
               <button
                 type="button"
                 onClick={appMode === 'meeting' ? handlePrintSchedule : handlePrintTournament}
               >
-                대진표 저장
+                저장
               </button>
               <span className="header-status">{notice}</span>
             </>
@@ -1465,16 +1640,16 @@ function App() {
                 className="primary-action"
                 onClick={generateTwoHourSchedule}
               >
-                대진 생성
+                생성
               </button>
               <button type="button" onClick={reshuffle}>
-                다시 섞기
+                섞기
               </button>
               <button type="button" onClick={handleCopyShareLink}>
-                공유 링크 복사
+                공유
               </button>
               <button type="button" onClick={handlePrintSchedule}>
-                대진표 저장
+                저장
               </button>
             </>
           ) : (
@@ -1484,7 +1659,7 @@ function App() {
                 className="primary-action"
                 onClick={() => setTournamentView('progress')}
               >
-                진행 화면
+                진행
               </button>
               <button
                 type="button"
@@ -1493,13 +1668,13 @@ function App() {
                   setNotice('대회 결과 초기화됨')
                 }}
               >
-                결과 초기화
+                초기화
               </button>
               <button type="button" onClick={handleCopyShareLink}>
-                공유 링크 복사
+                공유
               </button>
               <button type="button" onClick={handlePrintTournament}>
-                대진표 저장
+                저장
               </button>
             </>
           )}
@@ -1517,21 +1692,21 @@ function App() {
             </div>
             <div className="settings-grid">
               <NumberStepper
-                label="참가자 수"
+                label="참가"
                 min={0}
                 max={80}
                 value={regularPlayers.length}
                 onChange={setRegularPlayerCount}
               />
               <NumberStepper
-                label="스페셜 수"
+                label="스페셜"
                 min={0}
                 max={12}
                 value={guestPlayers.length}
                 onChange={setGuestCount}
               />
               <NumberStepper
-                label="코트 수"
+                label="코트"
                 min={1}
                 max={12}
                 value={settings.courtCount}
@@ -1598,7 +1773,7 @@ function App() {
                   스페셜
                 </button>
                 <button type="button" onClick={() => setBulkOpen((open) => !open)}>
-                  일괄 입력
+                  일괄
                 </button>
                 <button type="button" onClick={handleReset}>
                   초기화
@@ -1623,10 +1798,10 @@ function App() {
                     />
                     <div className="bulk-actions">
                       <button type="button" onClick={() => applyBulkPlayers('append')}>
-                        명단 추가
+                        추가
                       </button>
                       <button type="button" onClick={() => applyBulkPlayers('replace')}>
-                        기존 교체
+                        교체
                       </button>
                     </div>
                   </div>
@@ -1749,6 +1924,124 @@ function App() {
                 참가자 목록이 접혀 있습니다. 펼치기를 누르면 명단을 편집할 수 있습니다.
               </div>
             )}
+          </section>
+
+          <section className="panel-section prize-panel">
+            <div className="section-heading">
+              <div>
+                <h2>경품 추첨</h2>
+                <span>
+                  {isRouletteMode
+                    ? `룰렛 ${availableRouletteCandidates.length}/${prizeCandidates.length}명`
+                    : `대상 ${prizeCandidates.length}명 · 경품 ${prizeList.length}개`}
+                </span>
+              </div>
+              <div className="compact-actions">
+                <button
+                  type="button"
+                  className="primary-action"
+                  disabled={isRouletteSpinning}
+                  onClick={runPrizeDraw}
+                >
+                  {isRouletteSpinning ? '회전중' : '추첨'}
+                </button>
+                <button type="button" onClick={copyPrizeDrawResults}>
+                  복사
+                </button>
+                <button type="button" onClick={resetPrizeDrawResults}>
+                  초기화
+                </button>
+              </div>
+            </div>
+
+            <div className="prize-draw-box">
+              <div className="bulk-help">
+                입력 안내: 경품은 한 줄에 하나씩 · 비워두면 참가자 룰렛으로
+                1명씩 추첨
+              </div>
+              {isRouletteMode ? (
+                <div className="prize-roulette" aria-live="polite">
+                  <div className="prize-roulette-pointer" />
+                  <div
+                    className={`prize-roulette-wheel ${
+                      isRouletteSpinning ? 'spinning' : ''
+                    }`}
+                    style={rouletteWheelStyle}
+                  >
+                    {rouletteNames.map((candidate, index) => (
+                      <span
+                        className="prize-roulette-name"
+                        key={candidate.id}
+                        style={
+                          {
+                            '--name-angle': `${
+                              (360 / Math.max(rouletteNames.length, 1)) * index
+                            }deg`,
+                            '--name-angle-reverse': `${
+                              (-360 / Math.max(rouletteNames.length, 1)) * index
+                            }deg`,
+                          } as CSSProperties
+                        }
+                      >
+                        {candidate.name}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="prize-roulette-center">
+                    <span>
+                      {isRouletteSpinning
+                        ? '회전중'
+                        : rouletteWinnerName
+                          ? '당첨'
+                          : '대기'}
+                    </span>
+                    <strong>
+                      {isRouletteSpinning
+                        ? '...'
+                        : rouletteWinnerName || `${availableRouletteCandidates.length}명`}
+                    </strong>
+                  </div>
+                </div>
+              ) : null}
+              <textarea
+                className="prize-textarea"
+                value={prizeDraw.prizesText}
+                onChange={(event) =>
+                  setPrizeDraw((current) => ({
+                    ...current,
+                    prizesText: event.target.value,
+                  }))
+                }
+                placeholder={'셔틀콕\n그립\n음료 쿠폰'}
+              />
+              <label className="settings-checkbox prize-duplicate-option">
+                <input
+                  type="checkbox"
+                  checked={prizeDraw.allowDuplicateWinners}
+                  onChange={(event) =>
+                    setPrizeDraw((current) => ({
+                      ...current,
+                      allowDuplicateWinners: event.target.checked,
+                    }))
+                  }
+                />
+                중복 당첨 허용
+              </label>
+              {prizeDraw.results.length > 0 ? (
+                <div className="prize-result-list">
+                  {prizeDraw.results.map((result, index) => (
+                    <div className="prize-result-row" key={`${result.prize}-${index}`}>
+                      <strong>{result.prize}</strong>
+                      <span>{result.winnerName}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="collapsed-summary">
+                  참석 중인 참가자와 스페셜 전체가 추첨 대상입니다.
+                </div>
+              )}
+            </div>
           </section>
         </aside>
         ) : null}
@@ -2039,7 +2332,7 @@ function App() {
               {!isSharedMode && schedule.rounds.length > 0 ? (
                 <div className="add-round-panel">
                   <button type="button" onClick={addScheduleRound}>
-                    추가 대진 생성
+                    추가 생성
                   </button>
                   <span>
                     생성 {totalGameSlots}/{targetRoundCount}경기 · 다음 경기{' '}
@@ -2135,21 +2428,21 @@ function App() {
 
                 <div className="settings-grid tournament-settings-grid">
                   <NumberStepper
-                    label="코트 수"
+                    label="코트"
                     min={1}
                     max={12}
                     value={tournamentSettings.courtCount}
                     onChange={(courtCount) => updateTournamentSettings({ courtCount })}
                   />
                   <NumberStepper
-                    label="참가팀 수"
+                    label="팀 수"
                     min={0}
                     max={64}
                     value={tournamentTeams.length}
                     onChange={setTournamentTeamCount}
                   />
                   <NumberStepper
-                    label="시드 수"
+                    label="시드"
                     min={0}
                     max={tournamentTeams.length}
                     value={seededTournamentTeams.length}
@@ -2158,7 +2451,7 @@ function App() {
                   {tournamentSettings.format === 'group-knockout' ? (
                     <>
                       <NumberStepper
-                        label="조 수"
+                        label="조"
                         min={1}
                         max={16}
                         value={tournamentSettings.groupCount}
@@ -2167,7 +2460,7 @@ function App() {
                         }
                       />
                       <NumberStepper
-                        label="조별 진출"
+                        label="진출"
                         min={1}
                         max={8}
                         value={tournamentSettings.advancePerGroup}
@@ -2179,7 +2472,7 @@ function App() {
                   ) : null}
                   {tournamentSettings.format === 'team-battle' ? (
                     <NumberStepper
-                      label="세부 경기"
+                      label="세부"
                       min={1}
                       max={5}
                       value={tournamentSettings.teamBattleMatchCount}
@@ -2248,7 +2541,7 @@ function App() {
                       type="button"
                       onClick={() => setTournamentBulkOpen((open) => !open)}
                     >
-                      일괄 입력
+                      일괄
                     </button>
                     <button type="button" onClick={resetTournament}>
                       초기화
@@ -2277,13 +2570,13 @@ function App() {
                         type="button"
                         onClick={() => applyBulkTournamentTeams('append')}
                       >
-                        팀 추가
+                        추가
                       </button>
                       <button
                         type="button"
                         onClick={() => applyBulkTournamentTeams('replace')}
                       >
-                        기존 교체
+                        교체
                       </button>
                     </div>
                   </div>

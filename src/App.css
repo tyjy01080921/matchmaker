@@ -407,6 +407,164 @@ textarea {
   flex-wrap: wrap;
 }
 
+.prize-draw-box {
+  display: grid;
+  gap: 10px;
+}
+
+.prize-textarea {
+  min-height: 92px;
+}
+
+.prize-duplicate-option {
+  align-self: stretch;
+}
+
+.prize-roulette {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 238px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.9), transparent 48%),
+    var(--paper);
+}
+
+.prize-roulette-pointer {
+  position: absolute;
+  top: 12px;
+  z-index: 4;
+  width: 0;
+  height: 0;
+  border-right: 10px solid transparent;
+  border-left: 10px solid transparent;
+  border-top: 18px solid var(--orange);
+  filter: drop-shadow(0 3px 4px rgba(18, 32, 29, 0.2));
+}
+
+.prize-roulette-wheel {
+  position: relative;
+  width: 210px;
+  aspect-ratio: 1;
+  border: 8px solid #fff;
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      from -90deg,
+      #e4faf5 0deg 45deg,
+      #fff1df 45deg 90deg,
+      #e8f0f7 90deg 135deg,
+      #f4f9fa 135deg 180deg,
+      #e4faf5 180deg 225deg,
+      #fff1df 225deg 270deg,
+      #e8f0f7 270deg 315deg,
+      #f4f9fa 315deg 360deg
+    );
+  box-shadow: var(--shadow);
+  transform: rotate(var(--roulette-rotation));
+  transition: transform 2.2s cubic-bezier(0.12, 0.8, 0.12, 1);
+}
+
+.prize-roulette-wheel::after {
+  position: absolute;
+  inset: 55px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: #fff;
+  content: '';
+}
+
+.prize-roulette-name {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 2;
+  width: 72px;
+  margin-top: -10px;
+  margin-left: -36px;
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1.1;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 0 #fff;
+  transform: rotate(var(--name-angle)) translateY(-82px) rotate(var(--name-angle-reverse));
+  white-space: nowrap;
+}
+
+.prize-roulette-center {
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  width: 94px;
+  min-height: 64px;
+  align-content: center;
+  justify-items: center;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 8px 22px rgba(18, 32, 29, 0.12);
+}
+
+.prize-roulette-center span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.prize-roulette-center strong {
+  max-width: 78px;
+  color: var(--green);
+  font-size: 14px;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prize-result-list {
+  display: grid;
+  gap: 6px;
+}
+
+.prize-result-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(90px, 0.65fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.prize-result-row strong,
+.prize-result-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prize-result-row strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.prize-result-row span {
+  justify-self: end;
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 900;
+}
+
 .collapsed-summary {
   padding: 14px;
   border: 1px dashed var(--line);
@@ -1131,10 +1289,11 @@ textarea {
   }
 
   button {
-    min-height: 34px;
-    padding: 6px 9px;
-    font-size: 13px;
-    white-space: nowrap;
+    min-height: 32px;
+    padding: 6px 8px;
+    font-size: 12px;
+    line-height: 1.2;
+    white-space: normal;
   }
 
   input,
@@ -1149,26 +1308,40 @@ textarea {
   .header-actions,
   .compact-actions,
   .bulk-actions {
-    display: flex;
-    flex-wrap: nowrap;
     width: 100%;
     justify-content: flex-start;
-    gap: 6px;
-    overflow-x: auto;
-    padding-bottom: 2px;
+    gap: 5px;
+    overflow-x: visible;
+    padding-bottom: 0;
+  }
+
+  .header-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .compact-actions,
+  .bulk-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .bulk-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .header-actions button,
   .compact-actions button,
   .bulk-actions button {
-    flex: 0 0 auto;
-    width: auto;
+    min-width: 0;
+    width: 100%;
+    padding-inline: 4px;
   }
 
   .header-status {
-    flex: 0 0 auto;
+    grid-column: 1 / -1;
     justify-content: center;
-    width: auto;
+    width: 100%;
   }
 
   .mode-switch {
@@ -1183,6 +1356,7 @@ textarea {
   .round-heading {
     align-items: center;
     flex-direction: row;
+    flex-wrap: wrap;
     gap: 8px;
     margin-bottom: 8px;
   }
@@ -1206,36 +1380,64 @@ textarea {
   }
 
   .settings-grid {
-    display: flex;
-    flex-wrap: nowrap;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
-    margin-inline: -10px;
-    overflow-x: auto;
-    padding-inline: 10px;
+    margin-inline: 0;
+    overflow-x: visible;
+    padding-inline: 0;
   }
 
   .settings-grid .number-control {
-    flex: 0 0 104px;
+    min-width: 0;
+  }
+
+  .tournament-settings-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .format-list {
-    grid-template-columns: repeat(3, minmax(168px, 1fr));
-    overflow-x: auto;
-    margin-inline: -10px;
-    padding-inline: 10px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 5px;
+    overflow-x: visible;
+    margin-inline: 0;
+    padding-inline: 0;
+  }
+
+  .format-list button {
+    min-height: 38px;
+    padding: 6px 5px;
+    justify-items: center;
+    text-align: center;
+  }
+
+  .format-list strong {
+    font-size: 12px;
+    line-height: 1.2;
+  }
+
+  .format-list span {
+    display: none;
   }
 
   .slot-editor {
-    grid-template-columns: repeat(2, minmax(128px, 1fr));
-    overflow-x: auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow-x: visible;
   }
 
   .settings-checkbox {
-    flex: 0 0 auto;
+    min-width: 0;
     min-height: 36px;
     align-self: end;
-    padding: 7px 9px;
-    white-space: nowrap;
+    padding: 7px 8px;
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: normal;
+  }
+
+  .settings-checkbox input {
+    width: 14px;
+    min-height: 14px;
   }
 
   .number-control {
@@ -1243,22 +1445,24 @@ textarea {
   }
 
   .number-control span {
-    font-size: 11px;
+    font-size: 10px;
   }
 
   .stepper-control {
-    grid-template-columns: 32px minmax(36px, 1fr) 32px;
-    min-height: 34px;
+    grid-template-columns: 28px minmax(28px, 1fr) 28px;
+    min-height: 32px;
   }
 
   .stepper-control button {
-    width: 32px;
-    min-height: 34px;
-    font-size: 16px;
+    width: 28px;
+    min-height: 32px;
+    font-size: 14px;
   }
 
   .stepper-control input {
-    min-height: 34px;
+    min-height: 32px;
+    padding-inline: 3px;
+    font-size: 14px;
   }
 
   .metric-grid {
@@ -1283,6 +1487,55 @@ textarea {
 
   .bulk-panel textarea {
     min-height: 92px;
+  }
+
+  .prize-draw-box {
+    gap: 6px;
+  }
+
+  .prize-roulette {
+    min-height: 204px;
+  }
+
+  .prize-roulette-wheel {
+    width: 178px;
+    border-width: 6px;
+  }
+
+  .prize-roulette-wheel::after {
+    inset: 46px;
+  }
+
+  .prize-roulette-name {
+    width: 58px;
+    margin-left: -29px;
+    font-size: 9px;
+    transform: rotate(var(--name-angle)) translateY(-70px) rotate(var(--name-angle-reverse));
+  }
+
+  .prize-roulette-center {
+    width: 82px;
+    min-height: 56px;
+  }
+
+  .prize-roulette-center strong {
+    max-width: 66px;
+    font-size: 13px;
+  }
+
+  .prize-textarea {
+    min-height: 82px;
+  }
+
+  .prize-result-row {
+    grid-template-columns: minmax(0, 1fr) minmax(72px, 0.55fr);
+    min-height: 32px;
+    padding: 6px 7px;
+  }
+
+  .prize-result-row strong,
+  .prize-result-row span {
+    font-size: 12px;
   }
 
   .player-list {
@@ -1322,12 +1575,12 @@ textarea {
   }
 
   .tournament-team-fields {
-    grid-template-columns: repeat(4, minmax(96px, 1fr));
-    overflow-x: auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow-x: visible;
   }
 
   .seed-row-fields {
-    grid-template-columns: repeat(2, minmax(112px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .row-fields.single-field {
@@ -1347,7 +1600,7 @@ textarea {
   .special-bar,
   .time-bar,
   .tournament-summary-bar {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: 1fr;
     gap: 8px;
     margin-top: 8px;
     padding: 9px 10px;
@@ -1357,15 +1610,15 @@ textarea {
   .time-bar h2,
   .tournament-summary-bar h2 {
     margin-top: 0;
-    font-size: 19px;
-    white-space: nowrap;
+    font-size: 18px;
+    white-space: normal;
   }
 
   .special-summary,
   .time-summary {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    padding-bottom: 2px;
+    flex-wrap: wrap;
+    overflow-x: visible;
+    padding-bottom: 0;
   }
 
   .special-summary span,
@@ -1379,7 +1632,7 @@ textarea {
   .pending-line,
   .time-alert,
   .time-ok {
-    max-width: 124px;
+    max-width: none;
     min-height: 24px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1390,9 +1643,12 @@ textarea {
     position: sticky;
     top: 0;
     z-index: 10;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 4px;
     margin: 8px -10px 10px;
     padding: 0 10px;
+    overflow-x: visible;
     background: rgba(255, 255, 255, 0.96);
     backdrop-filter: blur(12px);
   }
@@ -1403,6 +1659,9 @@ textarea {
   }
 
   .tab-row span {
+    grid-column: 1 / -1;
+    margin-left: 0;
+    text-align: center;
     font-size: 12px;
   }
 
@@ -1460,9 +1719,10 @@ textarea {
   .add-round-panel {
     justify-content: flex-start;
     gap: 8px;
-    overflow-x: auto;
+    flex-wrap: wrap;
+    overflow-x: visible;
     padding: 10px;
-    white-space: nowrap;
+    white-space: normal;
   }
 }
 
@@ -1472,11 +1732,11 @@ textarea {
   }
 
   .tournament-team-fields {
-    grid-template-columns: repeat(4, minmax(96px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .seed-row-fields {
-    grid-template-columns: repeat(2, minmax(112px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .metric-grid {
@@ -1484,13 +1744,12 @@ textarea {
   }
 
   .tab-row {
-    flex-wrap: nowrap;
-    overflow-x: auto;
+    overflow-x: visible;
     padding-bottom: 0;
   }
 
   .tab-row span {
-    flex: 0 0 auto;
+    grid-column: 1 / -1;
     width: auto;
     margin-left: 0;
   }
