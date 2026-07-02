@@ -412,8 +412,30 @@ textarea {
   gap: 10px;
 }
 
+.prize-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.prize-mode-switch button {
+  min-height: 32px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.prize-mode-switch button.active {
+  border-color: var(--green);
+  color: var(--green);
+  background: var(--soft-green);
+}
+
 .prize-textarea {
   min-height: 92px;
+}
+
+.prize-textarea:focus::placeholder {
+  color: transparent;
 }
 
 .prize-duplicate-option {
@@ -563,6 +585,22 @@ textarea {
   color: var(--green);
   font-size: 13px;
   font-weight: 900;
+}
+
+.mission-result-row {
+  grid-template-columns: minmax(0, 1fr) 66px;
+}
+
+.mission-done-button {
+  min-height: 28px;
+  padding: 4px 7px;
+  font-size: 12px;
+}
+
+.mission-done-button.active {
+  border-color: var(--green);
+  color: var(--green);
+  background: var(--soft-green);
 }
 
 .collapsed-summary {
@@ -1008,6 +1046,57 @@ textarea {
   min-height: 22px;
   background: var(--soft-green);
   color: var(--green);
+}
+
+.match-mission-box {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 66px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba(12, 143, 127, 0.28);
+  border-radius: 6px;
+  background: var(--soft-green);
+}
+
+.match-mission-box > div,
+.mission-result-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.match-mission-box strong,
+.mission-result-text strong {
+  display: block;
+  min-height: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--green);
+  font-size: 12px;
+  line-height: 1.1;
+}
+
+.match-mission-box span,
+.mission-result-text span,
+.match-mission-box em,
+.mission-result-text em {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.match-mission-box em,
+.mission-result-text em {
+  color: var(--orange);
+  font-size: 11px;
 }
 
 .score-row {
@@ -1493,6 +1582,15 @@ textarea {
     gap: 6px;
   }
 
+  .prize-mode-switch {
+    gap: 4px;
+  }
+
+  .prize-mode-switch button {
+    min-height: 30px;
+    padding: 5px;
+  }
+
   .prize-roulette {
     min-height: 204px;
   }
@@ -1536,6 +1634,16 @@ textarea {
   .prize-result-row strong,
   .prize-result-row span {
     font-size: 12px;
+  }
+
+  .mission-result-row {
+    grid-template-columns: minmax(0, 1fr) 56px;
+  }
+
+  .mission-done-button {
+    min-height: 28px;
+    padding: 4px 5px;
+    font-size: 11px;
   }
 
   .player-list {
@@ -1682,6 +1790,17 @@ textarea {
   .score-row {
     grid-template-columns: minmax(0, 1fr) 56px;
     gap: 6px;
+  }
+
+  .match-mission-box {
+    grid-template-columns: minmax(0, 1fr) 56px;
+    gap: 6px;
+    padding: 6px;
+  }
+
+  .match-mission-box span,
+  .mission-result-text span {
+    font-size: 11px;
   }
 
   .read-only-score {

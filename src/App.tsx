@@ -32,7 +32,7 @@ import {
   type PlayerNameLookup,
 } from './playerNames'
 import { createSchedulePrintImages, createTournamentPrintImages } from './printSchedule'
-import { drawPrizeWinners, parsePrizeList } from './prizeDraw'
+import { drawPrizeWinners, parseMissionList, parsePrizeList } from './prizeDraw'
 import type {
   AgeGroup,
   AppMode,
@@ -67,9 +67,13 @@ const getTargetRoundCount = (settings: MatchSettings) => {
 }
 
 const defaultPrizeDrawState: PrizeDrawState = {
+  mode: 'people',
   prizesText: '',
+  missionsText: '',
   allowDuplicateWinners: false,
   results: [],
+  missionResults: [],
+  matchMissions: {},
 }
 
 type StoredState = {
@@ -314,20 +318,45 @@ const normalizeTournamentTeam = (
   active: team.active ?? true,
 })
 
+const normalizePrizeDrawResults = (value: unknown) =>
+  Array.isArray(value)
+    ? value
+        .map((rawResult) => {
+          const result = rawResult as Partial<PrizeDrawState['results'][number]>
+          return {
+            prize: String(result.prize ?? '').trim(),
+            winnerId: String(result.winnerId ?? ''),
+            winnerName: String(result.winnerName ?? '').trim(),
+            reward:
+              result.reward === undefined ? undefined : String(result.reward).trim(),
+            done: Boolean(result.done),
+          }
+        })
+        .filter((result) => result.prize && result.winnerId && result.winnerName)
+    : []
+
+const normalizePrizeDrawResultMap = (value: unknown) => {
+  if (!value || typeof value !== 'object') return {}
+
+  const entries: Array<[string, PrizeDrawState['results'][number]]> = []
+  for (const [matchId, rawResult] of Object.entries(value as Record<string, unknown>)) {
+    const [result] = normalizePrizeDrawResults([rawResult])
+    if (result) entries.push([matchId, result])
+  }
+
+  return Object.fromEntries(entries)
+}
+
 const normalizePrizeDrawState = (
   value: Partial<PrizeDrawState> | undefined,
 ): PrizeDrawState => ({
+  mode: value?.mode === 'mission' ? 'mission' : 'people',
   prizesText: typeof value?.prizesText === 'string' ? value.prizesText : '',
+  missionsText: typeof value?.missionsText === 'string' ? value.missionsText : '',
   allowDuplicateWinners: value?.allowDuplicateWinners ?? false,
-  results: Array.isArray(value?.results)
-    ? value.results
-        .map((result) => ({
-          prize: String(result.prize ?? '').trim(),
-          winnerId: String(result.winnerId ?? ''),
-          winnerName: String(result.winnerName ?? '').trim(),
-        }))
-        .filter((result) => result.prize && result.winnerId && result.winnerName)
-    : [],
+  results: normalizePrizeDrawResults(value?.results),
+  missionResults: normalizePrizeDrawResults(value?.missionResults),
+  matchMissions: normalizePrizeDrawResultMap(value?.matchMissions),
 })
 
 const legacyEnglishTitleCodes = [
@@ -839,14 +868,28 @@ function App() {
     name: playerDisplayName(player, displayNames),
   }))
   const prizeList = parsePrizeList(prizeDraw.prizesText)
+  const missionList = parseMissionList(prizeDraw.missionsText)
+  const activePrizeResults =
+    prizeDraw.mode === 'mission' ? prizeDraw.missionResults : prizeDraw.results
   const drawnPrizeWinnerIds = new Set(
     prizeDraw.results.map((result) => result.winnerId),
+  )
+  const drawnMissionIds = new Set(
+    prizeDraw.missionResults.map((result) => result.winnerId),
   )
   const availableRouletteCandidates = prizeDraw.allowDuplicateWinners
     ? prizeCandidates
     : prizeCandidates.filter((candidate) => !drawnPrizeWinnerIds.has(candidate.id))
-  const isRouletteMode = prizeList.length === 0
-  const rouletteNames = prizeCandidates
+  const availableMissions = missionList.filter((mission) => !drawnMissionIds.has(mission.id))
+  const isRouletteMode = prizeDraw.mode === 'people' && prizeList.length === 0
+  const rouletteItems =
+    prizeDraw.mode === 'mission'
+      ? missionList.map((mission) => ({ id: mission.id, name: mission.number }))
+      : prizeCandidates
+  const availableRouletteCount =
+    prizeDraw.mode === 'mission'
+      ? availableMissions.length
+      : availableRouletteCandidates.length
   const rouletteWheelStyle = {
     '--roulette-rotation': `${rouletteRotation}deg`,
   } as CSSProperties
@@ -1342,6 +1385,62 @@ function App() {
 
   const runRouletteDraw = () => {
     if (isRouletteSpinning) return
+    if (prizeDraw.mode === 'mission') {
+      if (missionList.length === 0) {
+        setNotice('미션 없음')
+        return
+      }
+      if (availableMissions.length === 0) {
+        setNotice('미션 완료')
+        return
+      }
+
+      const mission =
+        availableMissions[
+          Math.min(
+            availableMissions.length - 1,
+            Math.floor(Math.random() * availableMissions.length),
+          )
+        ]
+      const missionIndex = Math.max(
+        0,
+        missionList.findIndex((item) => item.id === mission.id),
+      )
+      const itemAngle = missionList.length > 0 ? 360 / missionList.length : 0
+      const targetRotation = (360 - missionIndex * itemAngle) % 360
+
+      if (rouletteTimerRef.current !== null) {
+        window.clearTimeout(rouletteTimerRef.current)
+      }
+
+      setIsRouletteSpinning(true)
+      setRouletteWinnerName('')
+      setRouletteRotation((current) => {
+        const normalizedCurrent = ((current % 360) + 360) % 360
+        const offset = (targetRotation - normalizedCurrent + 360) % 360
+        return current + 1440 + offset
+      })
+
+      rouletteTimerRef.current = window.setTimeout(() => {
+        const result = {
+          prize: `${mission.number}번`,
+          winnerId: mission.id,
+          winnerName: mission.mission,
+          reward: mission.reward,
+          done: false,
+        }
+        setPrizeDraw((current) => ({
+          ...current,
+          missionResults: [...current.missionResults, result],
+        }))
+        setRouletteWinnerName(mission.number)
+        setIsRouletteSpinning(false)
+        setNotice('미션 당첨')
+        rouletteTimerRef.current = null
+      }, 2200)
+      return
+    }
+
     if (prizeCandidates.length === 0) {
       setNotice('추첨 대상 없음')
       return
@@ -1360,9 +1459,9 @@ function App() {
 
     const winnerIndex = Math.max(
       0,
-      rouletteNames.findIndex((candidate) => candidate.id === result.winnerId),
+      rouletteItems.findIndex((candidate) => candidate.id === result.winnerId),
     )
-    const itemAngle = rouletteNames.length > 0 ? 360 / rouletteNames.length : 0
+    const itemAngle = rouletteItems.length > 0 ? 360 / rouletteItems.length : 0
     const targetRotation = (360 - winnerIndex * itemAngle) % 360
 
     if (rouletteTimerRef.current !== null) {
@@ -1390,7 +1489,7 @@ function App() {
   }
 
   const runPrizeDraw = () => {
-    if (isRouletteMode) {
+    if (prizeDraw.mode === 'mission' || isRouletteMode) {
       runRouletteDraw()
       return
     }
@@ -1419,28 +1518,88 @@ function App() {
       window.clearTimeout(rouletteTimerRef.current)
       rouletteTimerRef.current = null
     }
-    setPrizeDraw((current) => ({ ...current, results: [] }))
+    setPrizeDraw((current) =>
+      current.mode === 'mission'
+        ? { ...current, missionResults: [] }
+        : { ...current, results: [] },
+    )
     setIsRouletteSpinning(false)
     setRouletteWinnerName('')
     setNotice('추첨 초기화됨')
   }
 
   const copyPrizeDrawResults = async () => {
-    if (prizeDraw.results.length === 0) {
+    if (activePrizeResults.length === 0) {
       setNotice('복사할 결과 없음')
       return
     }
 
     try {
       await copyToClipboard(
-        prizeDraw.results
-          .map((result) => `${result.prize} - ${result.winnerName}`)
+        activePrizeResults
+          .map((result) =>
+            prizeDraw.mode === 'mission'
+              ? `${result.prize} - ${result.winnerName} - ${result.reward ?? '상품'} - ${
+                  result.done ? '지급' : '대기'
+                }`
+              : `${result.prize} - ${result.winnerName}`,
+          )
           .join('\n'),
       )
       setNotice('추첨 결과 복사됨')
     } catch {
       setNotice('결과 복사 실패')
     }
+  }
+
+  const toggleMissionPrizeDone = (index: number) => {
+    setPrizeDraw((current) => ({
+      ...current,
+      missionResults: current.missionResults.map((result, resultIndex) =>
+        resultIndex === index ? { ...result, done: !result.done } : result,
+      ),
+    }))
+  }
+
+  const drawMissionForMatch = (matchId: string) => {
+    if (missionList.length === 0) {
+      setNotice('미션 없음')
+      return
+    }
+
+    const mission =
+      missionList[
+        Math.min(missionList.length - 1, Math.floor(Math.random() * missionList.length))
+      ]
+    setPrizeDraw((current) => ({
+      ...current,
+      matchMissions: {
+        ...current.matchMissions,
+        [matchId]: {
+          prize: `${mission.number}번`,
+          winnerId: mission.id,
+          winnerName: mission.mission,
+          reward: mission.reward,
+          done: false,
+        },
+      },
+    }))
+    setNotice(`${mission.number}번 미션`)
+  }
+
+  const toggleMatchMissionDone = (matchId: string) => {
+    setPrizeDraw((current) => {
+      const mission = current.matchMissions[matchId]
+      if (!mission) return current
+
+      return {
+        ...current,
+        matchMissions: {
+          ...current.matchMissions,
+          [matchId]: { ...mission, done: !mission.done },
+        },
+      }
+    })
   }
 
   const mixMatch = (matchId: string) => {
@@ -1931,9 +2090,11 @@ function App() {
               <div>
                 <h2>경품 추첨</h2>
                 <span>
-                  {isRouletteMode
-                    ? `룰렛 ${availableRouletteCandidates.length}/${prizeCandidates.length}명`
-                    : `대상 ${prizeCandidates.length}명 · 경품 ${prizeList.length}개`}
+                  {prizeDraw.mode === 'mission'
+                    ? `미션 ${availableMissions.length}/${missionList.length}개`
+                    : isRouletteMode
+                      ? `룰렛 ${availableRouletteCandidates.length}/${prizeCandidates.length}명`
+                      : `대상 ${prizeCandidates.length}명 · 경품 ${prizeList.length}개`}
                 </span>
               </div>
               <div className="compact-actions">
@@ -1955,11 +2116,32 @@ function App() {
             </div>
 
             <div className="prize-draw-box">
-              <div className="bulk-help">
-                입력 안내: 경품은 한 줄에 하나씩 · 비워두면 참가자 룰렛으로
-                1명씩 추첨
+              <div className="prize-mode-switch" aria-label="추첨 종류">
+                <button
+                  type="button"
+                  className={prizeDraw.mode === 'people' ? 'active' : ''}
+                  onClick={() =>
+                    setPrizeDraw((current) => ({ ...current, mode: 'people' }))
+                  }
+                >
+                  사람
+                </button>
+                <button
+                  type="button"
+                  className={prizeDraw.mode === 'mission' ? 'active' : ''}
+                  onClick={() =>
+                    setPrizeDraw((current) => ({ ...current, mode: 'mission' }))
+                  }
+                >
+                  미션
+                </button>
               </div>
-              {isRouletteMode ? (
+              <div className="bulk-help">
+                {prizeDraw.mode === 'mission'
+                  ? '입력 안내: 번호 / 미션 / 상품 순'
+                  : '입력 안내: 경품은 한 줄에 하나씩 · 비워두면 참가자 룰렛'}
+              </div>
+              {(prizeDraw.mode === 'mission' || isRouletteMode) ? (
                 <div className="prize-roulette" aria-live="polite">
                   <div className="prize-roulette-pointer" />
                   <div
@@ -1968,17 +2150,17 @@ function App() {
                     }`}
                     style={rouletteWheelStyle}
                   >
-                    {rouletteNames.map((candidate, index) => (
+                    {rouletteItems.map((candidate, index) => (
                       <span
                         className="prize-roulette-name"
                         key={candidate.id}
                         style={
                           {
                             '--name-angle': `${
-                              (360 / Math.max(rouletteNames.length, 1)) * index
+                              (360 / Math.max(rouletteItems.length, 1)) * index
                             }deg`,
                             '--name-angle-reverse': `${
-                              (-360 / Math.max(rouletteNames.length, 1)) * index
+                              (-360 / Math.max(rouletteItems.length, 1)) * index
                             }deg`,
                           } as CSSProperties
                         }
@@ -1998,47 +2180,96 @@ function App() {
                     <strong>
                       {isRouletteSpinning
                         ? '...'
-                        : rouletteWinnerName || `${availableRouletteCandidates.length}명`}
+                        : rouletteWinnerName ||
+                          (prizeDraw.mode === 'mission'
+                            ? `${availableRouletteCount}개`
+                            : `${availableRouletteCount}명`)}
                     </strong>
                   </div>
                 </div>
               ) : null}
-              <textarea
-                className="prize-textarea"
-                value={prizeDraw.prizesText}
-                onChange={(event) =>
-                  setPrizeDraw((current) => ({
-                    ...current,
-                    prizesText: event.target.value,
-                  }))
-                }
-                placeholder={'셔틀콕\n그립\n음료 쿠폰'}
-              />
-              <label className="settings-checkbox prize-duplicate-option">
-                <input
-                  type="checkbox"
-                  checked={prizeDraw.allowDuplicateWinners}
+              {prizeDraw.mode === 'mission' ? (
+                <textarea
+                  className="prize-textarea"
+                  value={prizeDraw.missionsText}
                   onChange={(event) =>
                     setPrizeDraw((current) => ({
                       ...current,
-                      allowDuplicateWinners: event.target.checked,
+                      missionsText: event.target.value,
                     }))
                   }
+                  placeholder="번호 / 미션 / 상품"
                 />
-                중복 당첨 허용
-              </label>
-              {prizeDraw.results.length > 0 ? (
+              ) : (
+                <>
+                  <textarea
+                    className="prize-textarea"
+                    value={prizeDraw.prizesText}
+                    onChange={(event) =>
+                      setPrizeDraw((current) => ({
+                        ...current,
+                        prizesText: event.target.value,
+                      }))
+                    }
+                    placeholder="경품 입력창"
+                  />
+                  <label className="settings-checkbox prize-duplicate-option">
+                    <input
+                      type="checkbox"
+                      checked={prizeDraw.allowDuplicateWinners}
+                      onChange={(event) =>
+                        setPrizeDraw((current) => ({
+                          ...current,
+                          allowDuplicateWinners: event.target.checked,
+                        }))
+                      }
+                    />
+                    중복 허용
+                  </label>
+                </>
+              )}
+              {activePrizeResults.length > 0 ? (
                 <div className="prize-result-list">
-                  {prizeDraw.results.map((result, index) => (
-                    <div className="prize-result-row" key={`${result.prize}-${index}`}>
-                      <strong>{result.prize}</strong>
-                      <span>{result.winnerName}</span>
+                  {activePrizeResults.map((result, index) => (
+                    <div
+                      className={`prize-result-row ${
+                        prizeDraw.mode === 'mission' ? 'mission-result-row' : ''
+                      }`}
+                      key={`${result.prize}-${index}`}
+                    >
+                      {prizeDraw.mode === 'mission' ? (
+                        <>
+                          <div className="mission-result-text">
+                            <strong>{result.prize}</strong>
+                            <span>{result.winnerName}</span>
+                            {result.reward ? <em>{result.reward}</em> : null}
+                          </div>
+                          <button
+                            type="button"
+                            className={
+                              result.done
+                                ? 'mission-done-button active'
+                                : 'mission-done-button'
+                            }
+                            onClick={() => toggleMissionPrizeDone(index)}
+                          >
+                            {result.done ? '지급' : '대기'}
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <strong>{result.prize}</strong>
+                          <span>{result.winnerName}</span>
+                        </>
+                      )}
                     </div>
                   ))}
                 </div>
               ) : (
                 <div className="collapsed-summary">
-                  참석 중인 참가자와 스페셜 전체가 추첨 대상입니다.
+                  {prizeDraw.mode === 'mission'
+                    ? '미션 입력 후 대진 카드의 미션 버튼을 누르세요.'
+                    : '참석 중인 참가자와 스페셜 전체가 추첨 대상입니다.'}
                 </div>
               )}
             </div>
@@ -2190,6 +2421,7 @@ function App() {
                         }
                         const isEditingMatch = Boolean(editingMatchIds[match.id])
                         const matchOverrides = matchNameOverrides[match.id] ?? {}
+                        const matchMission = prizeDraw.matchMissions[match.id]
                         const renderTeamName = (team: Team, teamLabel: string) =>
                           isEditingMatch && !isSharedMode ? (
                             <div className="team-name-edit">
@@ -2245,11 +2477,43 @@ function App() {
                                     <button type="button" onClick={() => mixMatch(match.id)}>
                                       믹스
                                     </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => drawMissionForMatch(match.id)}
+                                    >
+                                      미션
+                                    </button>
                                   </>
                                 ) : null}
                                 {match.isSpecial ? <strong>스페셜</strong> : null}
                               </div>
                             </header>
+                            {matchMission ? (
+                              <div className="match-mission-box">
+                                <div>
+                                  <strong>{matchMission.prize}</strong>
+                                  <span>{matchMission.winnerName}</span>
+                                  {matchMission.reward ? (
+                                    <em>{matchMission.reward}</em>
+                                  ) : null}
+                                </div>
+                                {!isSharedMode ? (
+                                  <button
+                                    type="button"
+                                    className={
+                                      matchMission.done
+                                        ? 'mission-done-button active'
+                                        : 'mission-done-button'
+                                    }
+                                    onClick={() => toggleMatchMissionDone(match.id)}
+                                  >
+                                    {matchMission.done ? '지급' : '대기'}
+                                  </button>
+                                ) : (
+                                  <span>{matchMission.done ? '지급' : '대기'}</span>
+                                )}
+                              </div>
+                            ) : null}
                             <div className={`score-row ${isSharedMode ? 'read-only-score' : ''}`}>
                               {renderTeamName(match.teamA, 'A팀')}
                               {isSharedMode ? (

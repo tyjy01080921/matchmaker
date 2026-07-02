@@ -5,11 +5,46 @@ export type PrizeCandidate = {
   name: string
 }
 
+export type MissionDrawItem = {
+  id: string
+  number: string
+  mission: string
+  reward: string
+}
+
 export const parsePrizeList = (text: string) =>
   text
     .split(/\n+/)
     .map((line) => line.trim())
     .filter(Boolean)
+
+export const parseMissionList = (text: string): MissionDrawItem[] =>
+  text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const parts = line
+        .split(/\s*[/,\t]\s*/)
+        .map((part) => part.trim())
+        .filter(Boolean)
+
+      if (parts.length >= 3) {
+        return {
+          id: `${parts[0]}-${parts[1]}-${parts.slice(2).join('-')}`,
+          number: parts[0],
+          mission: parts.slice(1, -1).join(' / '),
+          reward: parts[parts.length - 1],
+        }
+      }
+
+      return {
+        id: `${index + 1}-${line}`,
+        number: `${index + 1}`,
+        mission: line,
+        reward: '상품',
+      }
+    })
 
 export const drawPrizeWinners = (
   prizes: string[],

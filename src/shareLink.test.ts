@@ -33,7 +33,9 @@ const makePayload = (): SharePayload => ({
     },
   },
   prizeDraw: {
+    mode: 'people',
     prizesText: '셔틀콕\n그립',
+    missionsText: '',
     allowDuplicateWinners: false,
     results: [
       {
@@ -42,6 +44,8 @@ const makePayload = (): SharePayload => ({
         winnerName: '참가자 1',
       },
     ],
+    missionResults: [],
+    matchMissions: {},
   },
 })
 

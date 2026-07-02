@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { drawPrizeWinners, parsePrizeList, type PrizeCandidate } from './prizeDraw'
+import {
+  drawPrizeWinners,
+  parseMissionList,
+  parsePrizeList,
+  type PrizeCandidate,
+} from './prizeDraw'
 
 const candidates: PrizeCandidate[] = [
   { id: 'a', name: '참가자 1' },
@@ -13,6 +18,25 @@ describe('parsePrizeList', () => {
       '셔틀콕',
       '그립',
       '음료 쿠폰',
+    ])
+  })
+})
+
+describe('parseMissionList', () => {
+  it('reads number, mission, and reward from slash or comma separated lines', () => {
+    expect(parseMissionList('1 / 다음 경기 이기기 / 그립\n2, 랠리 10회, 음료')).toEqual([
+      {
+        id: '1-다음 경기 이기기-그립',
+        number: '1',
+        mission: '다음 경기 이기기',
+        reward: '그립',
+      },
+      {
+        id: '2-랠리 10회-음료',
+        number: '2',
+        mission: '랠리 10회',
+        reward: '음료',
+      },
     ])
   })
 })

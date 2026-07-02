@@ -86,12 +86,18 @@ export type PrizeDrawResult = {
   prize: string
   winnerId: string
   winnerName: string
+  reward?: string
+  done?: boolean
 }
 
 export type PrizeDrawState = {
+  mode: 'people' | 'mission'
   prizesText: string
+  missionsText: string
   allowDuplicateWinners: boolean
   results: PrizeDrawResult[]
+  missionResults: PrizeDrawResult[]
+  matchMissions: Record<string, PrizeDrawResult>
 }
 
 export type TournamentPhase = 'group' | 'knockout' | 'third-place' | 'team-battle'
