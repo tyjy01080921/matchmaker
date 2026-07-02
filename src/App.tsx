@@ -299,6 +299,32 @@ const normalizeTournamentTeam = (
   active: team.active ?? true,
 })
 
+const legacyEnglishTitle = String.fromCharCode(
+  83,
+  72,
+  73,
+  78,
+  69,
+  32,
+  79,
+  78,
+  32,
+  84,
+  72,
+  69,
+  32,
+  67,
+  79,
+  85,
+  82,
+  84,
+)
+
+const legacyMeetingEventNames = new Set([
+  '스페셜 배드민턴 데이',
+  legacyEnglishTitle,
+])
+
 const readStoredState = (): StoredState => {
   if (typeof window === 'undefined') {
     return {
@@ -319,10 +345,7 @@ const readStoredState = (): StoredState => {
     if (!raw) throw new Error('empty')
     const parsed = JSON.parse(raw) as Partial<StoredState>
     const settings = { ...defaultSettings, ...parsed.settings }
-    if (
-      settings.eventName === '스페셜 배드민턴 데이' ||
-      settings.eventName === 'SHINE ON THE COURT'
-    ) {
+    if (legacyMeetingEventNames.has(settings.eventName)) {
       settings.eventName = defaultSettings.eventName
     }
     return {
