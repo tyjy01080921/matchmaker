@@ -1,8 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 import amaLogo from './assets/ama-logo.png'
-import { defaultPlayers, defaultSettings } from './defaultData'
-import { calculateStats, generateSchedule } from './matchmaker'
+import {
+  defaultPlayers,
+  defaultSettings,
+  defaultTournamentSettings,
+  defaultTournamentTeams,
+} from './defaultData'
+import {
+  calculateStats,
+  generateSchedule,
+  generateTournamentSchedule,
+} from './matchmaker'
 import {
   decodeSharePayload,
   getShareTokenFromLocation,
@@ -16,9 +25,10 @@ import {
   playerDisplayName,
   type PlayerNameLookup,
 } from './playerNames'
-import { createSchedulePrintImages } from './printSchedule'
+import { createSchedulePrintImages, createTournamentPrintImages } from './printSchedule'
 import type {
   AgeGroup,
+  AppMode,
   Gender,
   Level,
   Match,
@@ -29,6 +39,12 @@ import type {
   ResultsByMatch,
   Schedule,
   Team,
+  TournamentFormat,
+  TournamentMatch,
+  TournamentMatchResult,
+  TournamentResultsByMatch,
+  TournamentSettings,
+  TournamentTeam,
 } from './types'
 
 const STORAGE_KEY = 'badminton-matchmaker-v1'
@@ -43,11 +59,15 @@ const getTargetRoundCount = (settings: MatchSettings) => {
 }
 
 type StoredState = {
+  appMode: AppMode
   players: Player[]
   settings: MatchSettings
   results: ResultsByMatch
   pairMixes: Record<string, number>
   matchNameOverrides: MatchNameOverrides
+  tournamentTeams: TournamentTeam[]
+  tournamentSettings: TournamentSettings
+  tournamentResults: TournamentResultsByMatch
 }
 
 const levelLabels: Record<Level, string> = {
@@ -68,23 +88,47 @@ const genderLabels: Record<Gender, string> = {
   none: '무관',
 }
 
+const tournamentFormatLabels: Record<TournamentFormat, string> = {
+  'group-knockout': '조별+넉아웃',
+  knockout: '넉아웃',
+  'team-battle': '단체전',
+}
+
+const tournamentFormatDescriptions: Record<TournamentFormat, string> = {
+  'group-knockout': '조별 풀리그 후 상위 팀 진출',
+  knockout: '시드와 부전승 기반 토너먼트',
+  'team-battle': '팀 대 팀 세부 경기 합산',
+}
+
+const tournamentPhaseLabels: Record<TournamentMatch['phase'], string> = {
+  group: '조별',
+  knockout: '넉아웃',
+  'third-place': '3·4위',
+  'team-battle': '단체전',
+}
+
 const legacySampleNames: Record<string, string> = {
-  'guest-special': '스페셜 1',
-  'p-minsu': '참가자 1',
-  'p-jiyeon': '참가자 2',
-  'p-taeho': '참가자 3',
-  'p-soobin': '참가자 4',
-  'p-hyunwoo': '참가자 5',
-  'p-nayoung': '참가자 6',
-  'p-junho': '참가자 7',
-  'p-eunji': '참가자 8',
-  'p-doyoon': '참가자 9',
-  'p-yuna': '참가자 10',
-  'p-chulsoo': '참가자 11',
-  'p-harin': '참가자 12',
+  'guest-ko': '참가자 1',
+  'guest-shin': '참가자 2',
+  'guest-special': '참가자 3',
+  'p-minsu': '참가자 4',
+  'p-jiyeon': '참가자 5',
+  'p-taeho': '참가자 6',
+  'p-soobin': '참가자 7',
+  'p-hyunwoo': '참가자 8',
+  'p-nayoung': '참가자 9',
+  'p-junho': '참가자 10',
+  'p-eunji': '참가자 11',
+  'p-doyoon': '참가자 12',
+  'p-yuna': '참가자 13',
+  'p-chulsoo': '참가자 14',
+  'p-harin': '참가자 15',
 }
 
 const legacySampleNameSet = new Set([
+  '고성현',
+  '신백철',
+  '스페셜 1',
   '스페셜 게스트',
   '스페셜 선수',
   '김민수',
@@ -165,14 +209,108 @@ const normalizeStoredPlayer = (player: Partial<Player>): Player => {
   return normalized
 }
 
+const normalizeAppMode = (value: unknown): AppMode =>
+  value === 'tournament' ? 'tournament' : 'meeting'
+
+const normalizeTournamentFormat = (value: unknown): TournamentFormat => {
+  if (
+    value === 'group-knockout' ||
+    value === 'knockout' ||
+    value === 'team-battle'
+  ) {
+    return value
+  }
+
+  return 'knockout'
+}
+
+const normalizePositiveInteger = (
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+) => {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+  return Math.min(max, Math.max(min, Math.floor(numeric)))
+}
+
+const normalizeTournamentSeed = (value: unknown) => {
+  if (value === null || value === undefined || value === '') return null
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return null
+  return Math.min(999, Math.floor(numeric))
+}
+
+const normalizeTournamentSettings = (
+  settings: Partial<TournamentSettings> | undefined,
+): TournamentSettings => {
+  const rawSlots = Array.isArray(settings?.teamBattleSlots)
+    ? settings.teamBattleSlots
+    : defaultTournamentSettings.teamBattleSlots
+  const teamBattleSlots = [...rawSlots, ...defaultTournamentSettings.teamBattleSlots]
+    .map((slot) => String(slot).trim())
+    .filter(Boolean)
+    .slice(0, 5)
+
+  return {
+    ...defaultTournamentSettings,
+    ...settings,
+    format: normalizeTournamentFormat(settings?.format),
+    courtCount: normalizePositiveInteger(
+      settings?.courtCount,
+      defaultTournamentSettings.courtCount,
+      1,
+      12,
+    ),
+    groupCount: normalizePositiveInteger(
+      settings?.groupCount,
+      defaultTournamentSettings.groupCount,
+      1,
+      16,
+    ),
+    advancePerGroup: normalizePositiveInteger(
+      settings?.advancePerGroup,
+      defaultTournamentSettings.advancePerGroup,
+      1,
+      8,
+    ),
+    includeThirdPlace: settings?.includeThirdPlace ?? true,
+    teamBattleMatchCount: normalizePositiveInteger(
+      settings?.teamBattleMatchCount,
+      defaultTournamentSettings.teamBattleMatchCount,
+      1,
+      5,
+    ),
+    teamBattleSlots,
+  }
+}
+
+const normalizeTournamentTeam = (
+  team: Partial<TournamentTeam>,
+  index: number,
+): TournamentTeam => ({
+  id: team.id ?? makeId(),
+  name: team.name?.trim() || `${index + 1}팀`,
+  playerNames: team.playerNames?.trim() || '',
+  level: normalizeLevel(team.level),
+  gender: normalizeGender(team.gender),
+  seed: normalizeTournamentSeed(team.seed),
+  active: team.active ?? true,
+})
+
 const readStoredState = (): StoredState => {
   if (typeof window === 'undefined') {
     return {
+      appMode: 'meeting',
       players: defaultPlayers,
       settings: defaultSettings,
       results: {},
       pairMixes: {},
       matchNameOverrides: {},
+      tournamentTeams: defaultTournamentTeams,
+      tournamentSettings: defaultTournamentSettings,
+      tournamentResults: {},
     }
   }
 
@@ -181,10 +319,14 @@ const readStoredState = (): StoredState => {
     if (!raw) throw new Error('empty')
     const parsed = JSON.parse(raw) as Partial<StoredState>
     const settings = { ...defaultSettings, ...parsed.settings }
-    if (settings.eventName === '스페셜 배드민턴 데이') {
+    if (
+      settings.eventName === '스페셜 배드민턴 데이' ||
+      settings.eventName === 'SHINE ON THE COURT'
+    ) {
       settings.eventName = defaultSettings.eventName
     }
     return {
+      appMode: normalizeAppMode(parsed.appMode),
       players: parsed.players?.length
         ? parsed.players.map((player) => normalizeStoredPlayer(player))
         : defaultPlayers,
@@ -192,19 +334,31 @@ const readStoredState = (): StoredState => {
       results: parsed.results ?? {},
       pairMixes: parsed.pairMixes ?? {},
       matchNameOverrides: parsed.matchNameOverrides ?? {},
+      tournamentTeams: parsed.tournamentTeams?.length
+        ? parsed.tournamentTeams.map((team, index) =>
+            normalizeTournamentTeam(team, index),
+          )
+        : defaultTournamentTeams,
+      tournamentSettings: normalizeTournamentSettings(parsed.tournamentSettings),
+      tournamentResults: parsed.tournamentResults ?? {},
     }
   } catch {
     return {
+      appMode: 'meeting',
       players: defaultPlayers,
       settings: defaultSettings,
       results: {},
       pairMixes: {},
       matchNameOverrides: {},
+      tournamentTeams: defaultTournamentTeams,
+      tournamentSettings: defaultTournamentSettings,
+      tournamentResults: {},
     }
   }
 }
 
 const storedStateFromSharePayload = (payload: SharePayload): StoredState => ({
+  appMode: normalizeAppMode(payload.appMode),
   players: payload.players.length
     ? payload.players.map((player) => normalizeStoredPlayer(player))
     : defaultPlayers,
@@ -212,6 +366,13 @@ const storedStateFromSharePayload = (payload: SharePayload): StoredState => ({
   results: payload.results ?? {},
   pairMixes: payload.pairMixes ?? {},
   matchNameOverrides: payload.matchNameOverrides ?? {},
+  tournamentTeams: payload.tournamentTeams?.length
+    ? payload.tournamentTeams.map((team, index) =>
+        normalizeTournamentTeam(team, index),
+      )
+    : defaultTournamentTeams,
+  tournamentSettings: normalizeTournamentSettings(payload.tournamentSettings),
+  tournamentResults: payload.tournamentResults ?? {},
 })
 
 const readSharedState = (): StoredState | null => {
@@ -263,6 +424,16 @@ const makeGuestPlayer = (index: number): Player => ({
   guestGameLimit: 0,
 })
 
+const makeTournamentTeam = (index: number): TournamentTeam => ({
+  id: makeId(),
+  name: `${index}팀`,
+  playerNames: '',
+  level: 'B',
+  gender: 'none',
+  seed: null,
+  active: true,
+})
+
 const hasScore = (result?: MatchResult) =>
   Boolean(result?.teamAScore || result?.teamBScore)
 
@@ -282,6 +453,25 @@ const winnerLabel = (
     return '대기'
   }
   return a > b ? matchTeamDisplayName(match.teamA) : matchTeamDisplayName(match.teamB)
+}
+
+const tournamentHasScore = (result?: TournamentMatchResult) =>
+  Boolean(result?.teamAScore || result?.teamBScore)
+
+const tournamentWinnerTeamId = (
+  match: TournamentMatch,
+  result: TournamentMatchResult | undefined,
+) => {
+  if (match.isBye) return match.teamAId ?? match.teamBId
+  if (!match.teamAId || !match.teamBId) return undefined
+
+  const a = Number(result?.teamAScore)
+  const b = Number(result?.teamBScore)
+  if (!result?.completed || !Number.isFinite(a) || !Number.isFinite(b) || a === b) {
+    return undefined
+  }
+
+  return a > b ? match.teamAId : match.teamBId
 }
 
 const formatDuration = (minutes: number) => {
@@ -402,6 +592,62 @@ const parseBulkPlayers = (text: string): Player[] =>
       })
     })
 
+const tournamentGenderTokens = ['남', '남자', '여', '여자', 'male', 'female', '무관', '혼성', 'mixed']
+
+const normalizeTournamentTeamGender = (value: unknown): Gender => {
+  if (value === '혼성' || value === 'mixed') return 'none'
+  return normalizeGender(value)
+}
+
+const parseBulkTournamentTeams = (text: string): TournamentTeam[] =>
+  text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const commaParts = line.split(',').map((part) => part.trim()).filter(Boolean)
+      const fields =
+        commaParts.length > 1
+          ? commaParts
+          : line.split(/[\s,\t]+/).map((part) => part.trim()).filter(Boolean)
+      const metadataFields = fields.slice(1)
+      const seedIndex = metadataFields.findIndex((field) => /^\d+$/.test(field))
+      const levelIndex = metadataFields.findIndex((field) =>
+        (['A', 'B', 'C', 'D'] as string[]).includes(field.toUpperCase()),
+      )
+      const genderIndex = metadataFields.findIndex((field) =>
+        tournamentGenderTokens.includes(field.toLowerCase()),
+      )
+      const roster = metadataFields
+        .filter(
+          (_, fieldIndex) =>
+            fieldIndex !== seedIndex &&
+            fieldIndex !== levelIndex &&
+            fieldIndex !== genderIndex,
+        )
+        .join(', ')
+
+      return normalizeTournamentTeam(
+        {
+          id: makeId(),
+          name: fields[0],
+          playerNames: roster,
+          level:
+            levelIndex >= 0
+              ? normalizeLevel(metadataFields[levelIndex].toUpperCase())
+              : 'B',
+          gender:
+            genderIndex >= 0
+              ? normalizeTournamentTeamGender(metadataFields[genderIndex].toLowerCase())
+              : 'none',
+          seed:
+            seedIndex >= 0 ? normalizeTournamentSeed(metadataFields[seedIndex]) : null,
+          active: true,
+        },
+        index,
+      )
+    })
+
 type NumberStepperProps = {
   label: string
   max: number
@@ -458,6 +704,7 @@ function App() {
     }
   }, [])
   const initialState = initialContext.state
+  const [appMode, setAppMode] = useState<AppMode>(initialState.appMode)
   const [players, setPlayers] = useState<Player[]>(initialState.players)
   const [settings, setSettings] = useState<MatchSettings>(initialState.settings)
   const [results, setResults] = useState<ResultsByMatch>(initialState.results)
@@ -467,13 +714,26 @@ function App() {
   const [matchNameOverrides, setMatchNameOverrides] = useState<MatchNameOverrides>(
     initialState.matchNameOverrides,
   )
+  const [tournamentTeams, setTournamentTeams] = useState<TournamentTeam[]>(
+    initialState.tournamentTeams,
+  )
+  const [tournamentSettings, setTournamentSettings] = useState<TournamentSettings>(
+    initialState.tournamentSettings,
+  )
+  const [tournamentResults, setTournamentResults] = useState<TournamentResultsByMatch>(
+    initialState.tournamentResults,
+  )
   const [isSharedMode, setIsSharedMode] = useState(initialContext.isShared)
   const [view, setView] = useState<'schedule' | 'stats'>('schedule')
+  const [tournamentView, setTournamentView] = useState<'progress' | 'board'>('progress')
   const [notice, setNotice] = useState(initialContext.isShared ? '공유본' : '저장됨')
   const [playersOpen, setPlayersOpen] = useState(true)
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulkText, setBulkText] = useState('')
+  const [tournamentBulkOpen, setTournamentBulkOpen] = useState(false)
+  const [tournamentBulkText, setTournamentBulkText] = useState('')
   const [printImageUrls, setPrintImageUrls] = useState<string[]>([])
+  const [tournamentPrintImageUrls, setTournamentPrintImageUrls] = useState<string[]>([])
   const [editingMatchIds, setEditingMatchIds] = useState<Record<string, boolean>>({})
   const [matchNameDrafts, setMatchNameDrafts] = useState<MatchNameOverrides>({})
 
@@ -489,6 +749,19 @@ function App() {
   const stats = useMemo(
     () => calculateStats(players, schedule, results, matchNameOverrides),
     [players, schedule, results, matchNameOverrides],
+  )
+  const tournamentSchedule = useMemo(
+    () =>
+      generateTournamentSchedule(
+        tournamentTeams,
+        tournamentSettings,
+        tournamentResults,
+      ),
+    [tournamentTeams, tournamentSettings, tournamentResults],
+  )
+  const tournamentTeamLookup = useMemo(
+    () => new Map(tournamentTeams.map((team) => [team.id, team])),
+    [tournamentTeams],
   )
 
   const activePlayers = players.filter((player) => player.active && player.name.trim())
@@ -510,6 +783,34 @@ function App() {
   const inTimeGameSlots = Math.min(totalGameSlots, EVENT_LIMIT_ROUNDS)
   const overtimeGameSlots = Math.max(totalGameSlots - EVENT_LIMIT_ROUNDS, 0)
   const estimatedMinutes = totalGameSlots * GAME_SLOT_MINUTES
+  const activeTournamentTeams = tournamentTeams.filter(
+    (team) => team.active && team.name.trim(),
+  )
+  const seededTournamentTeams = tournamentTeams.filter((team) => team.seed !== null)
+  const completedTournamentMatches = tournamentSchedule.matches.filter(
+    (match) => tournamentWinnerTeamId(match, tournamentResults[match.id]),
+  ).length
+  const totalTournamentMatches = tournamentSchedule.matches.length
+  const nextTournamentMatch = tournamentSchedule.matches.find(
+    (match) =>
+      !match.isBye &&
+      match.teamAId &&
+      match.teamBId &&
+      !tournamentWinnerTeamId(match, tournamentResults[match.id]),
+  )
+  const tournamentRounds = useMemo(() => {
+    const grouped = new Map<number, TournamentMatch[]>()
+    for (const match of tournamentSchedule.matches) {
+      grouped.set(match.round, [...(grouped.get(match.round) ?? []), match])
+    }
+
+    return Array.from(grouped.entries())
+      .sort(([left], [right]) => left - right)
+      .map(([round, matches]) => ({
+        round,
+        matches: [...matches].sort((a, b) => a.order - b.order),
+      }))
+  }, [tournamentSchedule.matches])
 
   useEffect(() => {
     if (isSharedMode) return
@@ -517,15 +818,30 @@ function App() {
     window.localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
+        appMode,
         players,
         settings,
         results,
         pairMixes,
         matchNameOverrides,
+        tournamentTeams,
+        tournamentSettings,
+        tournamentResults,
       }),
     )
     setNotice('저장됨')
-  }, [isSharedMode, players, settings, results, pairMixes, matchNameOverrides])
+  }, [
+    appMode,
+    isSharedMode,
+    players,
+    settings,
+    results,
+    pairMixes,
+    matchNameOverrides,
+    tournamentTeams,
+    tournamentSettings,
+    tournamentResults,
+  ])
 
   useEffect(() => {
     let currentShareToken = getShareTokenFromLocation(window.location)
@@ -543,12 +859,17 @@ function App() {
 
       currentShareToken = nextShareToken
       setIsSharedMode(true)
+      setAppMode(sharedState.appMode)
       setPlayers(sharedState.players)
       setSettings(sharedState.settings)
       setResults(sharedState.results)
       setPairMixes(sharedState.pairMixes)
       setMatchNameOverrides(sharedState.matchNameOverrides)
+      setTournamentTeams(sharedState.tournamentTeams)
+      setTournamentSettings(sharedState.tournamentSettings)
+      setTournamentResults(sharedState.tournamentResults)
       setView('schedule')
+      setTournamentView('progress')
       setNotice('공유본')
     }
 
@@ -569,12 +890,139 @@ function App() {
     )
   }
 
+  const setAppModeAndNotice = (mode: AppMode) => {
+    setAppMode(mode)
+    setNotice(mode === 'meeting' ? '모임 모드' : '대회 모드')
+  }
+
+  const updateTournamentSettings = (patch: Partial<TournamentSettings>) => {
+    setTournamentSettings((current) => normalizeTournamentSettings({ ...current, ...patch }))
+    setTournamentResults({})
+    setNotice('대회 설정 변경됨')
+  }
+
+  const updateTournamentTeam = (id: string, patch: Partial<TournamentTeam>) => {
+    setTournamentTeams((current) =>
+      current.map((team, index) =>
+        team.id === id ? normalizeTournamentTeam({ ...team, ...patch }, index) : team,
+      ),
+    )
+    if (patch.seed !== undefined || patch.active !== undefined) {
+      setTournamentResults({})
+    }
+  }
+
+  const setTournamentTeamCount = (targetCount: number) => {
+    setTournamentTeams((current) => {
+      if (targetCount === current.length) return current
+
+      return targetCount > current.length
+        ? [
+            ...current,
+            ...Array.from({ length: targetCount - current.length }, (_, index) =>
+              makeTournamentTeam(current.length + index + 1),
+            ),
+          ]
+        : current.slice(0, targetCount)
+    })
+    setTournamentResults({})
+    setNotice('팀 수 변경됨')
+  }
+
+  const setTournamentSeedCount = (targetCount: number) => {
+    setTournamentTeams((current) => {
+      const normalizedCount = Math.min(targetCount, current.length)
+      return current.map((team, index) => ({
+        ...team,
+        seed: index < normalizedCount ? index + 1 : null,
+      }))
+    })
+    setTournamentResults({})
+    setNotice('시드 수 변경됨')
+  }
+
+  const addTournamentTeam = () => {
+    setTournamentTeamCount(tournamentTeams.length + 1)
+  }
+
+  const removeTournamentTeam = (id: string) => {
+    setTournamentTeams((current) => current.filter((team) => team.id !== id))
+    setTournamentResults({})
+    setNotice('팀 삭제됨')
+  }
+
+  const updateTournamentResult = (
+    matchId: string,
+    patch: Partial<TournamentMatchResult>,
+  ) => {
+    setTournamentResults((current) => {
+      const previous = current[matchId] ?? {
+        teamAScore: '',
+        teamBScore: '',
+        completed: false,
+        note: '',
+      }
+      const next = { ...previous, ...patch }
+      const a = Number(next.teamAScore)
+      const b = Number(next.teamBScore)
+      if (
+        (patch.teamAScore !== undefined || patch.teamBScore !== undefined) &&
+        next.teamAScore !== '' &&
+        next.teamBScore !== '' &&
+        Number.isFinite(a) &&
+        Number.isFinite(b) &&
+        a !== b
+      ) {
+        next.completed = true
+      }
+      return { ...current, [matchId]: next }
+    })
+  }
+
+  const resetTournament = () => {
+    const confirmed = window.confirm(
+      '대회 팀, 설정, 결과가 기본값으로 돌아갑니다.\n계속 초기화할까요?',
+    )
+    if (!confirmed) return
+
+    setTournamentTeams(defaultTournamentTeams)
+    setTournamentSettings(defaultTournamentSettings)
+    setTournamentResults({})
+    setTournamentView('progress')
+    setNotice('대회 초기화됨')
+  }
+
   const matchPlayerName = (match: Match, player: Player) =>
     matchNameOverrides[match.id]?.[player.id]?.trim() ||
     playerDisplayName(player, displayNames)
 
   const matchTeamName = (match: Match, team: Team) =>
     team.map((player) => matchPlayerName(match, player)).join(' + ')
+
+  const tournamentTeamName = (teamId: string | undefined) =>
+    teamId ? tournamentTeamLookup.get(teamId)?.name ?? '팀 없음' : '대기'
+
+  const tournamentTeamRoster = (teamId: string | undefined) =>
+    teamId ? tournamentTeamLookup.get(teamId)?.playerNames.trim() ?? '' : ''
+
+  const tournamentSideName = (
+    match: TournamentMatch,
+    side: 'A' | 'B',
+  ) => {
+    const teamId = side === 'A' ? match.teamAId : match.teamBId
+    const source = side === 'A' ? match.sourceA : match.sourceB
+    if (teamId) return tournamentTeamName(teamId)
+    return source ?? '대기'
+  }
+
+  const tournamentWinnerLabel = (
+    match: TournamentMatch,
+    result: TournamentMatchResult | undefined,
+  ) => {
+    const winnerId = tournamentWinnerTeamId(match, result)
+    if (winnerId) return tournamentTeamName(winnerId)
+    return match.isBye ? '부전승' : '대기'
+  }
 
   const updateMatchNameDraft = (
     matchId: string,
@@ -780,6 +1228,21 @@ function App() {
     setNotice(`${parsedPlayers.length}명 입력됨`)
   }
 
+  const applyBulkTournamentTeams = (mode: 'append' | 'replace') => {
+    const parsedTeams = parseBulkTournamentTeams(tournamentBulkText)
+    if (parsedTeams.length === 0) {
+      setNotice('추가할 팀 없음')
+      return
+    }
+
+    setTournamentTeams((current) =>
+      mode === 'replace' ? parsedTeams : [...current, ...parsedTeams],
+    )
+    setTournamentResults({})
+    setTournamentBulkText('')
+    setNotice(`${parsedTeams.length}팀 입력됨`)
+  }
+
   const mixMatch = (matchId: string) => {
     setPairMixes((current) => ({
       ...current,
@@ -798,11 +1261,15 @@ function App() {
       const sharePayload: SharePayload = {
         version: 1,
         generatedAt: new Date().toISOString(),
+        appMode,
         players,
         settings,
         results,
         pairMixes,
         matchNameOverrides,
+        tournamentTeams,
+        tournamentSettings,
+        tournamentResults,
       }
       await copyToClipboard(makeShareUrl(window.location.href, sharePayload))
       setNotice('공유 링크 복사됨')
@@ -846,15 +1313,54 @@ function App() {
     saveScheduleImages(printImageUrls)
   }
 
+  const saveTournamentScheduleImages = (imageUrls: string[]) => {
+    const baseName = sanitizeFilename(`${defaultSettings.eventName}-대회`)
+    imageUrls.forEach((imageUrl, index) => {
+      downloadImage(imageUrl, `${baseName}-대진표-${index + 1}.svg`)
+    })
+    setNotice(`대회 대진표 저장 ${imageUrls.length}장`)
+  }
+
+  const handlePrintTournament = () => {
+    try {
+      const imageUrls = createTournamentPrintImages({
+        generatedAt: new Date(),
+        results: tournamentResults,
+        schedule: tournamentSchedule,
+        settings: tournamentSettings,
+        teams: tournamentTeams,
+        title: defaultSettings.eventName,
+      })
+
+      setTournamentPrintImageUrls(imageUrls)
+      saveTournamentScheduleImages(imageUrls)
+    } catch {
+      setNotice('대회 대진표 저장 실패')
+    }
+  }
+
+  const savePreparedTournamentScheduleImages = () => {
+    if (tournamentPrintImageUrls.length === 0) {
+      handlePrintTournament()
+      return
+    }
+
+    saveTournamentScheduleImages(tournamentPrintImageUrls)
+  }
+
   const useSharedCopy = () => {
     window.localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
+        appMode,
         players,
         settings,
         results,
         pairMixes,
         matchNameOverrides,
+        tournamentTeams,
+        tournamentSettings,
+        tournamentResults,
       }),
     )
     window.history.replaceState(null, '', getBaseUrl())
@@ -866,42 +1372,50 @@ function App() {
     window.location.href = getBaseUrl()
   }
 
+  const renderTournamentSide = (match: TournamentMatch, side: 'A' | 'B') => {
+    const teamId = side === 'A' ? match.teamAId : match.teamBId
+    const roster = tournamentTeamRoster(teamId)
+
+    return (
+      <div className={`tournament-side ${teamId ? '' : 'pending-side'}`}>
+        <strong>{tournamentSideName(match, side)}</strong>
+        {roster ? <span>{roster}</span> : null}
+      </div>
+    )
+  }
+
   return (
     <div className="app">
       <header className="app-header">
         <div className="brand-block">
           <img className="brand-logo" src={amaLogo} alt="" aria-hidden="true" />
           <div>
-            {isSharedMode ? (
-              <span className="eyebrow">A.M.A Match Maker</span>
-            ) : (
-              <label className="eyebrow" htmlFor="eventName">
-                A.M.A Match Maker
-              </label>
-            )}
-            {isSharedMode ? (
-              <h1 className="event-title static-title">{settings.eventName}</h1>
-            ) : (
-              <input
-                id="eventName"
-                className="event-title"
-                value={settings.eventName}
-                onChange={(event) =>
-                  setSettings((current) => ({
-                    ...current,
-                    eventName: event.target.value,
-                  }))
-                }
-              />
-            )}
+            <h1 className="app-title">A.M.A Match Maker Pro</h1>
           </div>
+        </div>
+
+        <div className="mode-switch" aria-label="운영 모드">
+          <button
+            type="button"
+            className={appMode === 'meeting' ? 'active' : ''}
+            onClick={() => setAppModeAndNotice('meeting')}
+          >
+            모임
+          </button>
+          <button
+            type="button"
+            className={appMode === 'tournament' ? 'active' : ''}
+            onClick={() => setAppModeAndNotice('tournament')}
+          >
+            대회
+          </button>
         </div>
 
         <div className="header-actions">
           {isSharedMode ? (
             <>
               <button type="button" className="primary-action" onClick={useSharedCopy}>
-                내 대진 편집
+                {appMode === 'meeting' ? '내 대진 편집' : '내 대회 편집'}
               </button>
               <button type="button" onClick={openMySchedule}>
                 새 대진
@@ -909,12 +1423,15 @@ function App() {
               <button type="button" onClick={handleCopyShareLink}>
                 공유 링크 복사
               </button>
-              <button type="button" onClick={handlePrintSchedule}>
+              <button
+                type="button"
+                onClick={appMode === 'meeting' ? handlePrintSchedule : handlePrintTournament}
+              >
                 대진표 저장
               </button>
               <span className="header-status">{notice}</span>
             </>
-          ) : (
+          ) : appMode === 'meeting' ? (
             <>
               <button
                 type="button"
@@ -933,10 +1450,36 @@ function App() {
                 대진표 저장
               </button>
             </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="primary-action"
+                onClick={() => setTournamentView('progress')}
+              >
+                진행 화면
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTournamentResults({})
+                  setNotice('대회 결과 초기화됨')
+                }}
+              >
+                결과 초기화
+              </button>
+              <button type="button" onClick={handleCopyShareLink}>
+                공유 링크 복사
+              </button>
+              <button type="button" onClick={handlePrintTournament}>
+                대진표 저장
+              </button>
+            </>
           )}
         </div>
       </header>
 
+      {appMode === 'meeting' ? (
       <main className={`app-shell ${isSharedMode ? 'shared-shell' : ''}`}>
         {!isSharedMode ? (
         <aside className="control-panel">
@@ -1043,10 +1586,13 @@ function App() {
               <>
                 {bulkOpen ? (
                   <div className="bulk-panel">
+                    <div className="bulk-help">
+                      입력 순서: 이름 레벨 성별 연령대 · 예: 참가자 1 A 남 30대
+                    </div>
                     <textarea
                       value={bulkText}
                       onChange={(event) => setBulkText(event.target.value)}
-                      placeholder={'참가자 1 A 남 30대\n참가자 2 B 여 40대\n고성현 스페셜'}
+                      placeholder={'참가자 1 A 남 30대\n참가자 2 B 여 40대\n참가자 3 스페셜'}
                     />
                     <div className="bulk-actions">
                       <button type="button" onClick={() => applyBulkPlayers('append')}>
@@ -1532,6 +2078,679 @@ function App() {
           )}
         </section>
       </main>
+      ) : (
+        <main className={`app-shell tournament-shell ${isSharedMode ? 'shared-shell' : ''}`}>
+          {!isSharedMode ? (
+            <aside className="control-panel tournament-panel">
+              <section className="panel-section">
+                <div className="section-heading">
+                  <h2>대회 설정</h2>
+                  <span>{notice}</span>
+                </div>
+
+                <div className="format-list" aria-label="대회 진행 방식">
+                  {(Object.keys(tournamentFormatLabels) as TournamentFormat[]).map(
+                    (format) => (
+                      <button
+                        type="button"
+                        className={
+                          tournamentSettings.format === format ? 'active' : ''
+                        }
+                        key={format}
+                        onClick={() => updateTournamentSettings({ format })}
+                      >
+                        <strong>{tournamentFormatLabels[format]}</strong>
+                        <span>{tournamentFormatDescriptions[format]}</span>
+                      </button>
+                    ),
+                  )}
+                </div>
+
+                <div className="settings-grid tournament-settings-grid">
+                  <NumberStepper
+                    label="코트 수"
+                    min={1}
+                    max={12}
+                    value={tournamentSettings.courtCount}
+                    onChange={(courtCount) => updateTournamentSettings({ courtCount })}
+                  />
+                  <NumberStepper
+                    label="참가팀 수"
+                    min={0}
+                    max={64}
+                    value={tournamentTeams.length}
+                    onChange={setTournamentTeamCount}
+                  />
+                  <NumberStepper
+                    label="시드 수"
+                    min={0}
+                    max={tournamentTeams.length}
+                    value={seededTournamentTeams.length}
+                    onChange={setTournamentSeedCount}
+                  />
+                  {tournamentSettings.format === 'group-knockout' ? (
+                    <>
+                      <NumberStepper
+                        label="조 수"
+                        min={1}
+                        max={16}
+                        value={tournamentSettings.groupCount}
+                        onChange={(groupCount) =>
+                          updateTournamentSettings({ groupCount })
+                        }
+                      />
+                      <NumberStepper
+                        label="조별 진출"
+                        min={1}
+                        max={8}
+                        value={tournamentSettings.advancePerGroup}
+                        onChange={(advancePerGroup) =>
+                          updateTournamentSettings({ advancePerGroup })
+                        }
+                      />
+                    </>
+                  ) : null}
+                  {tournamentSettings.format === 'team-battle' ? (
+                    <NumberStepper
+                      label="세부 경기"
+                      min={1}
+                      max={5}
+                      value={tournamentSettings.teamBattleMatchCount}
+                      onChange={(teamBattleMatchCount) =>
+                        updateTournamentSettings({ teamBattleMatchCount })
+                      }
+                    />
+                  ) : null}
+                  {tournamentSettings.format !== 'team-battle' ? (
+                    <label className="settings-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={tournamentSettings.includeThirdPlace}
+                        onChange={(event) =>
+                          updateTournamentSettings({
+                            includeThirdPlace: event.target.checked,
+                          })
+                        }
+                      />
+                      3·4위전
+                    </label>
+                  ) : null}
+                </div>
+
+                {tournamentSettings.format === 'team-battle' ? (
+                  <div className="slot-editor">
+                    {Array.from(
+                      { length: tournamentSettings.teamBattleMatchCount },
+                      (_, index) => {
+                        const value =
+                          tournamentSettings.teamBattleSlots[index] ??
+                          `${index + 1}경기`
+
+                        return (
+                          <label key={index}>
+                            {index + 1}경기
+                            <input
+                              value={value}
+                              onChange={(event) => {
+                                const teamBattleSlots = [
+                                  ...tournamentSettings.teamBattleSlots,
+                                ]
+                                teamBattleSlots[index] = event.target.value
+                                updateTournamentSettings({ teamBattleSlots })
+                              }}
+                            />
+                          </label>
+                        )
+                      },
+                    )}
+                  </div>
+                ) : null}
+              </section>
+
+              <section className="panel-section">
+                <div className="section-heading">
+                  <div>
+                    <h2>팀 등록</h2>
+                    <span>참가 {activeTournamentTeams.length}팀</span>
+                  </div>
+                  <div className="compact-actions">
+                    <button type="button" onClick={addTournamentTeam}>
+                      추가
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTournamentBulkOpen((open) => !open)}
+                    >
+                      일괄 입력
+                    </button>
+                    <button type="button" onClick={resetTournament}>
+                      초기화
+                    </button>
+                  </div>
+                </div>
+
+                {tournamentBulkOpen ? (
+                  <div className="bulk-panel">
+                    <div className="bulk-help">
+                      {tournamentSettings.format === 'team-battle'
+                        ? '입력 순서: 팀명 시드(선택) 선수명 · 숫자가 없으면 시드 없음'
+                        : '입력 순서: 팀명 시드(선택) 레벨(선택) 성별(선택) 선수명 · 숫자가 없으면 시드 없음'}
+                    </div>
+                    <textarea
+                      value={tournamentBulkText}
+                      onChange={(event) => setTournamentBulkText(event.target.value)}
+                      placeholder={
+                        tournamentSettings.format === 'team-battle'
+                          ? 'A팀 1 김철수 이영희\nB팀 박민지 최수진\nC팀, 3, 홍길동, 김하나'
+                          : 'A팀 1 A 남 김철수 이영희\nB팀, 2, B, 여, 박민지, 최수진\nC팀 혼성 홍길동 김하나'
+                      }
+                    />
+                    <div className="bulk-actions">
+                      <button
+                        type="button"
+                        onClick={() => applyBulkTournamentTeams('append')}
+                      >
+                        팀 추가
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => applyBulkTournamentTeams('replace')}
+                      >
+                        기존 교체
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="player-list tournament-team-list">
+                  {tournamentTeams.map((team, index) => (
+                    <article className="player-row tournament-team-row" key={team.id}>
+                      <div className="row-top">
+                        <div className="row-status">
+                          <label className="checkbox-label">
+                            <input
+                              type="checkbox"
+                              checked={team.active}
+                              onChange={(event) =>
+                                updateTournamentTeam(team.id, {
+                                  active: event.target.checked,
+                                })
+                              }
+                            />
+                            참가
+                          </label>
+                          {team.seed ? (
+                            <span className="status-chip">{team.seed}번 시드</span>
+                          ) : null}
+                        </div>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          title="삭제"
+                          onClick={() => removeTournamentTeam(team.id)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <input
+                        className="name-input"
+                        value={team.name}
+                        onChange={(event) =>
+                          updateTournamentTeam(team.id, { name: event.target.value })
+                        }
+                      />
+                      <textarea
+                        className="team-roster-input"
+                        value={team.playerNames}
+                        placeholder="선수명"
+                        onChange={(event) =>
+                          updateTournamentTeam(team.id, {
+                            playerNames: event.target.value,
+                          })
+                        }
+                      />
+                      <div
+                        className={
+                          tournamentSettings.format === 'team-battle'
+                            ? 'row-fields seed-row-fields'
+                            : 'row-fields tournament-team-fields'
+                        }
+                      >
+                        <label className="settings-checkbox seed-toggle">
+                          <input
+                            type="checkbox"
+                            checked={team.seed !== null}
+                            onChange={(event) =>
+                              updateTournamentTeam(team.id, {
+                                seed: event.target.checked ? index + 1 : null,
+                              })
+                            }
+                          />
+                          시드 지정
+                        </label>
+                        {team.seed !== null ? (
+                          <label>
+                            시드
+                            <input
+                              type="number"
+                              min="1"
+                              value={team.seed}
+                              onChange={(event) =>
+                                updateTournamentTeam(team.id, {
+                                  seed: normalizeTournamentSeed(event.target.value),
+                                })
+                              }
+                            />
+                          </label>
+                        ) : null}
+                        {tournamentSettings.format !== 'team-battle' ? (
+                          <>
+                            <label>
+                              레벨
+                              <select
+                                value={team.level}
+                                onChange={(event) =>
+                                  updateTournamentTeam(team.id, {
+                                    level: event.target.value as Level,
+                                  })
+                                }
+                              >
+                                {levelOptions
+                                  .filter((level) => level !== '스페셜')
+                                  .map((level) => (
+                                    <option value={level} key={level}>
+                                      {levelLabels[level]}
+                                    </option>
+                                  ))}
+                              </select>
+                            </label>
+                            <label>
+                              성별
+                              <select
+                                value={team.gender}
+                                onChange={(event) =>
+                                  updateTournamentTeam(team.id, {
+                                    gender: event.target.value as Gender,
+                                  })
+                                }
+                              >
+                                <option value="male">남</option>
+                                <option value="female">여</option>
+                                <option value="none">무관</option>
+                              </select>
+                            </label>
+                          </>
+                        ) : null}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            </aside>
+          ) : null}
+
+          <section className="workspace tournament-workspace">
+            <section className="tournament-summary-bar">
+              <div>
+                <span className="eyebrow">대회 진행</span>
+                <h2>{tournamentFormatLabels[tournamentSettings.format]}</h2>
+              </div>
+              <div className="time-summary">
+                <span>팀 {activeTournamentTeams.length}</span>
+                <span>코트 {tournamentSettings.courtCount}</span>
+                <span>
+                  완료 {completedTournamentMatches}/{totalTournamentMatches}
+                </span>
+                <span>
+                  {seededTournamentTeams.length > 0
+                    ? `시드 ${seededTournamentTeams.length}`
+                    : '시드 없음'}
+                </span>
+              </div>
+              <div className="time-ok">
+                {nextTournamentMatch
+                  ? `${nextTournamentMatch.label} 대기`
+                  : totalTournamentMatches > 0
+                    ? '전체 완료'
+                    : '대진 없음'}
+              </div>
+            </section>
+
+            {tournamentSchedule.warnings.length > 0 ? (
+              <div className="warning-strip">
+                {tournamentSchedule.warnings.map((warning) => (
+                  <span key={warning}>{warning}</span>
+                ))}
+              </div>
+            ) : null}
+
+            {tournamentPrintImageUrls.length > 0 ? (
+              <section className="print-preview-panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>대회 대진표 이미지</h2>
+                    <span>A4 {tournamentPrintImageUrls.length}장 생성됨</span>
+                  </div>
+                  <div className="compact-actions">
+                    <button type="button" onClick={savePreparedTournamentScheduleImages}>
+                      저장
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTournamentPrintImageUrls([])}
+                    >
+                      닫기
+                    </button>
+                  </div>
+                </div>
+                <div className="print-preview-list">
+                  {tournamentPrintImageUrls.map((imageUrl, index) => (
+                    <article className="print-preview-page" key={imageUrl}>
+                      <img src={imageUrl} alt={`대회 대진표 ${index + 1}쪽`} />
+                      <a href={imageUrl} download={`대회-대진표-${index + 1}.svg`}>
+                        {index + 1}쪽 저장
+                      </a>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            <nav className="tab-row" aria-label="대회 보기 선택">
+              <button
+                type="button"
+                className={tournamentView === 'progress' ? 'active' : ''}
+                onClick={() => setTournamentView('progress')}
+              >
+                진행
+              </button>
+              <button
+                type="button"
+                className={tournamentView === 'board' ? 'active' : ''}
+                onClick={() => setTournamentView('board')}
+              >
+                순위/브래킷
+              </button>
+              <span>
+                {completedTournamentMatches}/{totalTournamentMatches} 경기 완료
+              </span>
+            </nav>
+
+            {tournamentView === 'progress' ? (
+              <div className="round-list">
+                {tournamentRounds.map(({ round, matches }) => (
+                  <section className="round-section" key={round}>
+                    <div className="round-heading">
+                      <div className="round-title">
+                        <h2>{round}순서</h2>
+                        <span className="time-chip">코트 배정</span>
+                      </div>
+                      <span>
+                        {matches
+                          .map((match) => `${match.court}코트 ${match.label}`)
+                          .join(' · ')}
+                      </span>
+                    </div>
+                    <div className="match-grid">
+                      {matches.map((match) => {
+                        const result = tournamentResults[match.id] ?? {
+                          teamAScore: '',
+                          teamBScore: '',
+                          completed: false,
+                          note: '',
+                        }
+                        const canEditResult =
+                          !isSharedMode &&
+                          !match.isBye &&
+                          Boolean(match.teamAId && match.teamBId)
+
+                        return (
+                          <article
+                            className={`match-card tournament-match-card ${
+                              match.isBye ? 'bye-match' : ''
+                            }`}
+                            key={match.id}
+                          >
+                            <header>
+                              <span>
+                                {match.court}코트 · {match.label}
+                                {match.teamBattleSlot
+                                  ? ` · ${match.teamBattleSlot}`
+                                  : ''}
+                              </span>
+                              <div className="match-card-actions">
+                                <strong>{tournamentPhaseLabels[match.phase]}</strong>
+                                {match.isBye ? <strong>부전승</strong> : null}
+                              </div>
+                            </header>
+                            <div
+                              className={`score-row ${
+                                !canEditResult ? 'read-only-score' : ''
+                              }`}
+                            >
+                              {renderTournamentSide(match, 'A')}
+                              {canEditResult ? (
+                                <input
+                                  className="score-input"
+                                  aria-label={`${tournamentSideName(match, 'A')} 점수`}
+                                  type="number"
+                                  min="0"
+                                  value={result.teamAScore}
+                                  onChange={(event) =>
+                                    updateTournamentResult(match.id, {
+                                      teamAScore: event.target.value,
+                                    })
+                                  }
+                                />
+                              ) : (
+                                <span className="score-value">
+                                  {match.isBye ? 'BYE' : result.teamAScore || '-'}
+                                </span>
+                              )}
+                            </div>
+                            <div
+                              className={`score-row ${
+                                !canEditResult ? 'read-only-score' : ''
+                              }`}
+                            >
+                              {renderTournamentSide(match, 'B')}
+                              {canEditResult ? (
+                                <input
+                                  className="score-input"
+                                  aria-label={`${tournamentSideName(match, 'B')} 점수`}
+                                  type="number"
+                                  min="0"
+                                  value={result.teamBScore}
+                                  onChange={(event) =>
+                                    updateTournamentResult(match.id, {
+                                      teamBScore: event.target.value,
+                                    })
+                                  }
+                                />
+                              ) : (
+                                <span className="score-value">
+                                  {match.isBye ? '-' : result.teamBScore || '-'}
+                                </span>
+                              )}
+                            </div>
+                            <div className="match-footer">
+                              {canEditResult ? (
+                                <label className="checkbox-label">
+                                  <input
+                                    type="checkbox"
+                                    checked={result.completed}
+                                    disabled={!tournamentHasScore(result)}
+                                    onChange={(event) =>
+                                      updateTournamentResult(match.id, {
+                                        completed: event.target.checked,
+                                      })
+                                    }
+                                  />
+                                  완료
+                                </label>
+                              ) : (
+                                <span>
+                                  {tournamentWinnerTeamId(match, result)
+                                    ? '완료'
+                                    : '대기'}
+                                </span>
+                              )}
+                              <span>{tournamentWinnerLabel(match, result)}</span>
+                            </div>
+                            {canEditResult ? (
+                              <input
+                                className="note-input"
+                                placeholder="메모"
+                                value={result.note}
+                                onChange={(event) =>
+                                  updateTournamentResult(match.id, {
+                                    note: event.target.value,
+                                  })
+                                }
+                              />
+                            ) : result.note ? (
+                              <div className="note-readonly">{result.note}</div>
+                            ) : null}
+                          </article>
+                        )
+                      })}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            ) : (
+              <section className="tournament-board">
+                {tournamentSettings.format === 'group-knockout' ? (
+                  <div className="board-section">
+                    <div className="section-heading">
+                      <h2>조별 순위</h2>
+                      <span>
+                        상위 {tournamentSettings.advancePerGroup}팀 넉아웃 진출
+                      </span>
+                    </div>
+                    <div className="standings-grid">
+                      {tournamentSchedule.groups.map((group) => (
+                        <div className="stats-table-wrap" key={group.id}>
+                          <table className="stats-table compact-table">
+                            <thead>
+                              <tr>
+                                <th>{group.name}</th>
+                                <th>승</th>
+                                <th>패</th>
+                                <th>득실</th>
+                                <th>득점</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tournamentSchedule.standings
+                                .filter((standing) => standing.groupId === group.id)
+                                .map((standing) => (
+                                  <tr key={standing.team.id}>
+                                    <td>
+                                      {standing.rank}. {standing.team.name}
+                                    </td>
+                                    <td>{standing.wins}</td>
+                                    <td>{standing.losses}</td>
+                                    <td>{standing.pointDiff}</td>
+                                    <td>{standing.pointsFor}</td>
+                                  </tr>
+                                ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {tournamentSchedule.knockoutMatches.length > 0 ? (
+                  <div className="board-section">
+                    <div className="section-heading">
+                      <h2>브래킷</h2>
+                      <span>결과 입력 시 다음 경기 자동 배정</span>
+                    </div>
+                    <div className="bracket-list">
+                      {tournamentSchedule.knockoutMatches.map((match) => {
+                        const result = tournamentResults[match.id]
+
+                        return (
+                          <article className="bracket-item" key={match.id}>
+                            <strong>{match.label}</strong>
+                            <span>
+                              {tournamentSideName(match, 'A')} vs{' '}
+                              {tournamentSideName(match, 'B')}
+                            </span>
+                            <em>{tournamentWinnerLabel(match, result)}</em>
+                          </article>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+
+                {tournamentSettings.format === 'team-battle' ? (
+                  <>
+                    <div className="board-section">
+                      <div className="section-heading">
+                        <h2>단체전 순위</h2>
+                        <span>세부 경기 승수 합산</span>
+                      </div>
+                      <div className="stats-table-wrap">
+                        <table className="stats-table">
+                          <thead>
+                            <tr>
+                              <th>팀</th>
+                              <th>단체승</th>
+                              <th>단체패</th>
+                              <th>세부승</th>
+                              <th>세부패</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {tournamentSchedule.teamBattleStandings.map((standing) => (
+                              <tr key={standing.team.id}>
+                                <td>
+                                  {standing.rank}. {standing.team.name}
+                                </td>
+                                <td>{standing.tiesWon}</td>
+                                <td>{standing.tiesLost}</td>
+                                <td>{standing.matchWins}</td>
+                                <td>{standing.matchLosses}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div className="board-section">
+                      <div className="section-heading">
+                        <h2>팀 대전</h2>
+                        <span>{tournamentSettings.teamBattleMatchCount}경기제</span>
+                      </div>
+                      <div className="bracket-list">
+                        {tournamentSchedule.teamBattleTies.map((tie) => (
+                          <article className="bracket-item" key={tie.id}>
+                            <strong>{tie.label}</strong>
+                            <span>
+                              {tie.teamAWins} - {tie.teamBWins}
+                            </span>
+                            <em>
+                              {tie.winnerTeamId
+                                ? tournamentTeamName(tie.winnerTeamId)
+                                : '대기'}
+                            </em>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                ) : null}
+              </section>
+            )}
+          </section>
+        </main>
+      )}
     </div>
   )
 }

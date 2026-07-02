@@ -1,8 +1,12 @@
 import type {
+  AppMode,
   MatchNameOverrides,
   MatchSettings,
   Player,
   ResultsByMatch,
+  TournamentResultsByMatch,
+  TournamentSettings,
+  TournamentTeam,
 } from './types'
 
 export const SHARE_PARAM = 'share'
@@ -16,6 +20,10 @@ export type SharePayload = {
   results: ResultsByMatch
   pairMixes: Record<string, number>
   matchNameOverrides?: MatchNameOverrides
+  appMode?: AppMode
+  tournamentTeams?: TournamentTeam[]
+  tournamentSettings?: TournamentSettings
+  tournamentResults?: TournamentResultsByMatch
 }
 
 const textEncoder = new TextEncoder()
@@ -99,6 +107,29 @@ const isSharePayload = (value: unknown): value is SharePayload => {
       (
         typeof payload.matchNameOverrides === 'object' &&
         payload.matchNameOverrides !== null
+      )
+    ) &&
+    (
+      payload.appMode === undefined ||
+      payload.appMode === 'meeting' ||
+      payload.appMode === 'tournament'
+    ) &&
+    (
+      payload.tournamentTeams === undefined ||
+      Array.isArray(payload.tournamentTeams)
+    ) &&
+    (
+      payload.tournamentSettings === undefined ||
+      (
+        typeof payload.tournamentSettings === 'object' &&
+        payload.tournamentSettings !== null
+      )
+    ) &&
+    (
+      payload.tournamentResults === undefined ||
+      (
+        typeof payload.tournamentResults === 'object' &&
+        payload.tournamentResults !== null
       )
     )
   )

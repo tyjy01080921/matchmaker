@@ -1,12 +1,25 @@
 import { describe, expect, it } from 'vitest'
+import { defaultTournamentSettings } from './defaultData'
+import { generateTournamentSchedule } from './matchmaker'
 import { makePlayerNameLookup } from './playerNames'
 import {
   createSchedulePrintImages,
+  createTournamentPrintImages,
   makePrintableScheduleItems,
   paginatePrintableScheduleItems,
+  paginatePrintableTournamentItems,
   type PrintableScheduleItem,
+  type PrintableTournamentItem,
 } from './printSchedule'
-import type { Match, MatchSettings, Player, ResultsByMatch, Schedule } from './types'
+import type {
+  Match,
+  MatchSettings,
+  Player,
+  ResultsByMatch,
+  Schedule,
+  TournamentResultsByMatch,
+  TournamentTeam,
+} from './types'
 
 const makePlayer = (id: string, name: string): Player => ({
   id,
@@ -35,6 +48,20 @@ const makeMatch = (index: number): Match => ({
   teamA: [players[0], players[2]],
   teamB: [players[1], players[3]],
   isSpecial: false,
+})
+
+const makeTournamentTeam = (
+  id: string,
+  name: string,
+  seed: number | null,
+): TournamentTeam => ({
+  id,
+  name,
+  playerNames: '',
+  level: 'B',
+  gender: 'none',
+  seed,
+  active: true,
 })
 
 describe('printable schedule', () => {
@@ -116,5 +143,59 @@ describe('printable schedule', () => {
     expect(svg).toContain('현장참가자 + 이지연')
     expect(svg).not.toContain('상태')
     expect(svg).not.toContain('점수')
+  })
+
+  it('splits long tournament schedules into A4 image pages', () => {
+    const items: PrintableTournamentItem[] = Array.from(
+      { length: 80 },
+      (_, index) => ({
+        kind: 'tournament-match',
+        court: '1코트',
+        label: `예선 ${index + 1}경기`,
+        order: `${index + 1}순서`,
+        result: '대기',
+        sideA: 'A팀',
+        sideB: 'B팀',
+      }),
+    )
+    const pages = paginatePrintableTournamentItems(items)
+
+    expect(pages.length).toBeGreaterThan(1)
+    expect(pages.flat()).toHaveLength(items.length)
+  })
+
+  it('renders tournament images with seed labels and no unseeded label', () => {
+    const teams = [
+      makeTournamentTeam('team-1', '1팀', 1),
+      makeTournamentTeam('team-2', '2팀', null),
+    ]
+    const settings = {
+      ...defaultTournamentSettings,
+      courtCount: 1,
+      format: 'knockout' as const,
+      includeThirdPlace: false,
+    }
+    const schedule = generateTournamentSchedule(
+      teams,
+      settings,
+      {} satisfies TournamentResultsByMatch,
+    )
+    const images = createTournamentPrintImages({
+      generatedAt: new Date('2026-07-01T00:00:00.000Z'),
+      results: {} satisfies TournamentResultsByMatch,
+      schedule,
+      settings,
+      teams,
+      title: 'A.M.A Match Maker Pro',
+    })
+    const svg = decodeURIComponent(
+      images[0].replace('data:image/svg+xml;charset=utf-8,', ''),
+    )
+
+    expect(svg).toContain('대회 대진표')
+    expect(svg).toContain('1팀 (1번 시드)')
+    expect(svg).toContain('2팀')
+    expect(svg).toContain('결승')
+    expect(svg).not.toContain('비시드')
   })
 })

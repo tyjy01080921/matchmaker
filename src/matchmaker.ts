@@ -8,6 +8,15 @@ import type {
   Round,
   Schedule,
   Team,
+  TournamentGroup,
+  TournamentMatch,
+  TournamentResultsByMatch,
+  TournamentSchedule,
+  TournamentSettings,
+  TournamentStanding,
+  TournamentTeam,
+  TournamentTeamBattleStanding,
+  TournamentTeamBattleTie,
 } from './types'
 
 type HistoryState = {
@@ -814,6 +823,636 @@ const pickGeneralGroup = (
   }
 
   return bestGroup
+}
+
+const normalizeTournamentCourtCount = (settings: TournamentSettings) => {
+  const numeric = Number(settings.courtCount)
+  if (!Number.isFinite(numeric)) return 1
+  return Math.max(1, Math.floor(numeric))
+}
+
+const normalizeTournamentCount = (value: unknown, min: number, max: number) => {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return min
+  return Math.min(max, Math.max(min, Math.floor(numeric)))
+}
+
+const tournamentSeedValue = (team: TournamentTeam) => {
+  const seed = Number(team.seed)
+  return Number.isFinite(seed) && seed > 0 ? seed : Number.MAX_SAFE_INTEGER
+}
+
+const activeTournamentTeams = (teams: TournamentTeam[]) =>
+  teams
+    .filter((team) => team.active && team.name.trim())
+    .sort((a, b) => {
+      const seedDiff = tournamentSeedValue(a) - tournamentSeedValue(b)
+      if (seedDiff !== 0) return seedDiff
+      return a.name.localeCompare(b.name)
+    })
+
+const tournamentTeamMap = (teams: TournamentTeam[]) =>
+  new Map(teams.map((team) => [team.id, team]))
+
+const completedTournamentScores = (
+  result: TournamentResultsByMatch[string] | undefined,
+) => {
+  const teamAScore = result ? numericScore(result.teamAScore) : null
+  const teamBScore = result ? numericScore(result.teamBScore) : null
+  if (
+    !result?.completed ||
+    teamAScore === null ||
+    teamBScore === null ||
+    teamAScore === teamBScore
+  ) {
+    return null
+  }
+
+  return { teamAScore, teamBScore }
+}
+
+const tournamentMatchWinnerId = (
+  match: TournamentMatch,
+  result: TournamentResultsByMatch[string] | undefined,
+) => {
+  if (match.isBye) return match.teamAId ?? match.teamBId
+  if (!match.teamAId || !match.teamBId) return undefined
+
+  const scores = completedTournamentScores(result)
+  if (!scores) return undefined
+
+  return scores.teamAScore > scores.teamBScore ? match.teamAId : match.teamBId
+}
+
+const tournamentMatchLoserId = (
+  match: TournamentMatch,
+  result: TournamentResultsByMatch[string] | undefined,
+) => {
+  if (!match.teamAId || !match.teamBId) return undefined
+
+  const scores = completedTournamentScores(result)
+  if (!scores) return undefined
+
+  return scores.teamAScore > scores.teamBScore ? match.teamBId : match.teamAId
+}
+
+const assignTournamentOrder = (
+  matches: TournamentMatch[],
+  settings: TournamentSettings,
+  startOrder = 1,
+) => {
+  const courtCount = normalizeTournamentCourtCount(settings)
+  return matches.map((match, index) => {
+    const order = startOrder + index
+    return {
+      ...match,
+      order,
+      round: Math.ceil(order / courtCount),
+      court: ((order - 1) % courtCount) + 1,
+    }
+  })
+}
+
+const makeTournamentGroups = (
+  teams: TournamentTeam[],
+  settings: TournamentSettings,
+  warnings: string[],
+): TournamentGroup[] => {
+  if (teams.length < 3) return []
+
+  const maxGroups = Math.max(1, Math.floor(teams.length / 3))
+  const requestedGroups = normalizeTournamentCount(
+    settings.groupCount,
+    1,
+    Math.max(1, teams.length),
+  )
+  const groupCount = Math.min(requestedGroups, maxGroups)
+
+  if (requestedGroups > maxGroups) {
+    warnings.push(`1개 조 최소 3팀 기준으로 ${groupCount}개 조로 조정되었습니다.`)
+  }
+
+  const groups = Array.from({ length: groupCount }, (_, index) => ({
+    id: `group-${index + 1}`,
+    name: `${String.fromCharCode(65 + index)}조`,
+    teamIds: [] as string[],
+  }))
+
+  teams.forEach((team, index) => {
+    const block = Math.floor(index / groupCount)
+    const offset = index % groupCount
+    const groupIndex = block % 2 === 0 ? offset : groupCount - 1 - offset
+    groups[groupIndex].teamIds.push(team.id)
+  })
+
+  return groups
+}
+
+const makeGroupRoundRobinMatches = (
+  groups: TournamentGroup[],
+): TournamentMatch[] => {
+  const matches: TournamentMatch[] = []
+
+  for (const group of groups) {
+    for (let a = 0; a < group.teamIds.length - 1; a += 1) {
+      for (let b = a + 1; b < group.teamIds.length; b += 1) {
+        const matchNumber = matches.filter((match) => match.groupId === group.id).length + 1
+        matches.push({
+          id: `${group.id}-m${a + 1}-${b + 1}`,
+          phase: 'group',
+          order: 0,
+          round: 0,
+          court: 0,
+          label: `${group.name} ${matchNumber}경기`,
+          teamAId: group.teamIds[a],
+          teamBId: group.teamIds[b],
+          groupId: group.id,
+        })
+      }
+    }
+  }
+
+  return matches
+}
+
+const compareHeadToHead = (
+  teamAId: string,
+  teamBId: string,
+  matches: TournamentMatch[],
+  results: TournamentResultsByMatch,
+) => {
+  const directMatch = matches.find(
+    (match) =>
+      match.groupId &&
+      ((match.teamAId === teamAId && match.teamBId === teamBId) ||
+        (match.teamAId === teamBId && match.teamBId === teamAId)),
+  )
+  if (!directMatch) return 0
+
+  const winnerId = tournamentMatchWinnerId(directMatch, results[directMatch.id])
+  if (winnerId === teamAId) return -1
+  if (winnerId === teamBId) return 1
+  return 0
+}
+
+const calculateTournamentGroupStandings = (
+  groups: TournamentGroup[],
+  teamsById: Map<string, TournamentTeam>,
+  matches: TournamentMatch[],
+  results: TournamentResultsByMatch,
+): TournamentStanding[] => {
+  const allStandings: TournamentStanding[] = []
+
+  for (const group of groups) {
+    const groupMatches = matches.filter((match) => match.groupId === group.id)
+    const standings = group.teamIds
+      .map((teamId) => teamsById.get(teamId))
+      .filter((team): team is TournamentTeam => Boolean(team))
+      .map<TournamentStanding>((team) => ({
+        team,
+        groupId: group.id,
+        rank: 0,
+        played: 0,
+        wins: 0,
+        losses: 0,
+        pointsFor: 0,
+        pointsAgainst: 0,
+        pointDiff: 0,
+        seed: tournamentSeedValue(team),
+      }))
+    const byTeamId = new Map(standings.map((standing) => [standing.team.id, standing]))
+
+    for (const match of groupMatches) {
+      if (!match.teamAId || !match.teamBId) continue
+
+      const scores = completedTournamentScores(results[match.id])
+      if (!scores) continue
+
+      const teamA = byTeamId.get(match.teamAId)
+      const teamB = byTeamId.get(match.teamBId)
+      if (!teamA || !teamB) continue
+
+      teamA.played += 1
+      teamB.played += 1
+      teamA.pointsFor += scores.teamAScore
+      teamA.pointsAgainst += scores.teamBScore
+      teamB.pointsFor += scores.teamBScore
+      teamB.pointsAgainst += scores.teamAScore
+
+      if (scores.teamAScore > scores.teamBScore) {
+        teamA.wins += 1
+        teamB.losses += 1
+      } else {
+        teamB.wins += 1
+        teamA.losses += 1
+      }
+    }
+
+    standings.forEach((standing) => {
+      standing.pointDiff = standing.pointsFor - standing.pointsAgainst
+    })
+
+    standings.sort((a, b) => {
+      if (b.wins !== a.wins) return b.wins - a.wins
+      if (b.pointDiff !== a.pointDiff) return b.pointDiff - a.pointDiff
+      if (b.pointsFor !== a.pointsFor) return b.pointsFor - a.pointsFor
+
+      const direct = compareHeadToHead(a.team.id, b.team.id, groupMatches, results)
+      if (direct !== 0) return direct
+
+      if (a.seed !== b.seed) return a.seed - b.seed
+      return a.team.name.localeCompare(b.team.name)
+    })
+
+    standings.forEach((standing, index) => {
+      standing.rank = index + 1
+    })
+
+    allStandings.push(...standings)
+  }
+
+  return allStandings
+}
+
+const nextPowerOfTwo = (value: number) => {
+  let size = 1
+  while (size < value) size *= 2
+  return Math.max(2, size)
+}
+
+const seedOrder = (size: number): number[] => {
+  if (size <= 2) return [1, 2]
+
+  return seedOrder(size / 2).flatMap((seed) => [seed, size + 1 - seed])
+}
+
+type BracketEntry = {
+  teamId?: string
+  source?: string
+}
+
+const bracketRoundName = (participantCount: number) => {
+  if (participantCount <= 2) return '결승'
+  if (participantCount === 4) return '4강'
+  return `${participantCount}강`
+}
+
+const makeKnockoutMatches = (
+  teams: TournamentTeam[],
+  settings: TournamentSettings,
+  results: TournamentResultsByMatch,
+  prefix: string,
+  startOrder: number,
+  includeThirdPlace: boolean,
+): TournamentMatch[] => {
+  if (teams.length < 2) return []
+
+  const bracketSize = nextPowerOfTwo(teams.length)
+  let entries: BracketEntry[] = seedOrder(bracketSize).map((seed) => ({
+    teamId: teams[seed - 1]?.id,
+  }))
+  const matches: TournamentMatch[] = []
+  const semifinalMatches: TournamentMatch[] = []
+
+  for (
+    let bracketRound = 1, participantCount = bracketSize;
+    entries.length >= 2;
+    bracketRound += 1, participantCount /= 2
+  ) {
+    const nextEntries: BracketEntry[] = []
+    const roundName = bracketRoundName(participantCount)
+
+    for (let index = 0; index < entries.length; index += 2) {
+      const left = entries[index]
+      const right = entries[index + 1]
+      const slot = index / 2 + 1
+      const id = `${prefix}-r${bracketRound}-m${slot}`
+      const isBye =
+        Boolean(left.teamId) !== Boolean(right.teamId) &&
+        !left.source &&
+        !right.source
+      const label =
+        roundName === '결승' ? '결승' : `${roundName} ${slot}경기`
+      const match: TournamentMatch = {
+        id,
+        phase: 'knockout',
+        order: 0,
+        round: 0,
+        court: 0,
+        label,
+        teamAId: left.teamId,
+        teamBId: right.teamId,
+        sourceA: left.source,
+        sourceB: right.source,
+        bracketRound,
+        bracketSlot: slot,
+        isBye,
+      }
+
+      matches.push(match)
+      if (participantCount === 4) semifinalMatches.push(match)
+
+      const winnerId = tournamentMatchWinnerId(match, results[id])
+      nextEntries.push({
+        teamId: winnerId,
+        source: winnerId ? undefined : `${label} 승자`,
+      })
+    }
+
+    entries = nextEntries
+  }
+
+  const orderedMatches = assignTournamentOrder(matches, settings, startOrder)
+
+  if (!includeThirdPlace || semifinalMatches.length !== 2) return orderedMatches
+
+  const thirdPlaceEntries = semifinalMatches.map<BracketEntry>((match) => {
+    const loserId = tournamentMatchLoserId(match, results[match.id])
+    return {
+      teamId: loserId,
+      source: loserId ? undefined : `${match.label} 패자`,
+    }
+  })
+  const thirdPlaceMatch: TournamentMatch = {
+    id: `${prefix}-third-place`,
+    phase: 'third-place',
+    order: 0,
+    round: 0,
+    court: 0,
+    label: '3·4위전',
+    teamAId: thirdPlaceEntries[0]?.teamId,
+    teamBId: thirdPlaceEntries[1]?.teamId,
+    sourceA: thirdPlaceEntries[0]?.source,
+    sourceB: thirdPlaceEntries[1]?.source,
+    bracketRound: Math.max(1, Math.log2(nextPowerOfTwo(teams.length))),
+  }
+
+  return [
+    ...orderedMatches,
+    ...assignTournamentOrder([thirdPlaceMatch], settings, startOrder + orderedMatches.length),
+  ]
+}
+
+const makeTeamBattleMatches = (
+  teams: TournamentTeam[],
+  settings: TournamentSettings,
+): TournamentMatch[] => {
+  const matchCount = normalizeTournamentCount(settings.teamBattleMatchCount, 1, 5)
+  const slotLabels = settings.teamBattleSlots.length
+    ? settings.teamBattleSlots
+    : ['남복', '여복', '혼복', '자유복식', '에이스전']
+  const matches: TournamentMatch[] = []
+
+  for (let a = 0; a < teams.length - 1; a += 1) {
+    for (let b = a + 1; b < teams.length; b += 1) {
+      const teamA = teams[a]
+      const teamB = teams[b]
+      const tieId = `tb-${teamA.id}-${teamB.id}`
+
+      for (let slot = 0; slot < matchCount; slot += 1) {
+        const slotLabel = slotLabels[slot] ?? `${slot + 1}경기`
+        matches.push({
+          id: `${tieId}-s${slot + 1}`,
+          phase: 'team-battle',
+          order: 0,
+          round: 0,
+          court: 0,
+          label: `${teamA.name} vs ${teamB.name}`,
+          teamAId: teamA.id,
+          teamBId: teamB.id,
+          teamBattleTieId: tieId,
+          teamBattleSlot: slotLabel,
+        })
+      }
+    }
+  }
+
+  return assignTournamentOrder(matches, settings)
+}
+
+const calculateTeamBattleTies = (
+  teams: TournamentTeam[],
+  matches: TournamentMatch[],
+  results: TournamentResultsByMatch,
+): TournamentTeamBattleTie[] => {
+  const ties = new Map<string, TournamentTeamBattleTie>()
+  const teamsById = tournamentTeamMap(teams)
+
+  for (const match of matches.filter((item) => item.phase === 'team-battle')) {
+    if (!match.teamBattleTieId || !match.teamAId || !match.teamBId) continue
+
+    const tie =
+      ties.get(match.teamBattleTieId) ??
+      ({
+        id: match.teamBattleTieId,
+        label: `${teamsById.get(match.teamAId)?.name ?? 'A팀'} vs ${
+          teamsById.get(match.teamBId)?.name ?? 'B팀'
+        }`,
+        teamAId: match.teamAId,
+        teamBId: match.teamBId,
+        teamAWins: 0,
+        teamBWins: 0,
+      } satisfies TournamentTeamBattleTie)
+
+    const winnerId = tournamentMatchWinnerId(match, results[match.id])
+    if (winnerId === match.teamAId) tie.teamAWins += 1
+    if (winnerId === match.teamBId) tie.teamBWins += 1
+    ties.set(match.teamBattleTieId, tie)
+  }
+
+  for (const tie of ties.values()) {
+    if (tie.teamAWins > tie.teamBWins) tie.winnerTeamId = tie.teamAId
+    if (tie.teamBWins > tie.teamAWins) tie.winnerTeamId = tie.teamBId
+  }
+
+  return Array.from(ties.values())
+}
+
+const calculateTeamBattleStandings = (
+  teams: TournamentTeam[],
+  ties: TournamentTeamBattleTie[],
+): TournamentTeamBattleStanding[] => {
+  const standings = teams.map<TournamentTeamBattleStanding>((team) => ({
+    team,
+    rank: 0,
+    tiesPlayed: 0,
+    tiesWon: 0,
+    tiesLost: 0,
+    matchWins: 0,
+    matchLosses: 0,
+  }))
+  const byTeamId = new Map(standings.map((standing) => [standing.team.id, standing]))
+
+  for (const tie of ties) {
+    const teamA = byTeamId.get(tie.teamAId)
+    const teamB = byTeamId.get(tie.teamBId)
+    if (!teamA || !teamB) continue
+
+    teamA.matchWins += tie.teamAWins
+    teamA.matchLosses += tie.teamBWins
+    teamB.matchWins += tie.teamBWins
+    teamB.matchLosses += tie.teamAWins
+
+    if (!tie.winnerTeamId) continue
+
+    teamA.tiesPlayed += 1
+    teamB.tiesPlayed += 1
+    if (tie.winnerTeamId === tie.teamAId) {
+      teamA.tiesWon += 1
+      teamB.tiesLost += 1
+    } else {
+      teamB.tiesWon += 1
+      teamA.tiesLost += 1
+    }
+  }
+
+  standings.sort((a, b) => {
+    if (b.tiesWon !== a.tiesWon) return b.tiesWon - a.tiesWon
+    const matchDiff =
+      b.matchWins - b.matchLosses - (a.matchWins - a.matchLosses)
+    if (matchDiff !== 0) return matchDiff
+    if (b.matchWins !== a.matchWins) return b.matchWins - a.matchWins
+    return tournamentSeedValue(a.team) - tournamentSeedValue(b.team)
+  })
+
+  standings.forEach((standing, index) => {
+    standing.rank = index + 1
+  })
+
+  return standings
+}
+
+const emptyTournamentSchedule = (warnings: string[]): TournamentSchedule => ({
+  groups: [],
+  matches: [],
+  standings: [],
+  knockoutMatches: [],
+  teamBattleTies: [],
+  teamBattleStandings: [],
+  qualifiedTeamIds: [],
+  warnings,
+})
+
+export const generateTournamentSchedule = (
+  teams: TournamentTeam[],
+  settings: TournamentSettings,
+  results: TournamentResultsByMatch,
+): TournamentSchedule => {
+  const activeTeams = activeTournamentTeams(teams)
+  const teamsById = tournamentTeamMap(activeTeams)
+  const warnings: string[] = []
+
+  if (settings.format === 'group-knockout') {
+    if (activeTeams.length < 3) {
+      return emptyTournamentSchedule(['조별리그는 참가 팀이 3팀 이상 필요합니다.'])
+    }
+
+    const groups = makeTournamentGroups(activeTeams, settings, warnings)
+    const groupMatches = assignTournamentOrder(
+      makeGroupRoundRobinMatches(groups),
+      settings,
+    )
+    const standings = calculateTournamentGroupStandings(
+      groups,
+      teamsById,
+      groupMatches,
+      results,
+    )
+    const incompleteGroups = groups.filter((group) =>
+      groupMatches.some(
+        (match) =>
+          match.groupId === group.id &&
+          !tournamentMatchWinnerId(match, results[match.id]),
+      ),
+    )
+
+    if (incompleteGroups.length > 0) {
+      warnings.push(
+        `조별 경기 미완료: ${incompleteGroups.map((group) => group.name).join(', ')}`,
+      )
+    }
+    const advancePerGroup = normalizeTournamentCount(
+      settings.advancePerGroup,
+      1,
+      Math.max(1, activeTeams.length),
+    )
+    const qualifiedTeamIds =
+      incompleteGroups.length > 0
+        ? []
+        : groups.flatMap((group) =>
+            standings
+              .filter((standing) => standing.groupId === group.id)
+              .filter((standing) => standing.rank <= advancePerGroup)
+              .map((standing) => standing.team.id),
+          )
+    const qualifiedTeams = qualifiedTeamIds
+      .map((teamId) => teamsById.get(teamId))
+      .filter((team): team is TournamentTeam => Boolean(team))
+
+    const knockoutMatches = makeKnockoutMatches(
+      qualifiedTeams,
+      settings,
+      results,
+      'gk-ko',
+      groupMatches.length + 1,
+      settings.includeThirdPlace,
+    )
+
+    return {
+      groups,
+      matches: [...groupMatches, ...knockoutMatches],
+      standings,
+      knockoutMatches,
+      teamBattleTies: [],
+      teamBattleStandings: [],
+      qualifiedTeamIds,
+      warnings,
+    }
+  }
+
+  if (settings.format === 'team-battle') {
+    if (activeTeams.length < 2) {
+      return emptyTournamentSchedule(['단체전은 참가 팀이 2팀 이상 필요합니다.'])
+    }
+
+    const matches = makeTeamBattleMatches(activeTeams, settings)
+    const teamBattleTies = calculateTeamBattleTies(activeTeams, matches, results)
+
+    return {
+      groups: [],
+      matches,
+      standings: [],
+      knockoutMatches: [],
+      teamBattleTies,
+      teamBattleStandings: calculateTeamBattleStandings(activeTeams, teamBattleTies),
+      qualifiedTeamIds: [],
+      warnings,
+    }
+  }
+
+  if (activeTeams.length < 2) {
+    return emptyTournamentSchedule(['넉아웃은 참가 팀이 2팀 이상 필요합니다.'])
+  }
+
+  const knockoutMatches = makeKnockoutMatches(
+    activeTeams,
+    settings,
+    results,
+    'ko',
+    1,
+    settings.includeThirdPlace,
+  )
+
+  return {
+    groups: [],
+    matches: knockoutMatches,
+    standings: [],
+    knockoutMatches,
+    teamBattleTies: [],
+    teamBattleStandings: [],
+    qualifiedTeamIds: activeTeams.map((team) => team.id),
+    warnings,
+  }
 }
 
 export const generateSchedule = (
