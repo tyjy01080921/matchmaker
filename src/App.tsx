@@ -14,6 +14,7 @@ import {
   defaultSettings,
   defaultTournamentSettings,
   defaultTournamentTeams,
+  samplePlayers,
 } from './defaultData'
 import {
   calculateStats,
@@ -45,6 +46,7 @@ import type {
   MatchConditionOptions,
   MatchNameOverrides,
   MatchResult,
+  MatchWinnerSide,
   MatchSettings,
   Player,
   PrizeDrawState,
@@ -95,7 +97,7 @@ type StoredState = {
 }
 
 const levelLabels: Record<Level, string> = {
-  S: 'S',
+  OA: 'OA',
   A: 'A',
   B: 'B',
   C: 'C',
@@ -104,7 +106,7 @@ const levelLabels: Record<Level, string> = {
   스페셜: '스페셜',
 }
 
-const levelOptions: Level[] = ['S', 'A', 'B', 'C', 'D', 'O', '스페셜']
+const levelOptions: Level[] = ['OA', 'A', 'B', 'C', 'D', 'O', '스페셜']
 
 const ageGroups: AgeGroup[] = ['20대', '30대', '40대', '45대', '50대', '55대이상']
 
@@ -197,9 +199,26 @@ const legacySampleNameSet = new Set([
   '문하린',
 ])
 
+const legacySamplePlayerIds = new Set(samplePlayers.map((player) => player.id))
+const samplePlayerNames = new Map(samplePlayers.map((player) => [player.id, player.name]))
+
+const isLegacySamplePlayer = (player: Partial<Player>) => {
+  const id = typeof player.id === 'string' ? player.id : ''
+  const name = typeof player.name === 'string' ? player.name.trim() : ''
+  return (
+    legacySamplePlayerIds.has(id) &&
+    (name === legacySampleNames[id] || legacySampleNameSet.has(name))
+  )
+}
+
+const isLegacySamplePlayerList = (players: Partial<Player>[] | undefined) =>
+  Array.isArray(players) &&
+  players.length === legacySamplePlayerIds.size &&
+  players.every((player) => isLegacySamplePlayer(player))
+
 const normalizeLevel = (value: unknown): Level => {
   if (
-    value === 'S' ||
+    value === 'OA' ||
     value === 'A' ||
     value === 'B' ||
     value === 'C' ||
@@ -209,7 +228,8 @@ const normalizeLevel = (value: unknown): Level => {
   ) {
     return value
   }
-  if (value === 's') return 'S'
+  if (value === 'S' || value === 's') return 'OA'
+  if (value === 'oa' || value === 'Oa' || value === 'oA') return 'OA'
   if (value === 'o') return 'O'
   if (value === 'SPECIAL' || value === 'special' || value === 'Special') {
     return '스페셜'
@@ -240,7 +260,7 @@ const normalizePlayer = (player: Partial<Player>): Player => {
   const isSpecialLevel = level === '스페셜'
   return {
     id: player.id ?? makeId(),
-    name: player.name?.trim() || '참가자',
+    name: typeof player.name === 'string' ? player.name.trim() : '',
     level,
     ageGroup: normalizeAgeGroup(player.ageGroup),
     gender: isGuest || isSpecialLevel ? 'none' : normalizeGender(player.gender),
@@ -257,10 +277,10 @@ const normalizeStoredPlayer = (player: Partial<Player>): Player => {
   const legacyAutoName = normalized.name.match(/^게스트\s+(\d+)$/)
   const legacySampleName = legacySampleNames[normalized.id]
   if (legacySampleName && legacySampleNameSet.has(normalized.name)) {
-    return { ...normalized, name: legacySampleName }
+    return { ...normalized, name: samplePlayerNames.get(normalized.id) ?? normalized.name }
   }
   if (normalized.isGuest && legacyAutoName) {
-    return { ...normalized, name: `스페셜 ${legacyAutoName[1]}` }
+    return { ...normalized, name: `스페셜 ${legacyAutoName[1]}번` }
   }
   return normalized
 }
@@ -487,19 +507,26 @@ const readStoredState = (): StoredState => {
     if (!raw) throw new Error('empty')
     const parsed = JSON.parse(raw) as Partial<StoredState>
     const settings = normalizeMatchSettings(parsed.settings)
+    const storedPlayersAreLegacySample = isLegacySamplePlayerList(parsed.players)
     if (legacyMeetingEventNames.has(settings.eventName)) {
       settings.eventName = defaultSettings.eventName
     }
     return {
       appMode: normalizeAppMode(parsed.appMode),
-      players: parsed.players?.length
-        ? parsed.players.map((player) => normalizeStoredPlayer(player))
-        : defaultPlayers,
+      players: storedPlayersAreLegacySample
+        ? defaultPlayers
+        : parsed.players?.length
+          ? parsed.players.map((player) => normalizeStoredPlayer(player))
+          : defaultPlayers,
       settings,
-      results: parsed.results ?? {},
-      pairMixes: parsed.pairMixes ?? {},
-      matchNameOverrides: parsed.matchNameOverrides ?? {},
-      prizeDraw: normalizePrizeDrawState(parsed.prizeDraw),
+      results: storedPlayersAreLegacySample ? {} : (parsed.results ?? {}),
+      pairMixes: storedPlayersAreLegacySample ? {} : (parsed.pairMixes ?? {}),
+      matchNameOverrides: storedPlayersAreLegacySample
+        ? {}
+        : (parsed.matchNameOverrides ?? {}),
+      prizeDraw: storedPlayersAreLegacySample
+        ? defaultPrizeDrawState
+        : normalizePrizeDrawState(parsed.prizeDraw),
       tournamentTeams: parsed.tournamentTeams?.length
         ? parsed.tournamentTeams.map((team, index) =>
             normalizeTournamentTeam(team, index),
@@ -568,9 +595,9 @@ const makeId = () => {
   return `player-${Date.now()}-${Math.round(Math.random() * 10000)}`
 }
 
-const makeRegularPlayer = (index: number): Player => ({
+const makeRegularPlayer = (_index: number): Player => ({
   id: makeId(),
-  name: `참가자 ${index}`,
+  name: '',
   level: 'B',
   ageGroup: '30대',
   gender: 'none',
@@ -580,9 +607,9 @@ const makeRegularPlayer = (index: number): Player => ({
   guestGameLimit: 0,
 })
 
-const makeGuestPlayer = (index: number): Player => ({
+const makeGuestPlayer = (_index: number): Player => ({
   id: makeId(),
-  name: `스페셜 ${index}`,
+  name: '',
   level: '스페셜',
   ageGroup: '30대',
   gender: 'none',
@@ -602,8 +629,11 @@ const makeTournamentTeam = (index: number): TournamentTeam => ({
   active: true,
 })
 
-const hasScore = (result?: MatchResult) =>
-  Boolean(result?.teamAScore || result?.teamBScore)
+const isAutoGeneratedPlayerName = (name: string) =>
+  /^(참가자|스페셜)\s*\d+번?$/.test(name.trim())
+
+const resultWinnerSide = (result?: MatchResult): MatchWinnerSide | undefined =>
+  result?.winnerSide
 
 const winnerLabel = (
   match: Match,
@@ -615,12 +645,11 @@ const winnerLabel = (
     team
       .map((player) => nameOverrides[player.id]?.trim() || playerDisplayName(player, names))
       .join(' + ')
-  const a = Number(result?.teamAScore)
-  const b = Number(result?.teamBScore)
-  if (!result?.completed || !Number.isFinite(a) || !Number.isFinite(b) || a === b) {
-    return '대기'
-  }
-  return a > b ? matchTeamDisplayName(match.teamA) : matchTeamDisplayName(match.teamB)
+  const winnerSide = result?.completed ? resultWinnerSide(result) : undefined
+  if (!winnerSide) return '대기'
+  return winnerSide === 'A'
+    ? matchTeamDisplayName(match.teamA)
+    : matchTeamDisplayName(match.teamB)
 }
 
 const tournamentHasScore = (result?: TournamentMatchResult) =>
@@ -733,7 +762,7 @@ const parseBulkPlayers = (text: string): Player[] =>
       const tokens = line.split(/[\s,\t]+/).filter(Boolean)
       const name = tokens[0]
       const regularLevelToken = tokens.find((token) =>
-        (['S', 'A', 'B', 'C', 'D', 'O'] as string[]).includes(
+        (['OA', 'S', 'A', 'B', 'C', 'D', 'O'] as string[]).includes(
           token.toUpperCase(),
         ),
       )
@@ -791,7 +820,7 @@ const parseBulkTournamentTeams = (text: string): TournamentTeam[] =>
       const metadataFields = fields.slice(1)
       const seedIndex = metadataFields.findIndex((field) => /^\d+$/.test(field))
       const levelIndex = metadataFields.findIndex((field) =>
-        (['S', 'A', 'B', 'C', 'D', 'O'] as string[]).includes(
+        (['OA', 'S', 'A', 'B', 'C', 'D', 'O'] as string[]).includes(
           field.toUpperCase(),
         ),
       )
@@ -964,7 +993,7 @@ function App() {
     [tournamentTeams],
   )
 
-  const activePlayers = players.filter((player) => player.active && player.name.trim())
+  const activePlayers = players.filter((player) => player.active)
   const prizeCandidates = activePlayers.map((player) => ({
     id: player.id,
     name: playerDisplayName(player, displayNames),
@@ -1001,18 +1030,32 @@ function App() {
   const activeGuests = activePlayers.filter((player) => player.isGuest)
   const hasActiveGuests = activeGuests.length > 0
   const requiredPlayers = hasActiveGuests ? activeMembers : []
-  const pendingSpecial = requiredPlayers.filter(
-    (player) => !schedule.specialCompletedIds.includes(player.id),
-  )
   const completedMatches = schedule.rounds
     .flatMap((round) => round.matches)
     .filter((match) => results[match.id]?.completed).length
   const totalMatches = schedule.rounds.flatMap((round) => round.matches).length
   const totalGameSlots = schedule.rounds.length
   const targetRoundCount = getTargetRoundCount(settings)
-  const inTimeGameSlots = Math.min(totalGameSlots, EVENT_LIMIT_ROUNDS)
   const overtimeGameSlots = Math.max(totalGameSlots - EVENT_LIMIT_ROUNDS, 0)
   const estimatedMinutes = totalGameSlots * GAME_SLOT_MINUTES
+  const specialMinimumMatchCount = hasActiveGuests
+    ? Math.ceil(requiredPlayers.length / 3)
+    : 0
+  const specialMatchesPerRound = hasActiveGuests
+    ? Math.max(
+        1,
+        Math.min(
+          settings.courtCount,
+          activeGuests.length,
+          Math.floor(activePlayers.length / 4),
+        ),
+      )
+    : 0
+  const specialMinimumRoundCount =
+    specialMatchesPerRound > 0
+      ? Math.ceil(specialMinimumMatchCount / specialMatchesPerRound)
+      : 0
+  const specialMinimumMinutes = specialMinimumRoundCount * GAME_SLOT_MINUTES
   const progressPercent =
     totalMatches > 0 ? Math.round((completedMatches / totalMatches) * 100) : 0
   const completedRounds = schedule.rounds.filter(
@@ -1023,6 +1066,7 @@ function App() {
   const remainingRounds = Math.max(totalGameSlots - completedRounds, 0)
   const remainingMinutes = remainingRounds * GAME_SLOT_MINUTES
   const activePlayerStats = stats.filter((stat) =>
+    !stat.player.isGuest &&
     activePlayers.some((player) => player.id === stat.player.id),
   )
   const mostGames = activePlayerStats.length
@@ -1159,6 +1203,21 @@ function App() {
     setPlayers((current) =>
       current.map((player) => (player.id === id ? { ...player, ...patch } : player)),
     )
+  }
+
+  const clearMeetingScheduleState = () => {
+    setResults({})
+    setPairMixes({})
+    setMatchNameOverrides({})
+  }
+
+  const resetMeetingTargetRounds = () => {
+    setSettings((current) =>
+      getTargetRoundCount(current) === EVENT_LIMIT_ROUNDS
+        ? current
+        : { ...current, targetRoundCount: EVENT_LIMIT_ROUNDS },
+    )
+    clearMeetingScheduleState()
   }
 
   const setAppModeAndNotice = (mode: AppMode) => {
@@ -1403,9 +1462,7 @@ function App() {
 
       return [...guests, ...nextRegulars]
     })
-    setResults({})
-    setPairMixes({})
-    setMatchNameOverrides({})
+    resetMeetingTargetRounds()
   }
 
   const setGuestCount = (targetCount: number) => {
@@ -1426,9 +1483,7 @@ function App() {
 
       return [...nextGuests, ...regulars]
     })
-    setResults({})
-    setPairMixes({})
-    setMatchNameOverrides({})
+    resetMeetingTargetRounds()
   }
 
   const addPlayer = () => {
@@ -1441,9 +1496,7 @@ function App() {
 
   const removePlayer = (id: string) => {
     setPlayers((current) => current.filter((player) => player.id !== id))
-    setResults({})
-    setPairMixes({})
-    setMatchNameOverrides({})
+    resetMeetingTargetRounds()
   }
 
   const handleReset = () => {
@@ -1500,20 +1553,30 @@ function App() {
         completed: false,
         note: '',
       }
-      const next = { ...previous, ...patch }
-      const a = Number(next.teamAScore)
-      const b = Number(next.teamBScore)
-      if (
-        (patch.teamAScore !== undefined || patch.teamBScore !== undefined) &&
-        next.teamAScore !== '' &&
-        next.teamBScore !== '' &&
-        Number.isFinite(a) &&
-        Number.isFinite(b) &&
-        a !== b
-      ) {
-        next.completed = true
+      return { ...current, [matchId]: { ...previous, ...patch } }
+    })
+  }
+
+  const updateMatchWinner = (matchId: string, winnerSide: MatchWinnerSide) => {
+    setResults((current) => {
+      const previous = current[matchId] ?? {
+        teamAScore: '',
+        teamBScore: '',
+        completed: false,
+        note: '',
       }
-      return { ...current, [matchId]: next }
+      const currentWinnerSide = resultWinnerSide(previous)
+      const nextWinnerSide =
+        currentWinnerSide === winnerSide ? undefined : winnerSide
+
+      return {
+        ...current,
+        [matchId]: {
+          ...previous,
+          completed: true,
+          winnerSide: nextWinnerSide,
+        },
+      }
     })
   }
 
@@ -1527,9 +1590,7 @@ function App() {
     setPlayers((current) =>
       mode === 'replace' ? parsedPlayers : [...current, ...parsedPlayers],
     )
-    setResults({})
-    setPairMixes({})
-    setMatchNameOverrides({})
+    resetMeetingTargetRounds()
     setBulkText('')
     setNotice(`${parsedPlayers.length}명 입력됨`)
   }
@@ -1980,8 +2041,8 @@ function App() {
               <p>A가 가장 높고 D가 가장 낮습니다.</p>
               <p>여자 20대 A는 남자 40대 B와 비슷한 기준으로 배정합니다.</p>
               <p>대진 카드에서 수동으로 수정 가능합니다.</p>
-              <p>S는 연령 상관없이 A레벨 우선 조합을 원하는 참가자입니다.</p>
-              <p>O는 A레벨 중 연령과 성별, 레벨 상관없는 참가자입니다.</p>
+              <p>OA는 연령 상관없이 A레벨 우선 조합을 원하는 참가자입니다.</p>
+              <p>O는 연령, 성별, 레벨 상관없이 경기해도 되는 참가자 입니다.</p>
               <p>스페셜은 초청/게스트 경기 배정용입니다.</p>
             </div>
           </section>
@@ -2224,10 +2285,12 @@ function App() {
                     max={12}
                     value={settings.courtCount}
                     onChange={(courtCount) => {
-                      setSettings((current) => ({ ...current, courtCount }))
-                      setResults({})
-                      setPairMixes({})
-                      setMatchNameOverrides({})
+                      setSettings((current) => ({
+                        ...current,
+                        courtCount,
+                        targetRoundCount: EVENT_LIMIT_ROUNDS,
+                      }))
+                      clearMeetingScheduleState()
                     }}
                   />
                   {guestPlayers.length > 0 ? (
@@ -2239,10 +2302,9 @@ function App() {
                           setSettings((current) => ({
                             ...current,
                             singleGuestPerMatch: event.target.checked,
+                            targetRoundCount: EVENT_LIMIT_ROUNDS,
                           }))
-                          setResults({})
-                          setPairMixes({})
-                          setMatchNameOverrides({})
+                          clearMeetingScheduleState()
                         }}
                       />
                       스페셜 1 + 참가자 3
@@ -2259,12 +2321,8 @@ function App() {
                     <span>스페셜</span>
                   </div>
                   <div>
-                    <strong>
-                      {hasActiveGuests
-                        ? `${schedule.specialCompletedIds.length}/${requiredPlayers.length}`
-                        : totalMatches}
-                    </strong>
-                    <span>{hasActiveGuests ? '1회 이상' : '대진'}</span>
+                    <strong>{totalGameSlots}R</strong>
+                    <span>총 {totalMatches}경기</span>
                   </div>
                 </div>
               </>
@@ -2297,8 +2355,7 @@ function App() {
                   </button>
                 </div>
                 <span>
-                  참가 {activeMembers.length}명 · 스페셜 {activeGuests.length}명 · 1회 이상{' '}
-                  {requiredPlayers.length}명
+                  참가 {activeMembers.length}명 · 스페셜 {activeGuests.length}명 · 생성 {totalGameSlots}R
                 </span>
               </div>
               <div className="compact-actions">
@@ -2346,12 +2403,12 @@ function App() {
                 {bulkOpen ? (
                   <div className="bulk-panel">
                     <div className="bulk-help">
-                      입력 순서: 이름 레벨 성별 연령대 · 예: 참가자 1 A 남 30대
+                      입력 순서: 이름 레벨 성별 연령대 · 예: 1번 A 남 30대
                     </div>
                     <textarea
                       value={bulkText}
                       onChange={(event) => setBulkText(event.target.value)}
-                      placeholder={'참가자 1 A 남 30대\n참가자 2 B 여 40대\n참가자 3 스페셜'}
+                      placeholder={'1번 A 남 30대\n2번 B 여 40대\n스페셜 1번 스페셜'}
                     />
                     <div className="bulk-actions">
                       <button type="button" onClick={() => applyBulkPlayers('append')}>
@@ -2368,7 +2425,15 @@ function App() {
                   {players.map((player) => {
                     const isSpecialLevel = player.level === '스페셜'
                     const displayName = playerDisplayName(player, displayNames)
-                    const rawName = player.name.trim() || '참가자'
+                    const rawName = player.name.trim()
+                    const sameTypePlayers = players.filter(
+                      (item) => item.isGuest === player.isGuest,
+                    )
+                    const placeholderIndex =
+                      sameTypePlayers.findIndex((item) => item.id === player.id) + 1
+                    const namePlaceholder = player.isGuest
+                      ? `스페셜 ${placeholderIndex}번`
+                      : `${placeholderIndex}번`
 
                     return (
                       <article
@@ -2381,9 +2446,10 @@ function App() {
                               <input
                                 type="checkbox"
                                 checked={player.active}
-                                onChange={(event) =>
+                                onChange={(event) => {
                                   updatePlayer(player.id, { active: event.target.checked })
-                                }
+                                  resetMeetingTargetRounds()
+                                }}
                               />
                               참석
                             </label>
@@ -2400,12 +2466,19 @@ function App() {
                         </div>
                         <input
                           className="name-input"
+                          aria-label={`${namePlaceholder} 이름`}
+                          placeholder={namePlaceholder}
                           value={player.name}
+                          onFocus={() => {
+                            if (isAutoGeneratedPlayerName(player.name)) {
+                              updatePlayer(player.id, { name: '' })
+                            }
+                          }}
                           onChange={(event) =>
                             updatePlayer(player.id, { name: event.target.value })
                           }
                         />
-                        {displayName !== rawName ? (
+                        {rawName && displayName !== rawName ? (
                           <div className="name-display-hint">표시명 {displayName}</div>
                         ) : null}
                         <div className={isSpecialLevel ? 'row-fields single-field' : 'row-fields'}>
@@ -2415,6 +2488,7 @@ function App() {
                               value={player.level}
                               onChange={(event) => {
                                 const level = event.target.value as Level
+                                const guestStateChanged = (level === '스페셜') !== player.isGuest
                                 updatePlayer(player.id, {
                                   level,
                                   ...(level === '스페셜'
@@ -2425,6 +2499,11 @@ function App() {
                                       }
                                     : { isGuest: false }),
                                 })
+                                if (guestStateChanged) {
+                                  resetMeetingTargetRounds()
+                                } else {
+                                  clearMeetingScheduleState()
+                                }
                               }}
                             >
                               {levelOptions.map((level) => (
@@ -2440,11 +2519,12 @@ function App() {
                                 연령대
                                 <select
                                   value={player.ageGroup}
-                                  onChange={(event) =>
+                                  onChange={(event) => {
                                     updatePlayer(player.id, {
                                       ageGroup: event.target.value as AgeGroup,
                                     })
-                                  }
+                                    clearMeetingScheduleState()
+                                  }}
                                 >
                                   {ageGroups.map((ageGroup) => (
                                     <option value={ageGroup} key={ageGroup}>
@@ -2457,11 +2537,12 @@ function App() {
                                 성별
                                 <select
                                   value={player.gender}
-                                  onChange={(event) =>
+                                  onChange={(event) => {
                                     updatePlayer(player.id, {
                                       gender: event.target.value as Gender,
                                     })
-                                  }
+                                    clearMeetingScheduleState()
+                                  }}
                                 >
                                   <option value="male">남</option>
                                   <option value="female">여</option>
@@ -2698,25 +2779,20 @@ function App() {
           {hasActiveGuests ? (
             <section className="special-bar">
               <div>
-                <span className="eyebrow">스페셜 1회 이상</span>
-                <h2>
-                  {schedule.specialCompletedIds.length} / {requiredPlayers.length}
-                </h2>
+                <span className="eyebrow">스페셜 현황</span>
+                <h2>최소 {specialMinimumMatchCount}경기</h2>
+                <p className="metric-subtext">예상 {formatDuration(specialMinimumMinutes)}</p>
               </div>
               <div className="special-summary">
+                <span>참가 {activeMembers.length}명</span>
+                <span>스페셜 {activeGuests.length}명</span>
+                <span>최소 {specialMinimumRoundCount}R</span>
                 {activeGuests.map((guest) => (
                   <span key={guest.id}>
-                    {playerDisplayName(guest, displayNames)}{' '}
+                    {playerDisplayName(guest, displayNames)} · 배정{' '}
                     {schedule.guestGameCounts[guest.id] ?? 0}경기
                   </span>
                 ))}
-              </div>
-              <div className="pending-line">
-                {pendingSpecial.length > 0
-                  ? pendingSpecial
-                      .map((player) => playerDisplayName(player, displayNames))
-                      .join(', ')
-                  : '1회 이상 완료'}
               </div>
             </section>
           ) : null}
@@ -2732,19 +2808,17 @@ function App() {
           <section className={`time-bar ${overtimeGameSlots > 0 ? 'time-overrun' : ''}`}>
             <div>
               <span className="eyebrow">진행 시간</span>
-              <h2>
-                {inTimeGameSlots}/{EVENT_LIMIT_ROUNDS}경기
-              </h2>
+              <h2>{totalGameSlots}R</h2>
             </div>
             <div className="time-summary">
-              <span>{GAME_SLOT_MINUTES}분 기준</span>
-              <span>{formatDuration(EVENT_LIMIT_MINUTES)} 내 {EVENT_LIMIT_ROUNDS}경기</span>
-              <span>생성 {totalGameSlots}/{targetRoundCount}경기</span>
+              <span>라운드당 {GAME_SLOT_MINUTES}분</span>
+              <span>총 {totalMatches}경기</span>
+              <span>목표 {targetRoundCount}R</span>
               <span>예상 {formatDuration(estimatedMinutes)}</span>
             </div>
             <div className={overtimeGameSlots > 0 ? 'time-alert' : 'time-ok'}>
               {overtimeGameSlots > 0
-                ? `${EVENT_LIMIT_ROUNDS + 1}경기부터 초과 · ${overtimeGameSlots}경기`
+                ? `${EVENT_LIMIT_ROUNDS + 1}R부터 초과 · ${overtimeGameSlots}R`
                 : '2시간 내 완료'}
             </div>
           </section>
@@ -2881,6 +2955,7 @@ function App() {
                         const isEditingMatch = Boolean(editingMatchIds[match.id])
                         const matchOverrides = matchNameOverrides[match.id] ?? {}
                         const matchMission = prizeDraw.matchMissions[match.id]
+                        const selectedWinnerSide = resultWinnerSide(result)
                         const renderTeamName = (team: Team, teamLabel: string) =>
                           isEditingMatch && !isSharedMode ? (
                             <div className="team-name-edit">
@@ -2910,6 +2985,32 @@ function App() {
                               {matchTeamName(match, team)}
                             </div>
                           )
+                        const renderResultButtons = (
+                          teamSide: MatchWinnerSide,
+                          teamName: string,
+                        ) => {
+                          const otherSide = teamSide === 'A' ? 'B' : 'A'
+                          return (
+                            <div className="result-toggle-group" aria-label={`${teamName} 승패`}>
+                              <button
+                                type="button"
+                                className={selectedWinnerSide === teamSide ? 'active win' : ''}
+                                aria-pressed={selectedWinnerSide === teamSide}
+                                onClick={() => updateMatchWinner(match.id, teamSide)}
+                              >
+                                승
+                              </button>
+                              <button
+                                type="button"
+                                className={selectedWinnerSide === otherSide ? 'active loss' : ''}
+                                aria-pressed={selectedWinnerSide === otherSide}
+                                onClick={() => updateMatchWinner(match.id, otherSide)}
+                              >
+                                패
+                              </button>
+                            </div>
+                          )
+                        }
 
                         return (
                           <article
@@ -2973,7 +3074,11 @@ function App() {
                                 )}
                               </div>
                             ) : null}
-                            <div className={`score-row ${isSharedMode ? 'read-only-score' : ''}`}>
+                            <div
+                              className={`score-row ${
+                                isSharedMode ? 'read-only-score' : 'meeting-score-row'
+                              }`}
+                            >
                               {renderTeamName(match.teamA, 'A팀')}
                               {isSharedMode ? (
                                 <span className="score-value">{result.teamAScore || '-'}</span>
@@ -2991,8 +3096,15 @@ function App() {
                                   }
                                 />
                               )}
+                              {!isSharedMode
+                                ? renderResultButtons('A', matchTeamName(match, match.teamA))
+                                : null}
                             </div>
-                            <div className={`score-row ${isSharedMode ? 'read-only-score' : ''}`}>
+                            <div
+                              className={`score-row ${
+                                isSharedMode ? 'read-only-score' : 'meeting-score-row'
+                              }`}
+                            >
                               {renderTeamName(match.teamB, 'B팀')}
                               {isSharedMode ? (
                                 <span className="score-value">{result.teamBScore || '-'}</span>
@@ -3010,6 +3122,9 @@ function App() {
                                   }
                                 />
                               )}
+                              {!isSharedMode
+                                ? renderResultButtons('B', matchTeamName(match, match.teamB))
+                                : null}
                             </div>
                             <div className="match-footer">
                               {isSharedMode ? (
@@ -3019,7 +3134,6 @@ function App() {
                                   <input
                                     type="checkbox"
                                     checked={result.completed}
-                                    disabled={!hasScore(result)}
                                     onChange={(event) =>
                                       updateResult(match.id, {
                                         completed: event.target.checked,
@@ -3063,7 +3177,7 @@ function App() {
                     추가 생성
                   </button>
                   <span>
-                    생성 {totalGameSlots}/{targetRoundCount}경기 · 다음 경기{' '}
+                    생성 {totalGameSlots}R / 목표 {targetRoundCount}R · 다음 R{' '}
                     {formatDuration(totalGameSlots * GAME_SLOT_MINUTES)}
                   </span>
                 </div>

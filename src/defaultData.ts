@@ -51,10 +51,12 @@ export const defaultTournamentTeams: TournamentTeam[] = Array.from(
   }),
 )
 
-export const defaultPlayers: Player[] = [
+export const defaultPlayers: Player[] = []
+
+export const samplePlayers: Player[] = [
   {
     id: 'guest-ko',
-    name: '참가자 1',
+    name: '1번',
     level: '스페셜',
     ageGroup: '30대',
     gender: 'none',
@@ -65,7 +67,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'guest-shin',
-    name: '참가자 2',
+    name: '2번',
     level: '스페셜',
     ageGroup: '30대',
     gender: 'none',
@@ -76,7 +78,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'guest-special',
-    name: '참가자 3',
+    name: '3번',
     level: '스페셜',
     ageGroup: '40대',
     gender: 'none',
@@ -87,7 +89,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'p-minsu',
-    name: '참가자 4',
+    name: '4번',
     level: 'A',
     ageGroup: '30대',
     gender: 'male',
@@ -98,7 +100,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'p-jiyeon',
-    name: '참가자 5',
+    name: '5번',
     level: 'A',
     ageGroup: '30대',
     gender: 'female',
@@ -109,7 +111,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'p-taeho',
-    name: '참가자 6',
+    name: '6번',
     level: 'B',
     ageGroup: '40대',
     gender: 'male',
@@ -120,7 +122,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'p-soobin',
-    name: '참가자 7',
+    name: '7번',
     level: 'B',
     ageGroup: '20대',
     gender: 'female',
@@ -131,7 +133,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'p-hyunwoo',
-    name: '참가자 8',
+    name: '8번',
     level: 'B',
     ageGroup: '45대',
     gender: 'male',
@@ -142,7 +144,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'p-nayoung',
-    name: '참가자 9',
+    name: '9번',
     level: 'B',
     ageGroup: '40대',
     gender: 'female',
@@ -153,7 +155,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'p-junho',
-    name: '참가자 10',
+    name: '10번',
     level: 'C',
     ageGroup: '50대',
     gender: 'male',
@@ -164,7 +166,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'p-eunji',
-    name: '참가자 11',
+    name: '11번',
     level: 'C',
     ageGroup: '45대',
     gender: 'female',
@@ -175,7 +177,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'p-doyoon',
-    name: '참가자 12',
+    name: '12번',
     level: 'C',
     ageGroup: '30대',
     gender: 'male',
@@ -186,7 +188,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'p-yuna',
-    name: '참가자 13',
+    name: '13번',
     level: 'C',
     ageGroup: '50대',
     gender: 'female',
@@ -197,7 +199,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'p-chulsoo',
-    name: '참가자 14',
+    name: '14번',
     level: 'D',
     ageGroup: '55대이상',
     gender: 'male',
@@ -208,7 +210,7 @@ export const defaultPlayers: Player[] = [
   },
   {
     id: 'p-harin',
-    name: '참가자 15',
+    name: '15번',
     level: 'D',
     ageGroup: '20대',
     gender: 'female',

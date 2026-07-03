@@ -2,16 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { makePlayerNameLookup, playerDisplayName, teamDisplayName } from './playerNames'
 import type { Player } from './types'
 
-const makePlayer = (id: string, name: string): Player => ({
+const makePlayer = (id: string, name: string, isGuest = false): Player => ({
   id,
   name,
-  level: 'B',
+  level: isGuest ? '스페셜' : 'B',
   ageGroup: '30대',
   gender: 'none',
   active: true,
-  specialRequired: true,
-  isGuest: false,
-  guestGameLimit: 0,
+  specialRequired: !isGuest,
+  isGuest,
+  guestGameLimit: isGuest ? 3 : 0,
 })
 
 describe('player display names', () => {
@@ -27,15 +27,14 @@ describe('player display names', () => {
     expect(teamDisplayName([firstKim, secondKim], names)).toBe('김민수 1 + 김민수 2')
   })
 
-  it('trims blank names before numbering', () => {
-    const names = makePlayerNameLookup([
-      makePlayer('p-1', '  참가자  '),
-      makePlayer('p-2', '참가자'),
-    ])
+  it('uses numbered fallback labels for unnamed players', () => {
+    const first = makePlayer('p-1', '')
+    const second = makePlayer('p-2', '   ')
+    const guest = makePlayer('g-1', '', true)
+    const names = makePlayerNameLookup([first, second, guest])
 
-    expect(names).toEqual({
-      'p-1': '참가자 1',
-      'p-2': '참가자 2',
-    })
+    expect(playerDisplayName(first, names)).toBe('1번')
+    expect(playerDisplayName(second, names)).toBe('2번')
+    expect(playerDisplayName(guest, names)).toBe('스페셜 1번')
   })
 })

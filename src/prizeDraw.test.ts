@@ -7,9 +7,9 @@ import {
 } from './prizeDraw'
 
 const candidates: PrizeCandidate[] = [
-  { id: 'a', name: '참가자 1' },
-  { id: 'b', name: '참가자 2' },
-  { id: 'c', name: '스페셜 1' },
+  { id: 'a', name: '1번' },
+  { id: 'b', name: '2번' },
+  { id: 'c', name: '스페셜 1번' },
 ]
 
 describe('parsePrizeList', () => {

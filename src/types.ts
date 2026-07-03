@@ -1,6 +1,6 @@
 export type Gender = 'male' | 'female' | 'none'
 
-export type Level = 'S' | 'A' | 'B' | 'C' | 'D' | 'O' | '스페셜'
+export type Level = 'OA' | 'A' | 'B' | 'C' | 'D' | 'O' | '스페셜'
 
 export type AgeGroup = '20대' | '30대' | '40대' | '45대' | '50대' | '55대이상'
 
@@ -88,11 +88,14 @@ export type Schedule = {
   guestGameCounts: Record<string, number>
 }
 
+export type MatchWinnerSide = 'A' | 'B'
+
 export type MatchResult = {
   teamAScore: string
   teamBScore: string
   completed: boolean
   note: string
+  winnerSide?: MatchWinnerSide
 }
 
 export type ResultsByMatch = Record<string, MatchResult>

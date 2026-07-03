@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultPlayers, defaultSettings } from './defaultData'
+import { defaultSettings, samplePlayers } from './defaultData'
 import {
   decodeSharePayload,
   encodeSharePayload,
@@ -11,7 +11,7 @@ import {
 const makePayload = (): SharePayload => ({
   version: 1,
   generatedAt: '2026-06-30T12:00:00.000Z',
-  players: defaultPlayers,
+  players: samplePlayers,
   settings: {
     ...defaultSettings,
     eventName: '화요 배드민턴',
@@ -41,7 +41,7 @@ const makePayload = (): SharePayload => ({
       {
         prize: '셔틀콕',
         winnerId: 'guest-ko',
-        winnerName: '참가자 1',
+        winnerName: '1번',
       },
     ],
     missionResults: [],

@@ -928,6 +928,13 @@ textarea {
   font-size: 28px;
 }
 
+.metric-subtext {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .special-summary {
   display: flex;
   flex-wrap: wrap;
@@ -1364,6 +1371,10 @@ textarea {
   gap: 9px;
 }
 
+.meeting-score-row {
+  grid-template-columns: minmax(0, 1fr) 74px auto;
+}
+
 .team-name {
   min-height: 38px;
   display: flex;
@@ -1431,6 +1442,34 @@ textarea {
   text-align: center;
   font-size: 18px;
   font-weight: 800;
+}
+
+.result-toggle-group {
+  display: grid;
+  grid-template-columns: repeat(2, 34px);
+  gap: 4px;
+}
+
+.result-toggle-group button {
+  min-height: 38px;
+  padding: 4px 0;
+  border-color: var(--line);
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.result-toggle-group button.active.win {
+  border-color: var(--green);
+  background: var(--soft-green);
+  color: var(--green);
+}
+
+.result-toggle-group button.active.loss {
+  border-color: var(--red);
+  background: var(--soft-red);
+  color: var(--red);
 }
 
 .read-only-score {
@@ -2121,6 +2160,20 @@ textarea {
   .score-row {
     grid-template-columns: minmax(0, 1fr) 56px;
     gap: 6px;
+  }
+
+  .meeting-score-row {
+    grid-template-columns: minmax(0, 1fr) 52px auto;
+  }
+
+  .result-toggle-group {
+    grid-template-columns: repeat(2, 28px);
+    gap: 3px;
+  }
+
+  .result-toggle-group button {
+    min-height: 34px;
+    font-size: 11px;
   }
 
   .match-mission-box {

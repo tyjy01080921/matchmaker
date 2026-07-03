@@ -112,7 +112,7 @@ const ageIndex = (player: Player) =>
 export const getPlayerMatchScore = (player: Player) => {
   const index = ageIndex(player)
   if (player.level === '스페셜') return 108
-  if (player.level === 'S' || player.level === 'O') return 94
+  if (player.level === 'OA' || player.level === 'O') return 94
   if (player.level === 'D') return dMatchScores[index]
 
   const maleScore = maleMatchScores[player.level][index]
@@ -179,7 +179,7 @@ const teamLevelSpread = (team: Team) =>
 
 const levelMatchGroup = (player: Player) => {
   if (player.level === 'O') return null
-  if (player.level === 'S') return 'A'
+  if (player.level === 'OA') return 'A'
   return player.level
 }
 
@@ -545,6 +545,7 @@ const pickSpecialRegulars = (
 
   const pendingIds = new Set(pending.map((player) => player.id))
   const hasPending = pending.length > 0
+  const expectedPendingCount = hasPending ? Math.min(3, pendingIds.size) : 0
   const targetLevel = matchLevelValue(guest)
   const levelFit = [...availableRegulars]
     .sort((a, b) => {
@@ -595,7 +596,11 @@ const pickSpecialRegulars = (
           candidatePool[b],
           candidatePool[c],
         ]
-        if (hasPending && !regulars.some((player) => pendingIds.has(player.id))) {
+        if (
+          hasPending &&
+          regulars.filter((player) => pendingIds.has(player.id)).length <
+            expectedPendingCount
+        ) {
           continue
         }
 
@@ -1621,7 +1626,7 @@ export const generateSchedule = (
   players: Player[],
   settings: MatchSettings,
 ): Schedule => {
-  const activePlayers = players.filter((player) => player.active && player.name.trim())
+  const activePlayers = players.filter((player) => player.active)
   const activeRegulars = activePlayers.filter((player) => !player.isGuest)
   const activeGuests = activePlayers.filter((player) => player.isGuest)
   const history = makeHistory(activePlayers)
@@ -1839,7 +1844,7 @@ export const calculateStats = (
     return next
   }
 
-  for (const player of players.filter((item) => item.active && item.name.trim())) {
+  for (const player of players.filter((item) => item.active)) {
     ensureStat(player)
   }
 
@@ -1858,11 +1863,8 @@ export const calculateStats = (
       const result = results[match.id]
       const teamAScore = result ? numericScore(result.teamAScore) : null
       const teamBScore = result ? numericScore(result.teamBScore) : null
-      const completed =
-        Boolean(result?.completed) &&
-        teamAScore !== null &&
-        teamBScore !== null &&
-        teamAScore !== teamBScore
+      const winnerSide = result?.winnerSide ?? null
+      const completed = Boolean(result?.completed) && winnerSide !== null
       const playersInMatch = matchStatPlayers(match)
       const [teamA0, teamA1, teamB0, teamB1] = playersInMatch
       const teamA: Team = [teamA0, teamA1]
@@ -1875,20 +1877,24 @@ export const calculateStats = (
         if (!player.isGuest && guestMatch) stat.guestGames += 1
       }
 
-      if (!completed || teamAScore === null || teamBScore === null) continue
+      if (!completed) continue
 
-      const teamAWon = teamAScore > teamBScore
+      const teamAWon = winnerSide === 'A'
       for (const player of teamA) {
         const stat = ensureStat(player)
-        stat.pointsFor += teamAScore
-        stat.pointsAgainst += teamBScore
+        if (teamAScore !== null && teamBScore !== null) {
+          stat.pointsFor += teamAScore
+          stat.pointsAgainst += teamBScore
+        }
         if (teamAWon) stat.wins += 1
         else stat.losses += 1
       }
       for (const player of teamB) {
         const stat = ensureStat(player)
-        stat.pointsFor += teamBScore
-        stat.pointsAgainst += teamAScore
+        if (teamAScore !== null && teamBScore !== null) {
+          stat.pointsFor += teamBScore
+          stat.pointsAgainst += teamAScore
+        }
         if (teamAWon) stat.losses += 1
         else stat.wins += 1
       }
