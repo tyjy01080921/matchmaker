@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  defaultMatchConditionOptions,
   defaultPlayers,
   defaultSettings,
   defaultTournamentSettings,
@@ -8,8 +9,9 @@ import {
   calculateStats,
   generateSchedule,
   generateTournamentSchedule,
+  getPlayerMatchScore,
 } from './matchmaker'
-import type { Gender, Level, Player, TournamentTeam } from './types'
+import type { AgeGroup, Gender, Level, Player, TournamentTeam } from './types'
 
 const makeTestPlayer = (
   id: string,
@@ -17,11 +19,12 @@ const makeTestPlayer = (
   gender: Gender = 'male',
   specialRequired = false,
   isGuest = false,
+  ageGroup: AgeGroup = '30대',
 ): Player => ({
   id,
   name: id,
   level,
-  ageGroup: '30대',
+  ageGroup,
   gender: isGuest ? 'none' : gender,
   active: true,
   specialRequired: isGuest ? false : specialRequired,
@@ -84,13 +87,13 @@ describe('generateSchedule', () => {
     ).toBe(true)
   })
 
-  it('pairs two men and two women as mixed doubles when available', () => {
+  it('prioritizes same-level same-gender teams when available', () => {
     const schedule = generateSchedule(
       [
-        makeTestPlayer('male-a', 'A', 'male'),
-        makeTestPlayer('male-b', 'B', 'male'),
-        makeTestPlayer('female-a', 'A', 'female'),
-        makeTestPlayer('female-b', 'B', 'female'),
+        makeTestPlayer('male-a1', 'A', 'male'),
+        makeTestPlayer('male-a2', 'A', 'male'),
+        makeTestPlayer('female-b1', 'B', 'female'),
+        makeTestPlayer('female-b2', 'B', 'female'),
       ],
       {
         ...defaultSettings,
@@ -100,10 +103,63 @@ describe('generateSchedule', () => {
     )
     const match = schedule.rounds[0].matches[0]
 
-    expect(match.teamA.filter((player) => player.gender === 'male')).toHaveLength(1)
-    expect(match.teamA.filter((player) => player.gender === 'female')).toHaveLength(1)
-    expect(match.teamB.filter((player) => player.gender === 'male')).toHaveLength(1)
-    expect(match.teamB.filter((player) => player.gender === 'female')).toHaveLength(1)
+    const teamAKeys = match.teamA.map((player) => `${player.gender}-${player.level}`)
+    const teamBKeys = match.teamB.map((player) => `${player.gender}-${player.level}`)
+
+    expect(new Set(teamAKeys).size).toBe(1)
+    expect(new Set(teamBKeys).size).toBe(1)
+  })
+
+  it('keeps a valid schedule when the same-gender condition is unchecked', () => {
+    const schedule = generateSchedule(
+      [
+        makeTestPlayer('male-a', 'A', 'male'),
+        makeTestPlayer('female-a', 'A', 'female'),
+        makeTestPlayer('male-b', 'B', 'male'),
+        makeTestPlayer('female-b', 'B', 'female'),
+      ],
+      {
+        ...defaultSettings,
+        courtCount: 1,
+        targetRoundCount: 1,
+        conditionOptions: {
+          ...defaultMatchConditionOptions,
+          genderBalance: false,
+        },
+      },
+    )
+    const match = schedule.rounds[0].matches[0]
+    const playerIds = [...match.teamA, ...match.teamB].map((player) => player.id)
+
+    expect(new Set(playerIds)).toHaveLength(4)
+    expect(schedule.warnings).toHaveLength(0)
+  })
+
+  it('scores age, gender, and level according to meeting rules', () => {
+    const male20A = makeTestPlayer('male-20-a', 'A', 'male', false, false, '20대')
+    const male30A = makeTestPlayer('male-30-a', 'A', 'male', false, false, '30대')
+    const female20A = makeTestPlayer('female-20-a', 'A', 'female', false, false, '20대')
+    const male40B = makeTestPlayer('male-40-b', 'B', 'male', false, false, '40대')
+    const female55C = makeTestPlayer(
+      'female-55-c',
+      'C',
+      'female',
+      false,
+      false,
+      '55대이상',
+    )
+    const d20 = makeTestPlayer('d-20', 'D', 'male', false, false, '20대')
+    const d55 = makeTestPlayer('d-55', 'D', 'female', false, false, '55대이상')
+    const s20 = makeTestPlayer('s-20', 'S', 'female', false, false, '20대')
+    const s55 = makeTestPlayer('s-55', 'S', 'male', false, false, '55대이상')
+    const o20 = makeTestPlayer('o-20', 'O', 'female', false, false, '20대')
+
+    expect(getPlayerMatchScore(male20A)).toBeGreaterThan(getPlayerMatchScore(male30A))
+    expect(getPlayerMatchScore(female20A)).toBe(getPlayerMatchScore(male40B))
+    expect(getPlayerMatchScore(d20)).toBeLessThan(getPlayerMatchScore(female55C))
+    expect(getPlayerMatchScore(d20)).toBeGreaterThan(getPlayerMatchScore(d55))
+    expect(getPlayerMatchScore(s20)).toBe(getPlayerMatchScore(s55))
+    expect(getPlayerMatchScore(o20)).toBe(getPlayerMatchScore(s20))
   })
 
   it('auto-generates enough order slots for every regular participant to play with a guest', () => {
@@ -335,7 +391,7 @@ describe('generateSchedule', () => {
     expect(regularLevels).not.toContain('D')
   })
 
-  it('prefers male participants one level below a female participant in special matches', () => {
+  it('prefers same-gender regulars in the first special match', () => {
     const schedule = generateSchedule(
       [
         makeTestPlayer('guest', '스페셜', 'none', false, true),
@@ -355,8 +411,9 @@ describe('generateSchedule', () => {
     const matchPlayers = [...schedule.rounds[0].matches[0].teamA, ...schedule.rounds[0].matches[0].teamB]
 
     expect(matchPlayers.map((player) => player.id)).toEqual(
-      expect.arrayContaining(['female-a', 'male-b']),
+      expect.arrayContaining(['male-a1', 'male-a2', 'male-b']),
     )
+    expect(matchPlayers.map((player) => player.id)).not.toContain('female-a')
   })
 
   it('fills every court when enough active players are available', () => {

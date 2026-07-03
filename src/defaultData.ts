@@ -1,4 +1,23 @@
-import type { MatchSettings, Player, TournamentSettings, TournamentTeam } from './types'
+import type {
+  MatchConditionOptions,
+  MatchSettings,
+  Player,
+  TournamentSettings,
+  TournamentTeam,
+} from './types'
+
+export const defaultMatchConditionOptions: MatchConditionOptions = {
+  fairGames: true,
+  restBalance: true,
+  levelBalance: true,
+  ageBalance: true,
+  genderBalance: true,
+  partnerRepeat: true,
+  opponentRepeat: true,
+  specialPriority: true,
+  guestPartnerRepeat: true,
+  femaleLevelFit: true,
+}
 
 export const defaultSettings: MatchSettings = {
   eventName: 'A.M.A Match Maker Pro',
@@ -6,6 +25,7 @@ export const defaultSettings: MatchSettings = {
   seed: 11,
   singleGuestPerMatch: true,
   targetRoundCount: 8,
+  conditionOptions: defaultMatchConditionOptions,
 }
 
 export const defaultTournamentSettings: TournamentSettings = {

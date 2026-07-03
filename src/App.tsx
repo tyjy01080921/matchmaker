@@ -4,10 +4,12 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type RefObject,
 } from 'react'
 import './App.css'
 import amaLogo from './assets/ama-logo.png'
 import {
+  defaultMatchConditionOptions,
   defaultPlayers,
   defaultSettings,
   defaultTournamentSettings,
@@ -39,6 +41,8 @@ import type {
   Gender,
   Level,
   Match,
+  MatchConditionKey,
+  MatchConditionOptions,
   MatchNameOverrides,
   MatchResult,
   MatchSettings,
@@ -59,6 +63,7 @@ const STORAGE_KEY = 'badminton-matchmaker-v1'
 const GAME_SLOT_MINUTES = 15
 const EVENT_LIMIT_MINUTES = 120
 const EVENT_LIMIT_ROUNDS = Math.floor(EVENT_LIMIT_MINUTES / GAME_SLOT_MINUTES)
+const CONTACT_EMAIL = 'ama_official@naver.com'
 
 const getTargetRoundCount = (settings: MatchSettings) => {
   const numeric = Number(settings.targetRoundCount)
@@ -90,14 +95,16 @@ type StoredState = {
 }
 
 const levelLabels: Record<Level, string> = {
+  S: 'S',
   A: 'A',
   B: 'B',
   C: 'C',
   D: 'D',
+  O: 'O',
   스페셜: '스페셜',
 }
 
-const levelOptions: Level[] = ['A', 'B', 'C', 'D', '스페셜']
+const levelOptions: Level[] = ['S', 'A', 'B', 'C', 'D', 'O', '스페셜']
 
 const ageGroups: AgeGroup[] = ['20대', '30대', '40대', '45대', '50대', '55대이상']
 
@@ -105,6 +112,32 @@ const genderLabels: Record<Gender, string> = {
   male: '남',
   female: '여',
   none: '무관',
+}
+
+const matchConditionKeys: MatchConditionKey[] = [
+  'levelBalance',
+  'genderBalance',
+  'fairGames',
+  'restBalance',
+  'partnerRepeat',
+  'opponentRepeat',
+  'specialPriority',
+  'guestPartnerRepeat',
+  'ageBalance',
+  'femaleLevelFit',
+]
+
+const matchConditionLabels: Record<MatchConditionKey, string> = {
+  levelBalance: '동일 레벨 우선',
+  genderBalance: '동일 성별 우선',
+  fairGames: '경기 수 균등',
+  restBalance: '휴식 균형',
+  partnerRepeat: '파트너 반복 최소',
+  opponentRepeat: '상대 반복 최소',
+  specialPriority: '스페셜 우선',
+  guestPartnerRepeat: '스페셜 파트너 반복 최소',
+  ageBalance: '연령대 균형',
+  femaleLevelFit: '여성 레벨 조합',
 }
 
 const tournamentFormatLabels: Record<TournamentFormat, string> = {
@@ -166,14 +199,18 @@ const legacySampleNameSet = new Set([
 
 const normalizeLevel = (value: unknown): Level => {
   if (
+    value === 'S' ||
     value === 'A' ||
     value === 'B' ||
     value === 'C' ||
     value === 'D' ||
+    value === 'O' ||
     value === '스페셜'
   ) {
     return value
   }
+  if (value === 's') return 'S'
+  if (value === 'o') return 'O'
   if (value === 'SPECIAL' || value === 'special' || value === 'Special') {
     return '스페셜'
   }
@@ -253,6 +290,46 @@ const normalizePositiveInteger = (
   if (!Number.isFinite(numeric)) return fallback
   return Math.min(max, Math.max(min, Math.floor(numeric)))
 }
+
+const normalizeMatchConditionOptions = (
+  value: unknown,
+): MatchConditionOptions => {
+  const raw =
+    value && typeof value === 'object'
+      ? (value as Partial<Record<MatchConditionKey, unknown>>)
+      : {}
+
+  return Object.fromEntries(
+    matchConditionKeys.map((key) => [
+      key,
+      typeof raw[key] === 'boolean'
+        ? raw[key]
+        : defaultMatchConditionOptions[key],
+    ]),
+  ) as MatchConditionOptions
+}
+
+const normalizeMatchSettings = (
+  settings: Partial<MatchSettings> | undefined,
+): MatchSettings => ({
+  ...defaultSettings,
+  ...settings,
+  courtCount: normalizePositiveInteger(
+    settings?.courtCount,
+    defaultSettings.courtCount,
+    1,
+    12,
+  ),
+  seed: normalizePositiveInteger(settings?.seed, defaultSettings.seed, 1, 999999),
+  singleGuestPerMatch: settings?.singleGuestPerMatch ?? true,
+  targetRoundCount: normalizePositiveInteger(
+    settings?.targetRoundCount,
+    defaultSettings.targetRoundCount,
+    1,
+    99,
+  ),
+  conditionOptions: normalizeMatchConditionOptions(settings?.conditionOptions),
+})
 
 const normalizeTournamentSeed = (value: unknown) => {
   if (value === null || value === undefined || value === '') return null
@@ -409,7 +486,7 @@ const readStoredState = (): StoredState => {
     const raw = window.localStorage.getItem(STORAGE_KEY)
     if (!raw) throw new Error('empty')
     const parsed = JSON.parse(raw) as Partial<StoredState>
-    const settings = { ...defaultSettings, ...parsed.settings }
+    const settings = normalizeMatchSettings(parsed.settings)
     if (legacyMeetingEventNames.has(settings.eventName)) {
       settings.eventName = defaultSettings.eventName
     }
@@ -452,7 +529,7 @@ const storedStateFromSharePayload = (payload: SharePayload): StoredState => ({
   players: payload.players.length
     ? payload.players.map((player) => normalizeStoredPlayer(player))
     : defaultPlayers,
-  settings: { ...defaultSettings, ...payload.settings },
+  settings: normalizeMatchSettings(payload.settings),
   results: payload.results ?? {},
   pairMixes: payload.pairMixes ?? {},
   matchNameOverrides: payload.matchNameOverrides ?? {},
@@ -577,18 +654,26 @@ const formatDuration = (minutes: number) => {
 
 const copyToClipboard = async (value: string) => {
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value)
-    return
+    try {
+      await navigator.clipboard.writeText(value)
+      return
+    } catch {
+      // 권한이 막힌 브라우저에서는 아래 입력 선택 방식으로 다시 시도합니다.
+    }
   }
 
   const textarea = document.createElement('textarea')
   textarea.value = value
   textarea.style.position = 'fixed'
+  textarea.style.top = '0'
+  textarea.style.left = '0'
   textarea.style.opacity = '0'
   document.body.appendChild(textarea)
+  textarea.focus()
   textarea.select()
-  document.execCommand('copy')
+  const copied = document.execCommand('copy')
   textarea.remove()
+  if (!copied) throw new Error('copy failed')
 }
 
 const sanitizeFilename = (value: string) =>
@@ -648,7 +733,9 @@ const parseBulkPlayers = (text: string): Player[] =>
       const tokens = line.split(/[\s,\t]+/).filter(Boolean)
       const name = tokens[0]
       const regularLevelToken = tokens.find((token) =>
-        (['A', 'B', 'C', 'D'] as string[]).includes(token.toUpperCase()),
+        (['S', 'A', 'B', 'C', 'D', 'O'] as string[]).includes(
+          token.toUpperCase(),
+        ),
       )
       const specialLevelToken = tokens.find(
         (token) => token === '스페셜' || token.toLowerCase() === 'special',
@@ -704,7 +791,9 @@ const parseBulkTournamentTeams = (text: string): TournamentTeam[] =>
       const metadataFields = fields.slice(1)
       const seedIndex = metadataFields.findIndex((field) => /^\d+$/.test(field))
       const levelIndex = metadataFields.findIndex((field) =>
-        (['A', 'B', 'C', 'D'] as string[]).includes(field.toUpperCase()),
+        (['S', 'A', 'B', 'C', 'D', 'O'] as string[]).includes(
+          field.toUpperCase(),
+        ),
       )
       const genderIndex = metadataFields.findIndex((field) =>
         tournamentGenderTokens.includes(field.toLowerCase()),
@@ -821,7 +910,15 @@ function App() {
   const [view, setView] = useState<'schedule' | 'stats'>('schedule')
   const [tournamentView, setTournamentView] = useState<'progress' | 'board'>('progress')
   const [notice, setNotice] = useState(initialContext.isShared ? '공유본' : '저장됨')
+  const [settingsOpen, setSettingsOpen] = useState(true)
   const [playersOpen, setPlayersOpen] = useState(true)
+  const [prizeOpen, setPrizeOpen] = useState(true)
+  const [tournamentSettingsOpen, setTournamentSettingsOpen] = useState(true)
+  const [tournamentTeamsOpen, setTournamentTeamsOpen] = useState(true)
+  const [conditionsOpen, setConditionsOpen] = useState(false)
+  const [levelHelpOpen, setLevelHelpOpen] = useState(false)
+  const [contactOpen, setContactOpen] = useState(false)
+  const [contactCopied, setContactCopied] = useState(false)
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulkText, setBulkText] = useState('')
   const [tournamentBulkOpen, setTournamentBulkOpen] = useState(false)
@@ -830,9 +927,14 @@ function App() {
   const [tournamentPrintImageUrls, setTournamentPrintImageUrls] = useState<string[]>([])
   const [editingMatchIds, setEditingMatchIds] = useState<Record<string, boolean>>({})
   const [matchNameDrafts, setMatchNameDrafts] = useState<MatchNameOverrides>({})
+  const [meetingRoundOpen, setMeetingRoundOpen] = useState<Record<number, boolean>>({})
+  const [tournamentRoundOpen, setTournamentRoundOpen] = useState<Record<number, boolean>>({})
   const [rouletteRotation, setRouletteRotation] = useState(0)
   const [rouletteWinnerName, setRouletteWinnerName] = useState('')
   const [isRouletteSpinning, setIsRouletteSpinning] = useState(false)
+  const meetingPrintPreviewRef = useRef<HTMLElement | null>(null)
+  const tournamentPrintPreviewRef = useRef<HTMLElement | null>(null)
+  const contactCopyTimerRef = useRef<number | null>(null)
   const rouletteTimerRef = useRef<number | null>(null)
 
   const rawSchedule = useMemo(
@@ -911,6 +1013,32 @@ function App() {
   const inTimeGameSlots = Math.min(totalGameSlots, EVENT_LIMIT_ROUNDS)
   const overtimeGameSlots = Math.max(totalGameSlots - EVENT_LIMIT_ROUNDS, 0)
   const estimatedMinutes = totalGameSlots * GAME_SLOT_MINUTES
+  const progressPercent =
+    totalMatches > 0 ? Math.round((completedMatches / totalMatches) * 100) : 0
+  const completedRounds = schedule.rounds.filter(
+    (round) =>
+      round.matches.length > 0 &&
+      round.matches.every((match) => results[match.id]?.completed),
+  ).length
+  const remainingRounds = Math.max(totalGameSlots - completedRounds, 0)
+  const remainingMinutes = remainingRounds * GAME_SLOT_MINUTES
+  const activePlayerStats = stats.filter((stat) =>
+    activePlayers.some((player) => player.id === stat.player.id),
+  )
+  const mostGames = activePlayerStats.length
+    ? Math.max(...activePlayerStats.map((stat) => stat.games))
+    : 0
+  const leastGames = activePlayerStats.length
+    ? Math.min(...activePlayerStats.map((stat) => stat.games))
+    : 0
+  const mostPlayedPlayers = activePlayerStats
+    .filter((stat) => stat.games === mostGames)
+    .map((stat) => playerDisplayName(stat.player, displayNames))
+    .join(', ')
+  const leastPlayedPlayers = activePlayerStats
+    .filter((stat) => stat.games === leastGames)
+    .map((stat) => playerDisplayName(stat.player, displayNames))
+    .join(', ')
   const activeTournamentTeams = tournamentTeams.filter(
     (team) => team.active && team.name.trim(),
   )
@@ -1020,6 +1148,9 @@ function App() {
       if (rouletteTimerRef.current !== null) {
         window.clearTimeout(rouletteTimerRef.current)
       }
+      if (contactCopyTimerRef.current !== null) {
+        window.clearTimeout(contactCopyTimerRef.current)
+      }
     },
     [],
   )
@@ -1039,6 +1170,41 @@ function App() {
     setTournamentSettings((current) => normalizeTournamentSettings({ ...current, ...patch }))
     setTournamentResults({})
     setNotice('대회 설정 변경됨')
+  }
+
+  const updateMatchCondition = (key: MatchConditionKey, checked: boolean) => {
+    setSettings((current) => ({
+      ...current,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        ...current.conditionOptions,
+        [key]: checked,
+      },
+    }))
+    setResults({})
+    setPairMixes({})
+    setMatchNameOverrides({})
+    setNotice('조건 변경됨')
+  }
+
+  const isMeetingRoundOpen = (roundNumber: number) =>
+    meetingRoundOpen[roundNumber] ?? true
+
+  const toggleMeetingRound = (roundNumber: number) => {
+    setMeetingRoundOpen((current) => ({
+      ...current,
+      [roundNumber]: !(current[roundNumber] ?? true),
+    }))
+  }
+
+  const isTournamentRoundOpen = (roundNumber: number) =>
+    tournamentRoundOpen[roundNumber] ?? true
+
+  const toggleTournamentRound = (roundNumber: number) => {
+    setTournamentRoundOpen((current) => ({
+      ...current,
+      [roundNumber]: !(current[roundNumber] ?? true),
+    }))
   }
 
   const updateTournamentTeam = (id: string, patch: Partial<TournamentTeam>) => {
@@ -1659,6 +1825,7 @@ function App() {
 
       setPrintImageUrls(imageUrls)
       saveScheduleImages(imageUrls)
+      scrollToPrintPreview(meetingPrintPreviewRef)
     } catch {
       setNotice('대진표 저장 실패')
     }
@@ -1694,6 +1861,7 @@ function App() {
 
       setTournamentPrintImageUrls(imageUrls)
       saveTournamentScheduleImages(imageUrls)
+      scrollToPrintPreview(tournamentPrintPreviewRef)
     } catch {
       setNotice('대회 대진표 저장 실패')
     }
@@ -1733,6 +1901,52 @@ function App() {
     window.location.href = getBaseUrl()
   }
 
+  const scrollToElement = (element: HTMLElement | null) => {
+    if (!element) return
+
+    const header = document.querySelector<HTMLElement>('.app-header')
+    const headerHeight = header?.offsetHeight ?? 0
+    const top = element.getBoundingClientRect().top + window.scrollY - headerHeight - 12
+    window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
+  }
+
+  const scrollToSection = (sectionId: string) => {
+    const element = document.getElementById(sectionId)
+    if (!element) return
+
+    scrollToElement(element)
+  }
+
+  const scrollToSectionAfterRender = (sectionId: string) => {
+    window.setTimeout(() => scrollToSection(sectionId), 0)
+  }
+
+  const scrollToPrintPreview = (previewRef: RefObject<HTMLElement | null>) => {
+    window.setTimeout(() => scrollToElement(previewRef.current), 0)
+  }
+
+  const openContactNotice = () => {
+    setContactOpen(true)
+    setContactCopied(false)
+  }
+
+  const copyContactEmail = async () => {
+    try {
+      await copyToClipboard(CONTACT_EMAIL)
+      setContactCopied(true)
+      setNotice('이메일 복사됨')
+      if (contactCopyTimerRef.current !== null) {
+        window.clearTimeout(contactCopyTimerRef.current)
+      }
+      contactCopyTimerRef.current = window.setTimeout(() => {
+        setContactCopied(false)
+        contactCopyTimerRef.current = null
+      }, 1800)
+    } catch {
+      setNotice('이메일 복사 실패')
+    }
+  }
+
   const renderTournamentSide = (match: TournamentMatch, side: 'A' | 'B') => {
     const teamId = side === 'A' ? match.teamAId : match.teamBId
     const roster = tournamentTeamRoster(teamId)
@@ -1747,97 +1961,221 @@ function App() {
 
   return (
     <div className="app">
+      {levelHelpOpen ? (
+        <div className="dialog-backdrop" onClick={() => setLevelHelpOpen(false)}>
+          <section
+            className="info-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="level-help-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="dialog-heading">
+              <h2 id="level-help-title">레벨 분류</h2>
+              <button type="button" onClick={() => setLevelHelpOpen(false)}>
+                닫기
+              </button>
+            </div>
+            <div className="level-help-list">
+              <p>A가 가장 높고 D가 가장 낮습니다.</p>
+              <p>여자 20대 A는 남자 40대 B와 비슷한 기준으로 배정합니다.</p>
+              <p>대진 카드에서 수동으로 수정 가능합니다.</p>
+              <p>S는 연령 상관없이 A레벨 우선 조합을 원하는 참가자입니다.</p>
+              <p>O는 A레벨 중 연령과 성별, 레벨 상관없는 참가자입니다.</p>
+              <p>스페셜은 초청/게스트 경기 배정용입니다.</p>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {contactOpen ? (
+        <div className="dialog-backdrop" onClick={() => setContactOpen(false)}>
+          <section
+            className="info-dialog contact-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="contact-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="dialog-heading">
+              <h2 id="contact-title">문의</h2>
+              <button type="button" onClick={() => setContactOpen(false)}>
+                닫기
+              </button>
+            </div>
+            <p>아래 이메일로 문의 주세요.</p>
+            <div className="contact-copy-row">
+              <strong>{CONTACT_EMAIL}</strong>
+              <button
+                type="button"
+                className="emoji-copy-button"
+                aria-label="이메일 복사"
+                title="복사"
+                onClick={copyContactEmail}
+              >
+                📋
+              </button>
+            </div>
+            <span className="copy-status">{contactCopied ? '복사됨' : '복사 가능'}</span>
+          </section>
+        </div>
+      ) : null}
+
       <header className="app-header">
-        <div className="brand-block">
-          <img className="brand-logo" src={amaLogo} alt="" aria-hidden="true" />
-          <div>
-            <h1 className="app-title">A.M.A Match Maker Pro</h1>
+        <div className="header-main">
+          <div className="brand-block">
+            <img className="brand-logo" src={amaLogo} alt="" aria-hidden="true" />
+            <div>
+              <h1 className="app-title">A.M.A Match Maker Pro</h1>
+            </div>
+          </div>
+
+          <div className="mode-switch" aria-label="운영 모드">
+            <button
+              type="button"
+              className={appMode === 'meeting' ? 'active' : ''}
+              onClick={() => setAppModeAndNotice('meeting')}
+            >
+              모임
+            </button>
+            <button
+              type="button"
+              className={appMode === 'tournament' ? 'active' : ''}
+              onClick={() => setAppModeAndNotice('tournament')}
+            >
+              대회
+            </button>
+          </div>
+
+          <div className="header-actions">
+            {isSharedMode ? (
+              <>
+                <button type="button" className="primary-action" onClick={useSharedCopy}>
+                  편집
+                </button>
+                <button type="button" onClick={openMySchedule}>
+                  새로
+                </button>
+                <button type="button" onClick={handleCopyShareLink}>
+                  공유
+                </button>
+                <button
+                  type="button"
+                  onClick={appMode === 'meeting' ? handlePrintSchedule : handlePrintTournament}
+                >
+                  저장
+                </button>
+                <span className="header-status">{notice}</span>
+              </>
+            ) : appMode === 'meeting' ? (
+              <>
+                <button
+                  type="button"
+                  className="primary-action"
+                  onClick={generateTwoHourSchedule}
+                >
+                  생성
+                </button>
+                <button type="button" onClick={reshuffle}>
+                  섞기
+                </button>
+                <button type="button" onClick={handleCopyShareLink}>
+                  공유
+                </button>
+                <button type="button" onClick={handlePrintSchedule}>
+                  저장
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="primary-action"
+                  onClick={() => {
+                    setTournamentView('progress')
+                    scrollToSectionAfterRender('tournament-progress')
+                  }}
+                >
+                  생성
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTournamentResults({})
+                    setNotice('대회 결과 초기화됨')
+                  }}
+                >
+                  초기화
+                </button>
+                <button type="button" onClick={handleCopyShareLink}>
+                  공유
+                </button>
+                <button type="button" onClick={handlePrintTournament}>
+                  저장
+                </button>
+              </>
+            )}
           </div>
         </div>
-
-        <div className="mode-switch" aria-label="운영 모드">
-          <button
-            type="button"
-            className={appMode === 'meeting' ? 'active' : ''}
-            onClick={() => setAppModeAndNotice('meeting')}
-          >
-            모임
-          </button>
-          <button
-            type="button"
-            className={appMode === 'tournament' ? 'active' : ''}
-            onClick={() => setAppModeAndNotice('tournament')}
-          >
-            대회
-          </button>
-        </div>
-
-        <div className="header-actions">
-          {isSharedMode ? (
+        <nav className="shortcut-row" aria-label="바로가기">
+          {appMode === 'meeting' ? (
             <>
-              <button type="button" className="primary-action" onClick={useSharedCopy}>
-                편집
-              </button>
-              <button type="button" onClick={openMySchedule}>
-                새로
-              </button>
-              <button type="button" onClick={handleCopyShareLink}>
-                공유
-              </button>
+              {!isSharedMode ? (
+                <button type="button" onClick={() => scrollToSection('meeting-prizes')}>
+                  경품
+                </button>
+              ) : null}
               <button
                 type="button"
-                onClick={appMode === 'meeting' ? handlePrintSchedule : handlePrintTournament}
+                onClick={() => {
+                  setView('schedule')
+                  scrollToSectionAfterRender('meeting-schedule')
+                }}
               >
-                저장
+                대진표
               </button>
-              <span className="header-status">{notice}</span>
-            </>
-          ) : appMode === 'meeting' ? (
-            <>
-              <button
-                type="button"
-                className="primary-action"
-                onClick={generateTwoHourSchedule}
-              >
-                생성
+              <button type="button" onClick={() => scrollToSection('meeting-progress')}>
+                현황
               </button>
-              <button type="button" onClick={reshuffle}>
-                섞기
-              </button>
-              <button type="button" onClick={handleCopyShareLink}>
-                공유
-              </button>
-              <button type="button" onClick={handlePrintSchedule}>
-                저장
+              <button type="button" onClick={openContactNotice}>
+                문의
               </button>
             </>
           ) : (
             <>
               <button
                 type="button"
-                className="primary-action"
-                onClick={() => setTournamentView('progress')}
+                onClick={() => {
+                  setTournamentView('progress')
+                  scrollToSectionAfterRender('tournament-progress')
+                }}
               >
-                진행
+                현황
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  setTournamentResults({})
-                  setNotice('대회 결과 초기화됨')
+                  setTournamentView('board')
+                  scrollToSectionAfterRender('tournament-board')
                 }}
               >
-                초기화
+                보드
               </button>
-              <button type="button" onClick={handleCopyShareLink}>
-                공유
-              </button>
-              <button type="button" onClick={handlePrintTournament}>
-                저장
+              <button
+                type="button"
+                onClick={() => {
+                  if (tournamentPrintImageUrls.length === 0) {
+                    setNotice('저장 후 이미지 확인')
+                    return
+                  }
+                  scrollToSection('tournament-image')
+                }}
+              >
+                이미지
               </button>
             </>
           )}
-        </div>
+        </nav>
       </header>
 
       {appMode === 'meeting' ? (
@@ -1846,79 +2184,118 @@ function App() {
         <aside className="control-panel">
           <section className="panel-section">
             <div className="section-heading">
-              <h2>설정</h2>
-              <span>{notice}</span>
+              <div className="section-title-stack">
+                <div className="title-with-controls">
+                  <h2>설정</h2>
+                  <button
+                    type="button"
+                    className="section-toggle-button"
+                    onClick={() => setSettingsOpen((open) => !open)}
+                  >
+                    {settingsOpen ? '접기' : '펼치기'}
+                  </button>
+                </div>
+                <span>{notice}</span>
+              </div>
+              <div className="compact-actions">
+                <span>{activeMembers.length}명 · 코트 {settings.courtCount}</span>
+              </div>
             </div>
-            <div className="settings-grid">
-              <NumberStepper
-                label="참가"
-                min={0}
-                max={80}
-                value={regularPlayers.length}
-                onChange={setRegularPlayerCount}
-              />
-              <NumberStepper
-                label="스페셜"
-                min={0}
-                max={12}
-                value={guestPlayers.length}
-                onChange={setGuestCount}
-              />
-              <NumberStepper
-                label="코트"
-                min={1}
-                max={12}
-                value={settings.courtCount}
-                onChange={(courtCount) => {
-                  setSettings((current) => ({ ...current, courtCount }))
-                  setResults({})
-                  setPairMixes({})
-                  setMatchNameOverrides({})
-                }}
-              />
-              {guestPlayers.length > 0 ? (
-                <label className="settings-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={settings.singleGuestPerMatch}
-                    onChange={(event) => {
-                      setSettings((current) => ({
-                        ...current,
-                        singleGuestPerMatch: event.target.checked,
-                      }))
+            {settingsOpen ? (
+              <>
+                <div className="settings-grid">
+                  <NumberStepper
+                    label="참가"
+                    min={0}
+                    max={80}
+                    value={regularPlayers.length}
+                    onChange={setRegularPlayerCount}
+                  />
+                  <NumberStepper
+                    label="스페셜"
+                    min={0}
+                    max={12}
+                    value={guestPlayers.length}
+                    onChange={setGuestCount}
+                  />
+                  <NumberStepper
+                    label="코트"
+                    min={1}
+                    max={12}
+                    value={settings.courtCount}
+                    onChange={(courtCount) => {
+                      setSettings((current) => ({ ...current, courtCount }))
                       setResults({})
                       setPairMixes({})
                       setMatchNameOverrides({})
                     }}
                   />
-                  스페셜 1 + 참가자 3
-                </label>
-              ) : null}
-            </div>
-            <div className="metric-grid">
-              <div>
-                <strong>{activeMembers.length}</strong>
-                <span>참가</span>
+                  {guestPlayers.length > 0 ? (
+                    <label className="settings-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={settings.singleGuestPerMatch}
+                        onChange={(event) => {
+                          setSettings((current) => ({
+                            ...current,
+                            singleGuestPerMatch: event.target.checked,
+                          }))
+                          setResults({})
+                          setPairMixes({})
+                          setMatchNameOverrides({})
+                        }}
+                      />
+                      스페셜 1 + 참가자 3
+                    </label>
+                  ) : null}
+                </div>
+                <div className="metric-grid">
+                  <div>
+                    <strong>{activeMembers.length}</strong>
+                    <span>참가</span>
+                  </div>
+                  <div>
+                    <strong>{activeGuests.length}</strong>
+                    <span>스페셜</span>
+                  </div>
+                  <div>
+                    <strong>
+                      {hasActiveGuests
+                        ? `${schedule.specialCompletedIds.length}/${requiredPlayers.length}`
+                        : totalMatches}
+                    </strong>
+                    <span>{hasActiveGuests ? '1회 이상' : '대진'}</span>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="collapsed-summary">
+                참가 {activeMembers.length}명 · 스페셜 {activeGuests.length}명 · 코트 {settings.courtCount}개
               </div>
-              <div>
-                <strong>{activeGuests.length}</strong>
-                <span>스페셜</span>
-              </div>
-              <div>
-                <strong>
-                  {hasActiveGuests
-                    ? `${schedule.specialCompletedIds.length}/${requiredPlayers.length}`
-                    : totalMatches}
-                </strong>
-                <span>{hasActiveGuests ? '1회 이상' : '대진'}</span>
-              </div>
-            </div>
+            )}
           </section>
 
           <section className="panel-section">
             <div className="section-heading">
-              <div>
-                <h2>참가자</h2>
+              <div className="section-title-stack">
+                <div className="title-with-controls">
+                  <h2>참가자</h2>
+                  <button
+                    type="button"
+                    className="help-button"
+                    aria-label="레벨 분류 설명"
+                    onClick={() => setLevelHelpOpen(true)}
+                  >
+                    ?
+                  </button>
+                  <button
+                    type="button"
+                    className="section-toggle-button"
+                    onClick={() => setPlayersOpen((open) => !open)}
+                  >
+                    {playersOpen ? '접기' : '펼치기'}
+                  </button>
+                </div>
                 <span>
                   참가 {activeMembers.length}명 · 스페셜 {activeGuests.length}명 · 1회 이상{' '}
                   {requiredPlayers.length}명
@@ -1937,11 +2314,32 @@ function App() {
                 <button type="button" onClick={handleReset}>
                   초기화
                 </button>
-                <button type="button" onClick={() => setPlayersOpen((open) => !open)}>
-                  {playersOpen ? '접기' : '펼치기'}
+                <button
+                  type="button"
+                  onClick={() => setConditionsOpen((open) => !open)}
+                >
+                  대진 조건
                 </button>
               </div>
             </div>
+
+            {conditionsOpen ? (
+              <div className="match-condition-panel">
+                {matchConditionKeys.map((key) => (
+                  <label className="condition-row" key={key}>
+                    <input
+                      type="checkbox"
+                      checked={
+                        settings.conditionOptions?.[key] ??
+                        defaultMatchConditionOptions[key]
+                      }
+                      onChange={(event) => updateMatchCondition(key, event.target.checked)}
+                    />
+                    {matchConditionLabels[key]}
+                  </label>
+                ))}
+              </div>
+            ) : null}
 
             {playersOpen ? (
               <>
@@ -2085,10 +2483,19 @@ function App() {
             )}
           </section>
 
-          <section className="panel-section prize-panel">
+          <section className="panel-section prize-panel" id="meeting-prizes">
             <div className="section-heading">
-              <div>
-                <h2>경품 추첨</h2>
+              <div className="section-title-stack">
+                <div className="title-with-controls">
+                  <h2>경품 추첨</h2>
+                  <button
+                    type="button"
+                    className="section-toggle-button"
+                    onClick={() => setPrizeOpen((open) => !open)}
+                  >
+                    {prizeOpen ? '접기' : '펼치기'}
+                  </button>
+                </div>
                 <span>
                   {prizeDraw.mode === 'mission'
                     ? `미션 ${availableMissions.length}/${missionList.length}개`
@@ -2115,6 +2522,7 @@ function App() {
               </div>
             </div>
 
+            {prizeOpen ? (
             <div className="prize-draw-box">
               <div className="prize-mode-switch" aria-label="추첨 종류">
                 <button
@@ -2273,6 +2681,15 @@ function App() {
                 </div>
               )}
             </div>
+            ) : (
+              <div className="collapsed-summary">
+                {prizeDraw.mode === 'mission'
+                  ? `미션 ${availableMissions.length}/${missionList.length}개`
+                  : isRouletteMode
+                    ? `룰렛 ${availableRouletteCandidates.length}/${prizeCandidates.length}명`
+                    : `대상 ${prizeCandidates.length}명 · 경품 ${prizeList.length}개`}
+              </div>
+            )}
           </section>
         </aside>
         ) : null}
@@ -2332,8 +2749,36 @@ function App() {
             </div>
           </section>
 
+          <section className="progress-panel" id="meeting-progress">
+            <div>
+              <span className="eyebrow">진행 상황</span>
+              <h2>{progressPercent}%</h2>
+            </div>
+            <div className="progress-meter" aria-label={`경기 진행률 ${progressPercent}%`}>
+              <span style={{ width: `${progressPercent}%` }} />
+            </div>
+            <div className="progress-grid">
+              <div>
+                <span>남은 시간</span>
+                <strong>{formatDuration(remainingMinutes)}</strong>
+              </div>
+              <div>
+                <span>최다 경기</span>
+                <strong>{mostPlayedPlayers || '-'}</strong>
+              </div>
+              <div>
+                <span>최소 경기</span>
+                <strong>{leastPlayedPlayers || '-'}</strong>
+              </div>
+            </div>
+          </section>
+
           {printImageUrls.length > 0 ? (
-            <section className="print-preview-panel">
+            <section
+              className="print-preview-panel"
+              id="meeting-image"
+              ref={meetingPrintPreviewRef}
+            >
               <div className="section-heading">
                 <div>
                   <h2>대진표 이미지</h2>
@@ -2361,7 +2806,7 @@ function App() {
             </section>
           ) : null}
 
-          <nav className="tab-row" aria-label="보기 선택">
+          <nav className="tab-row" id="meeting-schedule" aria-label="보기 선택">
             <button
               type="button"
               className={view === 'schedule' ? 'active' : ''}
@@ -2376,6 +2821,9 @@ function App() {
             >
               통계
             </button>
+            <button type="button" onClick={handlePrintSchedule}>
+              저장
+            </button>
             <span>
               {completedMatches}/{totalMatches} 경기 완료
             </span>
@@ -2387,6 +2835,7 @@ function App() {
                 const isOvertimeRound = round.number > EVENT_LIMIT_ROUNDS
                 const startsAt = (round.number - 1) * GAME_SLOT_MINUTES
                 const endsAt = round.number * GAME_SLOT_MINUTES
+                const roundOpen = isMeetingRoundOpen(round.number)
 
                 return (
                   <section
@@ -2397,20 +2846,30 @@ function App() {
                   >
                     <div className="round-heading">
                       <div className="round-title">
-                        <h2>{round.number}경기</h2>
+                        <h2>{round.number}R</h2>
+                        <button
+                          type="button"
+                          className="section-toggle-button"
+                          onClick={() => toggleMeetingRound(round.number)}
+                        >
+                          {roundOpen ? '접기' : '펼치기'}
+                        </button>
                         <span className={`time-chip ${isOvertimeRound ? 'over' : ''}`}>
                           {isOvertimeRound ? '2시간 초과' : '2시간 내'}
                         </span>
                       </div>
-                      <span>
-                        예상 {formatDuration(startsAt)}-{formatDuration(endsAt)} · 휴식{' '}
-                        {round.resting.length > 0
-                          ? round.resting
-                              .map((player) => playerDisplayName(player, displayNames))
-                              .join(', ')
-                          : '없음'}
-                      </span>
+                      <div className="round-meta-actions">
+                        <span>
+                          예상 {formatDuration(startsAt)}-{formatDuration(endsAt)} · 휴식{' '}
+                          {round.resting.length > 0
+                            ? round.resting
+                                .map((player) => playerDisplayName(player, displayNames))
+                                .join(', ')
+                            : '없음'}
+                        </span>
+                      </div>
                     </div>
+                    {roundOpen ? (
                     <div className="match-grid">
                       {round.matches.map((match) => {
                         const result = results[match.id] ?? {
@@ -2590,6 +3049,11 @@ function App() {
                         )
                       })}
                     </div>
+                    ) : (
+                      <div className="collapsed-summary">
+                        코트 {round.matches.length}개 · 휴식 {round.resting.length}명
+                      </div>
+                    )}
                   </section>
                 )
               })}
@@ -2668,10 +3132,26 @@ function App() {
             <aside className="control-panel tournament-panel">
               <section className="panel-section">
                 <div className="section-heading">
-                  <h2>대회 설정</h2>
-                  <span>{notice}</span>
+                  <div className="section-title-stack">
+                    <div className="title-with-controls">
+                      <h2>대회 설정</h2>
+                      <button
+                        type="button"
+                        className="section-toggle-button"
+                        onClick={() => setTournamentSettingsOpen((open) => !open)}
+                      >
+                        {tournamentSettingsOpen ? '접기' : '펼치기'}
+                      </button>
+                    </div>
+                    <span>{notice}</span>
+                  </div>
+                  <div className="compact-actions">
+                    <span>{tournamentFormatLabels[tournamentSettings.format]}</span>
+                  </div>
                 </div>
 
+                {tournamentSettingsOpen ? (
+                  <>
                 <div className="format-list" aria-label="대회 진행 방식">
                   {(Object.keys(tournamentFormatLabels) as TournamentFormat[]).map(
                     (format) => (
@@ -2789,12 +3269,27 @@ function App() {
                     )}
                   </div>
                 ) : null}
+                  </>
+                ) : (
+                  <div className="collapsed-summary">
+                    {tournamentFormatLabels[tournamentSettings.format]} · 팀 {activeTournamentTeams.length} · 코트 {tournamentSettings.courtCount}
+                  </div>
+                )}
               </section>
 
               <section className="panel-section">
                 <div className="section-heading">
-                  <div>
-                    <h2>팀 등록</h2>
+                  <div className="section-title-stack">
+                    <div className="title-with-controls">
+                      <h2>팀 등록</h2>
+                      <button
+                        type="button"
+                        className="section-toggle-button"
+                        onClick={() => setTournamentTeamsOpen((open) => !open)}
+                      >
+                        {tournamentTeamsOpen ? '접기' : '펼치기'}
+                      </button>
+                    </div>
                     <span>참가 {activeTournamentTeams.length}팀</span>
                   </div>
                   <div className="compact-actions">
@@ -2813,6 +3308,8 @@ function App() {
                   </div>
                 </div>
 
+                {tournamentTeamsOpen ? (
+                  <>
                 {tournamentBulkOpen ? (
                   <div className="bulk-panel">
                     <div className="bulk-help">
@@ -2969,12 +3466,18 @@ function App() {
                     </article>
                   ))}
                 </div>
+                  </>
+                ) : (
+                  <div className="collapsed-summary">
+                    참가 {activeTournamentTeams.length}팀 · 전체 {tournamentTeams.length}팀
+                  </div>
+                )}
               </section>
             </aside>
           ) : null}
 
           <section className="workspace tournament-workspace">
-            <section className="tournament-summary-bar">
+            <section className="tournament-summary-bar" id="tournament-progress">
               <div>
                 <span className="eyebrow">대회 진행</span>
                 <h2>{tournamentFormatLabels[tournamentSettings.format]}</h2>
@@ -3009,7 +3512,11 @@ function App() {
             ) : null}
 
             {tournamentPrintImageUrls.length > 0 ? (
-              <section className="print-preview-panel">
+              <section
+                className="print-preview-panel"
+                id="tournament-image"
+                ref={tournamentPrintPreviewRef}
+              >
                 <div className="section-heading">
                   <div>
                     <h2>대회 대진표 이미지</h2>
@@ -3046,7 +3553,7 @@ function App() {
                 className={tournamentView === 'progress' ? 'active' : ''}
                 onClick={() => setTournamentView('progress')}
               >
-                진행
+                현황
               </button>
               <button
                 type="button"
@@ -3055,6 +3562,9 @@ function App() {
               >
                 순위/브래킷
               </button>
+              <button type="button" onClick={handlePrintTournament}>
+                저장
+              </button>
               <span>
                 {completedTournamentMatches}/{totalTournamentMatches} 경기 완료
               </span>
@@ -3062,19 +3572,32 @@ function App() {
 
             {tournamentView === 'progress' ? (
               <div className="round-list">
-                {tournamentRounds.map(({ round, matches }) => (
+                {tournamentRounds.map(({ round, matches }) => {
+                  const roundOpen = isTournamentRoundOpen(round)
+
+                  return (
                   <section className="round-section" key={round}>
                     <div className="round-heading">
                       <div className="round-title">
-                        <h2>{round}순서</h2>
+                        <h2>{round}R</h2>
+                        <button
+                          type="button"
+                          className="section-toggle-button"
+                          onClick={() => toggleTournamentRound(round)}
+                        >
+                          {roundOpen ? '접기' : '펼치기'}
+                        </button>
                         <span className="time-chip">코트 배정</span>
                       </div>
-                      <span>
-                        {matches
-                          .map((match) => `${match.court}코트 ${match.label}`)
-                          .join(' · ')}
-                      </span>
+                      <div className="round-meta-actions">
+                        <span>
+                          {matches
+                            .map((match) => `${match.court}코트 ${match.label}`)
+                            .join(' · ')}
+                        </span>
+                      </div>
                     </div>
+                    {roundOpen ? (
                     <div className="match-grid">
                       {matches.map((match) => {
                         const result = tournamentResults[match.id] ?? {
@@ -3199,11 +3722,17 @@ function App() {
                         )
                       })}
                     </div>
+                    ) : (
+                      <div className="collapsed-summary">
+                        경기 {matches.length}개 · 코트 {new Set(matches.map((match) => match.court)).size}개
+                      </div>
+                    )}
                   </section>
-                ))}
+                  )
+                })}
               </div>
             ) : (
-              <section className="tournament-board">
+              <section className="tournament-board" id="tournament-board">
                 {tournamentSettings.format === 'group-knockout' ? (
                   <div className="board-section">
                     <div className="section-heading">

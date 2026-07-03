@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultTournamentSettings } from './defaultData'
+import { defaultSettings, defaultTournamentSettings } from './defaultData'
 import { generateTournamentSchedule } from './matchmaker'
 import { makePlayerNameLookup } from './playerNames'
 import {
@@ -116,6 +116,7 @@ describe('printable schedule', () => {
       guestGameCounts: {},
     }
     const settings: MatchSettings = {
+      ...defaultSettings,
       eventName: '저장 테스트',
       courtCount: 1,
       seed: 1,

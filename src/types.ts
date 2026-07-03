@@ -1,12 +1,26 @@
 export type Gender = 'male' | 'female' | 'none'
 
-export type Level = 'A' | 'B' | 'C' | 'D' | '스페셜'
+export type Level = 'S' | 'A' | 'B' | 'C' | 'D' | 'O' | '스페셜'
 
 export type AgeGroup = '20대' | '30대' | '40대' | '45대' | '50대' | '55대이상'
 
 export type AppMode = 'meeting' | 'tournament'
 
 export type TournamentFormat = 'group-knockout' | 'knockout' | 'team-battle'
+
+export type MatchConditionKey =
+  | 'fairGames'
+  | 'restBalance'
+  | 'levelBalance'
+  | 'ageBalance'
+  | 'genderBalance'
+  | 'partnerRepeat'
+  | 'opponentRepeat'
+  | 'specialPriority'
+  | 'guestPartnerRepeat'
+  | 'femaleLevelFit'
+
+export type MatchConditionOptions = Record<MatchConditionKey, boolean>
 
 export type Player = {
   id: string
@@ -26,6 +40,7 @@ export type MatchSettings = {
   seed: number
   singleGuestPerMatch: boolean
   targetRoundCount: number
+  conditionOptions: MatchConditionOptions
 }
 
 export type TournamentSettings = {
