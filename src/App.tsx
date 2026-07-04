@@ -72,6 +72,8 @@ const GAME_SLOT_MINUTES = 15
 const EVENT_LIMIT_MINUTES = 120
 const EVENT_LIMIT_ROUNDS = Math.floor(EVENT_LIMIT_MINUTES / GAME_SLOT_MINUTES)
 const CONTACT_EMAIL = 'ama_official@naver.com'
+const APP_VERSION = '0.0.0'
+const LAST_UPDATED = '2026.07.05'
 
 const getTargetRoundCount = (settings: MatchSettings) => {
   const numeric = Number(settings.targetRoundCount)
@@ -4538,6 +4540,12 @@ function App() {
           </section>
         </main>
       )}
+      <footer className="app-footer">
+        <p>© 2026 ROUM S &amp; E Co., Ltd. All rights reserved.</p>
+        <span>
+          최종 수정일 {LAST_UPDATED} · 버전 {APP_VERSION}
+        </span>
+      </footer>
     </div>
   )
 }

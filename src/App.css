@@ -173,6 +173,26 @@ input:disabled {
   grid-template-columns: 1fr;
 }
 
+.app-footer {
+  display: grid;
+  gap: 4px;
+  padding: 16px 28px 20px;
+  border-top: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.app-footer p {
+  margin: 0;
+}
+
+.app-footer span {
+  color: color-mix(in srgb, var(--muted), var(--ink) 12%);
+}
+
 .control-panel {
   border-right: 1px solid var(--line);
   background: rgba(244, 249, 250, 0.9);
@@ -1763,7 +1783,8 @@ textarea {
   }
 
   .panel-section,
-  .workspace {
+  .workspace,
+  .app-footer {
     padding: 10px;
   }
 
