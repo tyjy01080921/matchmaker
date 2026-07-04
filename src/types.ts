@@ -2,7 +2,14 @@ export type Gender = 'male' | 'female' | 'none'
 
 export type Level = 'OA' | 'A' | 'B' | 'C' | 'D' | 'O' | '스페셜'
 
-export type AgeGroup = '20대' | '30대' | '40대' | '45대' | '50대' | '55대이상'
+export type AgeGroup =
+  | '무관'
+  | '20대'
+  | '30대'
+  | '40대'
+  | '45대'
+  | '50대'
+  | '55대이상'
 
 export type AppMode = 'meeting' | 'tournament'
 

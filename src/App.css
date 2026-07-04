@@ -563,6 +563,15 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.bulk-panel textarea::placeholder {
+  color: var(--muted);
+  opacity: 0.75;
+}
+
+.initial-bulk-panel textarea {
+  min-height: 154px;
+}
+
 .bulk-actions {
   display: flex;
   gap: 8px;

@@ -128,7 +128,9 @@ const femaleMatchScores = {
 const dMatchScores = [26, 23, 20, 18, 15, 12] as const
 
 const ageIndex = (player: Player) =>
-  Math.max(0, ageGroups.indexOf(player.ageGroup))
+  player.ageGroup === '무관'
+    ? 1
+    : Math.max(0, ageGroups.indexOf(player.ageGroup))
 
 export const getPlayerMatchScore = (player: Player) => {
   const index = ageIndex(player)
@@ -388,6 +390,7 @@ const scoreDistanceBetweenPlayers = (left: Player, right: Player) =>
     : Math.abs(matchLevelValue(left) - matchLevelValue(right))
 
 const ageValue = (player: Player) => {
+  if (player.ageGroup === '무관') return 3.75
   if (player.ageGroup === '20대') return 2
   if (player.ageGroup === '30대') return 3
   if (player.ageGroup === '40대') return 4
@@ -1355,7 +1358,7 @@ const fallbackTournamentMembers = (team: TournamentTeam): TournamentParticipant[
     id: `${team.id}-member-${index + 1}`,
     name,
     level: team.level,
-    ageGroup: '30대',
+    ageGroup: '무관',
     gender: team.gender,
   }))
 

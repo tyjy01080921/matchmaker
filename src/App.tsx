@@ -115,7 +115,7 @@ const levelLabels: Record<Level, string> = {
 
 const levelOptions: Level[] = ['OA', 'A', 'B', 'C', 'D', 'O', '스페셜']
 
-const ageGroups: AgeGroup[] = ['20대', '30대', '40대', '45대', '50대', '55대이상']
+const ageGroups: AgeGroup[] = ['무관', '20대', '30대', '40대', '45대', '50대', '55대이상']
 
 const genderLabels: Record<Gender, string> = {
   male: '남',
@@ -252,7 +252,7 @@ const normalizeLevel = (value: unknown): Level => {
 
 const normalizeAgeGroup = (value: unknown): AgeGroup => {
   if (ageGroups.includes(value as AgeGroup)) return value as AgeGroup
-  return '30대'
+  return '무관'
 }
 
 const normalizeGender = (value: unknown): Gender => {
@@ -666,8 +666,8 @@ const makeId = () => {
 const makeRegularPlayer = (_index: number): Player => ({
   id: makeId(),
   name: '',
-  level: 'B',
-  ageGroup: '30대',
+  level: 'O',
+  ageGroup: '무관',
   gender: 'none',
   active: true,
   specialRequired: true,
@@ -679,7 +679,7 @@ const makeGuestPlayer = (_index: number): Player => ({
   id: makeId(),
   name: '',
   level: '스페셜',
-  ageGroup: '30대',
+  ageGroup: '무관',
   gender: 'none',
   active: true,
   specialRequired: false,
@@ -810,6 +810,13 @@ const mixedMatch = (match: Match, mixIndex: number): Match => {
   }
 }
 
+const emptyMeetingSchedule: Schedule = {
+  rounds: [],
+  warnings: [],
+  specialCompletedIds: [],
+  guestGameCounts: {},
+}
+
 const applyPairMixes = (
   schedule: Schedule,
   pairMixes: Record<string, number>,
@@ -857,7 +864,7 @@ const parseBulkPlayers = (text: string): Player[] =>
         name,
         level: levelToken
           ? normalizeLevel(levelToken === '스페셜' ? levelToken : levelToken.toUpperCase())
-          : 'B',
+          : 'O',
         ageGroup: normalizeAgeGroup(ageToken),
         gender: normalizeGender(genderToken),
         active: true,
@@ -866,6 +873,38 @@ const parseBulkPlayers = (text: string): Player[] =>
         guestGameLimit: 0,
       })
     })
+
+const mergeParsedPlayersWithRosterDraft = (
+  currentPlayers: Player[],
+  parsedPlayers: Player[],
+) => {
+  if (currentPlayers.length === 0) return parsedPlayers
+
+  const currentGuests = currentPlayers.filter((player) => player.isGuest)
+  const currentRegulars = currentPlayers.filter((player) => !player.isGuest)
+  const parsedGuests = parsedPlayers.filter((player) => player.isGuest)
+  const parsedRegulars = parsedPlayers.filter((player) => !player.isGuest)
+  const mergeGroup = (draftPlayers: Player[], nextPlayers: Player[]) => [
+    ...draftPlayers.map((draftPlayer, index) =>
+      nextPlayers[index] ? { ...nextPlayers[index], id: draftPlayer.id } : draftPlayer,
+    ),
+    ...nextPlayers.slice(draftPlayers.length),
+  ]
+
+  return [
+    ...mergeGroup(currentGuests, parsedGuests),
+    ...mergeGroup(currentRegulars, parsedRegulars),
+  ]
+}
+
+const bulkPlayerPlaceholder = [
+  '입력 순서: 이름 레벨 성별 연령대',
+  '김민수',
+  '이지연',
+  '박태호 B 남 30대',
+  '최수빈 A 여 40대',
+  '스페셜1 스페셜',
+].join('\n')
 
 const tournamentGenderTokens = ['남', '남자', '여', '여자', 'male', 'female', '무관', '혼성', 'mixed']
 
@@ -1019,6 +1058,9 @@ function App() {
   const [levelHelpOpen, setLevelHelpOpen] = useState(false)
   const [contactOpen, setContactOpen] = useState(false)
   const [contactCopied, setContactCopied] = useState(false)
+  const [playerDetailsOpen, setPlayerDetailsOpen] = useState(
+    initialState.players.length > 0,
+  )
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulkText, setBulkText] = useState('')
   const [tournamentBulkOpen, setTournamentBulkOpen] = useState(false)
@@ -1036,10 +1078,12 @@ function App() {
   const tournamentPrintPreviewRef = useRef<HTMLElement | null>(null)
   const contactCopyTimerRef = useRef<number | null>(null)
   const rouletteTimerRef = useRef<number | null>(null)
+  const isRosterDrafting = !playerDetailsOpen || players.length === 0
+  const showBulkPlayerInput = bulkOpen || isRosterDrafting
 
   const rawSchedule = useMemo(
-    () => generateSchedule(players, settings),
-    [players, settings],
+    () => (isRosterDrafting ? emptyMeetingSchedule : generateSchedule(players, settings)),
+    [isRosterDrafting, players, settings],
   )
   const schedule = useMemo(
     () => applyPairMixes(rawSchedule, pairMixes),
@@ -1100,6 +1144,22 @@ function App() {
     }),
     [generatedTournamentLineups, tournamentLineups],
   )
+  const playerNamePlaceholders = useMemo(() => {
+    let regularCount = 0
+    let guestCount = 0
+
+    return Object.fromEntries(
+      players.map((player) => {
+        if (player.isGuest) {
+          guestCount += 1
+          return [player.id, `스페셜 ${guestCount}번`]
+        }
+
+        regularCount += 1
+        return [player.id, `${regularCount}번`]
+      }),
+    )
+  }, [players])
 
   const activePlayers = players.filter((player) => player.active)
   const prizeCandidates = activePlayers.map((player) => ({
@@ -1334,6 +1394,9 @@ function App() {
       setTournamentSettings(sharedState.tournamentSettings)
       setTournamentResults(sharedState.tournamentResults)
       setTournamentLineups(sharedState.tournamentLineups)
+      setPlayerDetailsOpen(sharedState.players.length > 0)
+      setBulkOpen(false)
+      setBulkText('')
       setView('schedule')
       setTournamentView('progress')
       setNotice('공유본')
@@ -1695,7 +1758,11 @@ function App() {
     setNotice('카드 수정됨')
   }
 
-  const setRegularPlayerCount = (targetCount: number) => {
+  const setRegularPlayerCount = (
+    targetCount: number,
+    keepDetailsVisible = false,
+  ) => {
+    const countChanged = targetCount !== regularPlayers.length
     setPlayers((current) => {
       const regulars = current.filter((player) => !player.isGuest)
       const guests = current.filter((player) => player.isGuest)
@@ -1713,10 +1780,15 @@ function App() {
 
       return [...guests, ...nextRegulars]
     })
-    resetMeetingTargetRounds()
+    if (countChanged) {
+      setPlayerDetailsOpen(keepDetailsVisible)
+      setBulkOpen(!keepDetailsVisible)
+      resetMeetingTargetRounds()
+    }
   }
 
-  const setGuestCount = (targetCount: number) => {
+  const setGuestCount = (targetCount: number, keepDetailsVisible = false) => {
+    const countChanged = targetCount !== guestPlayers.length
     setPlayers((current) => {
       const guests = current.filter((player) => player.isGuest)
       const regulars = current.filter((player) => !player.isGuest)
@@ -1734,15 +1806,19 @@ function App() {
 
       return [...nextGuests, ...regulars]
     })
-    resetMeetingTargetRounds()
+    if (countChanged) {
+      setPlayerDetailsOpen(keepDetailsVisible)
+      setBulkOpen(!keepDetailsVisible)
+      resetMeetingTargetRounds()
+    }
   }
 
   const addPlayer = () => {
-    setRegularPlayerCount(regularPlayers.length + 1)
+    setRegularPlayerCount(regularPlayers.length + 1, true)
   }
 
   const addGuest = () => {
-    setGuestCount(guestPlayers.length + 1)
+    setGuestCount(guestPlayers.length + 1, true)
   }
 
   const removePlayer = (id: string) => {
@@ -1761,6 +1837,9 @@ function App() {
     setResults({})
     setPairMixes({})
     setMatchNameOverrides({})
+    setPlayerDetailsOpen(false)
+    setBulkOpen(false)
+    setBulkText('')
     setNotice('초기화됨')
   }
 
@@ -1842,8 +1921,33 @@ function App() {
       mode === 'replace' ? parsedPlayers : [...current, ...parsedPlayers],
     )
     resetMeetingTargetRounds()
+    setPlayerDetailsOpen(true)
     setBulkText('')
     setNotice(`${parsedPlayers.length}명 입력됨`)
+  }
+
+  const completePlayerRoster = () => {
+    const parsedPlayers = parseBulkPlayers(bulkText)
+    if (parsedPlayers.length === 0 && players.length === 0) {
+      setNotice('입력할 명단 없음')
+      return
+    }
+
+    if (parsedPlayers.length > 0) {
+      setPlayers((current) =>
+        mergeParsedPlayersWithRosterDraft(current, parsedPlayers),
+      )
+      resetMeetingTargetRounds()
+      setBulkText('')
+    }
+
+    setPlayerDetailsOpen(true)
+    setBulkOpen(false)
+    setNotice(
+      parsedPlayers.length > 0
+        ? `${Math.max(players.length, parsedPlayers.length)}명 입력 완료`
+        : '명단 입력 완료',
+    )
   }
 
   const applyBulkTournamentTeams = (mode: 'append' | 'replace') => {
@@ -2259,6 +2363,8 @@ function App() {
     )
     window.history.replaceState(null, '', getBaseUrl())
     setIsSharedMode(false)
+    setPlayerDetailsOpen(players.length > 0)
+    setBulkOpen(false)
     setNotice('편집 모드')
   }
 
@@ -2735,7 +2841,7 @@ function App() {
                   스페셜
                 </button>
                 <button type="button" onClick={() => setBulkOpen((open) => !open)}>
-                  일괄
+                  {bulkOpen && players.length > 0 ? '닫기' : '명단'}
                 </button>
                 <button type="button" onClick={handleReset}>
                   초기화
@@ -2769,46 +2875,56 @@ function App() {
 
             {playersOpen ? (
               <>
-                {bulkOpen ? (
-                  <div className="bulk-panel">
+                {showBulkPlayerInput ? (
+                  <div
+                    className={`bulk-panel ${
+                      isRosterDrafting ? 'initial-bulk-panel' : ''
+                    }`}
+                  >
                     <div className="bulk-help">
-                      입력 순서: 이름 레벨 성별 연령대 · 예: 1번 A 남 30대
+                      이름만 입력 시 O · 무관 · 무관
                     </div>
                     <textarea
+                      aria-label="참가자 명단 입력"
                       value={bulkText}
                       onChange={(event) => setBulkText(event.target.value)}
-                      placeholder={'1번 A 남 30대\n2번 B 여 40대\n스페셜 1번 스페셜'}
+                      placeholder={bulkPlayerPlaceholder}
                     />
                     <div className="bulk-actions">
-                      <button type="button" onClick={() => applyBulkPlayers('append')}>
-                        추가
+                      <button
+                        type="button"
+                        onClick={
+                          isRosterDrafting
+                            ? completePlayerRoster
+                            : () => applyBulkPlayers('append')
+                        }
+                      >
+                        {isRosterDrafting ? '명단 입력 완료' : '입력'}
                       </button>
-                      <button type="button" onClick={() => applyBulkPlayers('replace')}>
-                        교체
-                      </button>
+                      {playerDetailsOpen && players.length > 0 ? (
+                        <button type="button" onClick={() => applyBulkPlayers('replace')}>
+                          전체 교체
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 ) : null}
 
-                <div className="player-list">
-                  {players.map((player) => {
-                    const isSpecialLevel = player.level === '스페셜'
-                    const displayName = playerDisplayName(player, displayNames)
-                    const rawName = player.name.trim()
-                    const sameTypePlayers = players.filter(
-                      (item) => item.isGuest === player.isGuest,
-                    )
-                    const placeholderIndex =
-                      sameTypePlayers.findIndex((item) => item.id === player.id) + 1
-                    const namePlaceholder = player.isGuest
-                      ? `스페셜 ${placeholderIndex}번`
-                      : `${placeholderIndex}번`
+                {playerDetailsOpen && players.length > 0 ? (
+                  <div className="player-list">
+                    {players.map((player) => {
+                      const isSpecialLevel = player.level === '스페셜'
+                      const displayName = playerDisplayName(player, displayNames)
+                      const rawName = player.name.trim()
+                      const namePlaceholder =
+                        playerNamePlaceholders[player.id] ??
+                        (player.isGuest ? '스페셜 1번' : '1번')
 
-                    return (
-                      <article
-                        className={`player-row ${player.isGuest ? 'special-row' : ''}`}
-                        key={player.id}
-                      >
+                      return (
+                        <article
+                          className={`player-row ${player.isGuest ? 'special-row' : ''}`}
+                          key={player.id}
+                        >
                         <div className="row-top">
                           <div className="row-status">
                             <label className="checkbox-label">
@@ -2921,10 +3037,15 @@ function App() {
                             </>
                           ) : null}
                         </div>
-                      </article>
-                    )
-                  })}
-                </div>
+                        </article>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="collapsed-summary">
+                    명단 입력 완료 후 정보 표시
+                  </div>
+                )}
               </>
             ) : (
               <div className="collapsed-summary">
