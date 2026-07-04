@@ -39,8 +39,14 @@ type Pairing = {
   score: number
 }
 
+type RoundPacing = {
+  roundNumber: number
+  targetRoundCount: number
+}
+
 const DEFAULT_TARGET_ROUND_COUNT = 8
-const GUEST_REPEAT_PARTNER_PENALTY = 5000
+const GUEST_REPEAT_PARTNER_PENALTY = 50000
+const SPECIAL_TIMING_WEIGHT = 110
 
 const matchConditions = (settings: MatchSettings): MatchConditionOptions => ({
   ...defaultMatchConditionOptions,
@@ -174,6 +180,14 @@ const playerScoreSpread = (players: Player[]) => {
   return Math.max(...scores) - Math.min(...scores)
 }
 
+const averageMatchScore = (players: Player[]) => {
+  const scores = players
+    .filter((player) => !isOpenLevel(player))
+    .map((player) => getPlayerMatchScore(player))
+  if (scores.length === 0) return 0
+  return scores.reduce((sum, score) => sum + score, 0) / scores.length
+}
+
 const teamLevelSpread = (team: Team) =>
   playerScoreSpread(team)
 
@@ -244,6 +258,41 @@ const matchPlayers = (match: Match) => [
   ...match.teamB,
 ]
 
+const roundProgress = (pacing: RoundPacing) => {
+  if (pacing.targetRoundCount <= 1) return 1
+  return Math.min(1, Math.max(0, (pacing.roundNumber - 1) / (pacing.targetRoundCount - 1)))
+}
+
+const lateBalanceMultiplier = (pacing: RoundPacing) =>
+  1 + roundProgress(pacing) ** 2 * 6
+
+const pairingTeamLevelGap = (pairing: Pick<Pairing, 'teamA' | 'teamB'>) =>
+  Math.abs(teamLevel(pairing.teamA) - teamLevel(pairing.teamB))
+
+const specialTargetAverageScore = (pacing: RoundPacing) => {
+  if (pacing.roundNumber >= Math.max(1, pacing.targetRoundCount - 1)) return 46
+
+  const progress = roundProgress(pacing)
+  const middlePeak = 1 - Math.min(1, Math.abs(progress - 0.5) * 2)
+  return 72 + middlePeak * 22
+}
+
+const specialTimingPenalty = (
+  players: Player[],
+  pacing: RoundPacing,
+  conditions: MatchConditionOptions,
+) => {
+  if (!conditions.levelBalance) return 0
+
+  const regulars = players.filter((player) => !player.isGuest)
+  if (regulars.length === 0) return 0
+
+  return (
+    Math.abs(averageMatchScore(regulars) - specialTargetAverageScore(pacing)) *
+    SPECIAL_TIMING_WEIGHT
+  )
+}
+
 const guestRepeatPartnerPenalty = (team: Team, history: HistoryState) => {
   const guests = team.filter((player) => player.isGuest)
   const regulars = team.filter((player) => !player.isGuest)
@@ -269,7 +318,9 @@ const scorePairing = (
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
+  pacing: RoundPacing,
 ) => {
+  const balanceMultiplier = lateBalanceMultiplier(pacing)
   const partnerPenalty = conditions.partnerRepeat
     ? (history.partners[pairKey(teamA[0].id, teamA[1].id)] ?? 0) * 16 +
       (history.partners[pairKey(teamB[0].id, teamB[1].id)] ?? 0) * 16
@@ -284,7 +335,7 @@ const scorePairing = (
   }
 
   const levelPenalty = conditions.levelBalance
-    ? Math.abs(teamLevel(teamA) - teamLevel(teamB)) * 32
+    ? Math.abs(teamLevel(teamA) - teamLevel(teamB)) * 32 * balanceMultiplier
     : 0
   const agePenalty = conditions.ageBalance
     ? Math.abs(teamAge(teamA) - teamAge(teamB)) * 1.5
@@ -299,10 +350,11 @@ const scorePairing = (
     ? mixedDoublesPenalty(teamA, teamB)
     : 0
   const teamShapePenalty = conditions.levelBalance
-    ? (teamLevelSpread(teamA) + teamLevelSpread(teamB)) * 70 +
-      Math.abs(teamLevelSpread(teamA) - teamLevelSpread(teamB)) * 12 +
-      teamLevelMismatchPenalty(teamA) +
-      teamLevelMismatchPenalty(teamB)
+    ? ((teamLevelSpread(teamA) + teamLevelSpread(teamB)) * 70 +
+        Math.abs(teamLevelSpread(teamA) - teamLevelSpread(teamB)) * 12 +
+        teamLevelMismatchPenalty(teamA) +
+        teamLevelMismatchPenalty(teamB)) *
+      balanceMultiplier
     : 0
   const guestPenalty = conditions.specialPriority
     ? Math.abs(teamA.filter((player) => player.isGuest).length - teamB.filter((player) => player.isGuest).length) *
@@ -333,6 +385,7 @@ const bestPairing = (
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
+  pacing: RoundPacing,
 ): Pairing => {
   const options: Array<[Team, Team]> = [
     [
@@ -353,7 +406,7 @@ const bestPairing = (
     .map(([teamA, teamB]) => ({
       teamA,
       teamB,
-      score: scorePairing(teamA, teamB, history, random, conditions),
+      score: scorePairing(teamA, teamB, history, random, conditions, pacing),
     }))
     .sort((a, b) => a.score - b.score)[0]
 }
@@ -365,9 +418,10 @@ const createMatch = (
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
+  pacing: RoundPacing,
   isSpecial: boolean,
 ): Match => {
-  const pairing = bestPairing(players, history, random, conditions)
+  const pairing = bestPairing(players, history, random, conditions, pacing)
   return {
     id: `r${round}-c${court}-${players.map((player) => player.id).join('-')}`,
     round,
@@ -487,6 +541,7 @@ const scoreSpecialRegulars = (
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
+  pacing: RoundPacing,
 ) => {
   const targetLevel = matchLevelValue(guest)
   const pendingCount = regulars.filter((player) => pendingIds.has(player.id)).length
@@ -524,6 +579,7 @@ const scoreSpecialRegulars = (
     historyPenalty +
     pendingPenalty +
     repeatGuestPenalty +
+    specialTimingPenalty([guest, ...regulars], pacing, conditions) +
     groupConsecutivePlayPenalty(regulars, history, conditions) +
     random()
   )
@@ -537,6 +593,7 @@ const pickSpecialRegulars = (
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
+  pacing: RoundPacing,
 ): [Player, Player, Player] | null => {
   const availableRegulars = activePlayers.filter(
     (player) => !player.isGuest && !usedIds.has(player.id),
@@ -612,6 +669,7 @@ const pickSpecialRegulars = (
           history,
           random,
           conditions,
+          pacing,
         )
         if (score < bestScore) {
           bestScore = score
@@ -630,6 +688,7 @@ const pickSingleGuestSpecialGroup = (
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
+  pacing: RoundPacing,
   allowExtraSpecial: boolean,
 ): [Player, Player, Player, Player] | null => {
   const candidateGuests = activePlayers.filter(
@@ -676,6 +735,7 @@ const pickSingleGuestSpecialGroup = (
       history,
       random,
       conditions,
+      pacing,
     )
     if (selectedPlayers) return [guest, ...selectedPlayers]
   }
@@ -690,8 +750,9 @@ const scoreAdaptiveSpecialGroup = (
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
+  pacing: RoundPacing,
 ) => {
-  const pairing = bestPairing(group, history, random, conditions)
+  const pairing = bestPairing(group, history, random, conditions, pacing)
   const guests = group.filter((player) => player.isGuest)
   const regulars = group.filter((player) => !player.isGuest)
   const averageGuestLevel =
@@ -741,6 +802,7 @@ const scoreAdaptiveSpecialGroup = (
     pendingPriorityPenalty -
     (conditions.specialPriority ? firstGuestCount * 40 : 0) +
     repeatGuestPenalty +
+    specialTimingPenalty(group, pacing, conditions) +
     groupConsecutivePlayPenalty(group, history, conditions) +
     Math.max(0, guests.length - 1) * 14 +
     random()
@@ -753,6 +815,7 @@ const pickAdaptiveSpecialGroup = (
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
+  pacing: RoundPacing,
   allowExtraSpecial: boolean,
 ): [Player, Player, Player, Player] | null => {
   const candidateGuests = activePlayers.filter(
@@ -873,6 +936,7 @@ const pickAdaptiveSpecialGroup = (
             history,
             random,
             conditions,
+            pacing,
           )
           if (score < bestScore) {
             bestScore = score
@@ -894,6 +958,7 @@ const pickSpecialGroup = (
   settings: MatchSettings,
   conditions: MatchConditionOptions,
   allowExtraSpecial: boolean,
+  pacing: RoundPacing,
 ): [Player, Player, Player, Player] | null => {
   if (settings.singleGuestPerMatch) {
     return pickSingleGuestSpecialGroup(
@@ -902,6 +967,7 @@ const pickSpecialGroup = (
       history,
       random,
       conditions,
+      pacing,
       allowExtraSpecial,
     )
   }
@@ -912,6 +978,7 @@ const pickSpecialGroup = (
     history,
     random,
     conditions,
+    pacing,
     allowExtraSpecial,
   )
 }
@@ -921,17 +988,22 @@ const scoreGroup = (
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
+  pacing: RoundPacing,
 ) => {
-  const pairing = bestPairing(group, history, random, conditions)
+  const pairing = bestPairing(group, history, random, conditions, pacing)
   const gameCounts = group.map((player) => history.games[player.id] ?? 0)
   const restStreaks = group.map((player) => history.restStreaks[player.id] ?? 0)
   const levelSpread = playerScoreSpread(group)
   const guestCount = group.filter((player) => player.isGuest).length
+  const balanceMultiplier = lateBalanceMultiplier(pacing)
 
   return (
     pairing.score +
     (conditions.fairGames ? Math.max(...gameCounts) * 3 : 0) +
-    (conditions.levelBalance ? levelSpread * 150 : 0) -
+    (conditions.levelBalance ? levelSpread * 150 * balanceMultiplier : 0) -
+    (conditions.levelBalance
+      ? pairingTeamLevelGap(pairing) * 64 * roundProgress(pacing) ** 2
+      : 0) +
     (conditions.restBalance
       ? restStreaks.reduce((sum, streak) => sum + streak, 0) * 8
       : 0) +
@@ -949,6 +1021,7 @@ const pickGeneralGroup = (
   random: () => number,
   settings: MatchSettings,
   conditions: MatchConditionOptions,
+  pacing: RoundPacing,
 ): [Player, Player, Player, Player] | null => {
   const candidates = activePlayers
     .filter((player) => {
@@ -979,7 +1052,7 @@ const pickGeneralGroup = (
           ]
           if (!isValidGuestGroup(group, settings.singleGuestPerMatch)) continue
 
-          const score = scoreGroup(group, history, random, conditions)
+          const score = scoreGroup(group, history, random, conditions, pacing)
           if (score < bestScore) {
             bestScore = score
             bestGroup = group
@@ -1662,6 +1735,7 @@ export const generateSchedule = (
     const matches: Match[] = []
     const completedBeforeRound = history.specialCompleted.size
     const allowExtraSpecial = roundNumber <= targetRoundCount
+    const pacing = { roundNumber, targetRoundCount }
 
     const courtLimit = Math.min(settings.courtCount, Math.floor(activePlayers.length / 4))
 
@@ -1675,6 +1749,7 @@ export const generateSchedule = (
           settings,
           conditions,
           allowExtraSpecial,
+          pacing,
         )
         if (!group) break
 
@@ -1685,6 +1760,7 @@ export const generateSchedule = (
           history,
           random,
           conditions,
+          pacing,
           true,
         )
         matches.push(match)
@@ -1702,6 +1778,7 @@ export const generateSchedule = (
           random,
           settings,
           conditions,
+          pacing,
         )
         if (!group) break
 
@@ -1712,6 +1789,7 @@ export const generateSchedule = (
           history,
           random,
           conditions,
+          pacing,
           hasGuest(group),
         )
         matches.push(match)

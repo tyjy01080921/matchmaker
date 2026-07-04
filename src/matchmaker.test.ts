@@ -44,6 +44,26 @@ const makeTournamentTeam = (id: string, seed: number | null): TournamentTeam => 
   active: true,
 })
 
+const average = (values: number[]) =>
+  values.reduce((sum, value) => sum + value, 0) / values.length
+
+const matchRegularAverageScore = (
+  match: ReturnType<typeof generateSchedule>['rounds'][number]['matches'][number],
+) => {
+  const regularScores = [...match.teamA, ...match.teamB]
+    .filter((player) => !player.isGuest)
+    .map((player) => getPlayerMatchScore(player))
+  return average(regularScores)
+}
+
+const matchTeamScoreGap = (
+  match: ReturnType<typeof generateSchedule>['rounds'][number]['matches'][number],
+) => {
+  const teamScore = (team: typeof match.teamA) =>
+    team.reduce((sum, player) => sum + getPlayerMatchScore(player), 0)
+  return Math.abs(teamScore(match.teamA) - teamScore(match.teamB))
+}
+
 describe('defaultPlayers', () => {
   it('starts meeting player list empty', () => {
     expect(defaultPlayers).toEqual([])
@@ -247,6 +267,67 @@ describe('generateSchedule', () => {
     )
     expect(schedule.guestGameCounts.guest).toBe(8)
     expect(schedule.warnings).toHaveLength(0)
+  })
+
+  it('places stronger special matches near the middle and lighter ones at the end', () => {
+    const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 24 }, (_, index) => {
+      const level = index < 8 ? 'A' : index < 16 ? 'B' : index < 20 ? 'C' : 'D'
+      const ageGroup = index < 8 ? '20대' : index < 16 ? '30대' : '50대'
+      return makeTestPlayer(
+        `regular-${index + 1}`,
+        level,
+        index % 2 === 0 ? 'male' : 'female',
+        false,
+        false,
+        ageGroup,
+      )
+    })
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 4,
+      seed: 17,
+      singleGuestPerMatch: true,
+      targetRoundCount: 8,
+    })
+    const specialAverages = schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) => match.isSpecial)
+      .map(matchRegularAverageScore)
+    const middleAverage = average(specialAverages.slice(3, 5))
+    const finalAverage = average(specialAverages.slice(-2))
+
+    expect(specialAverages).toHaveLength(8)
+    expect(middleAverage).toBeGreaterThan(finalAverage)
+  })
+
+  it('tightens general match team gaps toward the final rounds', () => {
+    const players = Array.from({ length: 16 }, (_, index) => {
+      const level = index < 4 ? 'A' : index < 8 ? 'B' : index < 12 ? 'C' : 'D'
+      const ageGroup = index < 4 ? '20대' : index < 8 ? '30대' : index < 12 ? '40대' : '55대이상'
+      return makeTestPlayer(
+        `regular-${index + 1}`,
+        level,
+        index % 2 === 0 ? 'male' : 'female',
+        false,
+        false,
+        ageGroup,
+      )
+    })
+    const schedule = generateSchedule(players, {
+      ...defaultSettings,
+      courtCount: 2,
+      seed: 41,
+      targetRoundCount: 8,
+    })
+    const roundGaps = schedule.rounds.map((round) =>
+      average(round.matches.map(matchTeamScoreGap)),
+    )
+
+    expect(schedule.warnings).toHaveLength(0)
+    expect(average(roundGaps.slice(-2))).toBeLessThanOrEqual(
+      average(roundGaps.slice(0, 2)),
+    )
   })
 
   it('fills the configured two-hour round target after special matches are complete', () => {
