@@ -6,7 +6,11 @@ export type AgeGroup = '20대' | '30대' | '40대' | '45대' | '50대' | '55대�
 
 export type AppMode = 'meeting' | 'tournament'
 
-export type TournamentFormat = 'group-knockout' | 'knockout' | 'team-battle'
+export type TournamentFormat =
+  | 'group-knockout'
+  | 'knockout'
+  | 'team-battle'
+  | 'friendly-team-battle'
 
 export type MatchConditionKey =
   | 'fairGames'
@@ -51,6 +55,7 @@ export type TournamentSettings = {
   includeThirdPlace: boolean
   teamBattleMatchCount: number
   teamBattleSlots: string[]
+  friendlyParticipantCount: number
 }
 
 export type TournamentTeam = {
@@ -61,6 +66,7 @@ export type TournamentTeam = {
   gender: Gender
   seed: number | null
   active: boolean
+  members?: TournamentParticipant[]
 }
 
 export type Team = [Player, Player]
@@ -142,6 +148,21 @@ export type TournamentMatch = {
 export type TournamentMatchResult = MatchResult
 
 export type TournamentResultsByMatch = Record<string, TournamentMatchResult>
+
+export type TournamentParticipant = {
+  id: string
+  name: string
+  level: Level
+  ageGroup: AgeGroup
+  gender: Gender
+}
+
+export type TournamentLineup = {
+  teamAPlayerIds: string[]
+  teamBPlayerIds: string[]
+}
+
+export type TournamentLineupsByMatch = Record<string, TournamentLineup>
 
 export type TournamentGroup = {
   id: string

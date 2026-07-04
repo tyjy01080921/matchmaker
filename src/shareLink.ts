@@ -5,6 +5,7 @@ import type {
   Player,
   PrizeDrawState,
   ResultsByMatch,
+  TournamentLineupsByMatch,
   TournamentResultsByMatch,
   TournamentSettings,
   TournamentTeam,
@@ -25,6 +26,7 @@ export type SharePayload = {
   tournamentTeams?: TournamentTeam[]
   tournamentSettings?: TournamentSettings
   tournamentResults?: TournamentResultsByMatch
+  tournamentLineups?: TournamentLineupsByMatch
   prizeDraw?: PrizeDrawState
 }
 
@@ -132,6 +134,13 @@ const isSharePayload = (value: unknown): value is SharePayload => {
       (
         typeof payload.tournamentResults === 'object' &&
         payload.tournamentResults !== null
+      )
+    ) &&
+    (
+      payload.tournamentLineups === undefined ||
+      (
+        typeof payload.tournamentLineups === 'object' &&
+        payload.tournamentLineups !== null
       )
     ) &&
     (

@@ -1,4 +1,5 @@
 import { playerDisplayName, type PlayerNameLookup } from './playerNames'
+import { tournamentParticipantsFromTeams } from './matchmaker'
 import type {
   Match,
   MatchNameOverrides,
@@ -8,6 +9,7 @@ import type {
   Schedule,
   Team,
   TournamentFormat,
+  TournamentLineupsByMatch,
   TournamentMatch,
   TournamentResultsByMatch,
   TournamentSchedule,
@@ -83,8 +85,11 @@ type PrintTournamentOptions = {
   schedule: TournamentSchedule
   settings: TournamentSettings
   teams: TournamentTeam[]
+  lineups?: TournamentLineupsByMatch
   title?: string
 }
+
+type TournamentPrintParticipant = ReturnType<typeof tournamentParticipantsFromTeams>[number]
 
 const layout = {
   contentBottom: A4_IMAGE_HEIGHT - 62,
@@ -106,6 +111,7 @@ const tournamentFormatPrintLabels: Record<TournamentFormat, string> = {
   'group-knockout': '조별+넉아웃',
   knockout: '넉아웃',
   'team-battle': '단체전',
+  'friendly-team-battle': '친목전',
 }
 
 const tournamentPhasePrintLabels: Record<TournamentMatch['phase'], string> = {
@@ -272,6 +278,44 @@ const tournamentMatchupText = (
     match.sourceA ?? '대기',
   )} vs ${tournamentTeamPrintName(match.teamBId, teamsById, match.sourceB ?? '대기')}`
 
+const tournamentLineupPrintText = (
+  match: TournamentMatch,
+  side: 'A' | 'B',
+  options: PrintTournamentOptions,
+  participantsById: Map<string, TournamentPrintParticipant>,
+) => {
+  const lineup = options.lineups?.[match.id]
+  const teamId = side === 'A' ? match.teamAId : match.teamBId
+  const playerIds = side === 'A' ? lineup?.teamAPlayerIds : lineup?.teamBPlayerIds
+  if (!teamId || !playerIds?.some(Boolean)) return ''
+
+  return playerIds
+    .map((playerId) => {
+      const participant = participantsById.get(playerId)
+      if (!participant) return ''
+      return participant.teamId === teamId
+        ? participant.name
+        : `${participant.name}(지원)`
+    })
+    .filter(Boolean)
+    .join(' + ')
+}
+
+const tournamentSidePrintText = (
+  match: TournamentMatch,
+  side: 'A' | 'B',
+  options: PrintTournamentOptions,
+  teamsById: Map<string, TournamentTeam>,
+  participantsById: Map<string, TournamentPrintParticipant>,
+) => {
+  const teamId = side === 'A' ? match.teamAId : match.teamBId
+  const source = side === 'A' ? match.sourceA : match.sourceB
+  const teamName = tournamentTeamPrintName(teamId, teamsById, source ?? '대기')
+  const lineup = tournamentLineupPrintText(match, side, options, participantsById)
+
+  return lineup ? `${teamName} · ${lineup}` : teamName
+}
+
 const drawTableHeader = (y: number) => {
   let x = 50
   const labels = columns.map((column) => {
@@ -398,6 +442,12 @@ export const makePrintableTournamentItems = (
   options: PrintTournamentOptions,
 ): PrintableTournamentItem[] => {
   const teamsById = new Map(options.teams.map((team) => [team.id, team]))
+  const participantsById = new Map(
+    tournamentParticipantsFromTeams(options.teams).map((participant) => [
+      participant.id,
+      participant,
+    ]),
+  )
   const items: PrintableTournamentItem[] = []
   const orderedMatches = [...options.schedule.matches].sort(
     (a, b) => a.order - b.order || a.label.localeCompare(b.label),
@@ -423,7 +473,9 @@ export const makePrintableTournamentItems = (
         kind: 'tournament-match',
         court: `${match.court}코트`,
         label: [
-          tournamentPhasePrintLabels[match.phase],
+          match.phase === 'team-battle'
+            ? tournamentFormatPrintLabels[options.settings.format]
+            : tournamentPhasePrintLabels[match.phase],
           match.label,
           match.teamBattleSlot,
         ]
@@ -435,15 +487,19 @@ export const makePrintableTournamentItems = (
           options.results[match.id],
           teamsById,
         ),
-        sideA: tournamentTeamPrintName(
-          match.teamAId,
+        sideA: tournamentSidePrintText(
+          match,
+          'A',
+          options,
           teamsById,
-          match.sourceA ?? '대기',
+          participantsById,
         ),
-        sideB: tournamentTeamPrintName(
-          match.teamBId,
+        sideB: tournamentSidePrintText(
+          match,
+          'B',
+          options,
           teamsById,
-          match.sourceB ?? '대기',
+          participantsById,
         ),
       })
     }
@@ -496,11 +552,14 @@ export const makePrintableTournamentItems = (
     }
   }
 
-  if (options.settings.format === 'team-battle') {
+  if (
+    options.settings.format === 'team-battle' ||
+    options.settings.format === 'friendly-team-battle'
+  ) {
     if (options.schedule.teamBattleStandings.length > 0) {
       items.push({
         kind: 'section',
-        title: '단체전 순위',
+        title: `${tournamentFormatPrintLabels[options.settings.format]} 순위`,
         detail: '세부 경기 승수 합산',
       })
 
@@ -540,7 +599,7 @@ export const makePrintableTournamentItems = (
     items.push({
       kind: 'section',
       title: '대진 없음',
-      detail: '참가 팀과 대회 설정을 확인해 주세요.',
+      detail: '참가 팀과 경쟁 설정을 확인해 주세요.',
     })
   }
 
@@ -760,7 +819,7 @@ const renderTournamentPageSvg = (
   const title = options.title?.trim() || 'A.M.A Match Maker Pro'
   const body: string[] = [
     rect(0, 0, A4_IMAGE_WIDTH, A4_IMAGE_HEIGHT, { fill: '#ffffff' }),
-    text(truncateText(`${title} · 대회 대진표`, 48), 50, 38, {
+    text(truncateText(`${title} · 경쟁 대진표`, 48), 50, 38, {
       size: 16,
       weight: 900,
     }),

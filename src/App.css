@@ -857,6 +857,29 @@ textarea {
   font-weight: 900;
 }
 
+.friendly-team-summary {
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+}
+
+.friendly-team-summary strong {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.friendly-team-summary span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .checkbox-label {
   display: inline-flex;
   align-items: center;
@@ -1476,6 +1499,60 @@ textarea {
   grid-template-columns: minmax(0, 1fr) 58px;
 }
 
+.lineup-editor {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(12, 143, 127, 0.24);
+  border-radius: 6px;
+  background: var(--soft-green);
+}
+
+.lineup-editor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.lineup-editor-heading span {
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.lineup-editor-heading button {
+  min-height: 26px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.lineup-editor-grid {
+  display: grid;
+  gap: 7px;
+}
+
+.lineup-side-editor {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.lineup-side-editor span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.lineup-side-editor select {
+  min-height: 34px;
+  margin-top: 0;
+  padding: 5px 7px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .score-value {
   display: inline-flex;
   min-height: 38px;
@@ -1829,7 +1906,7 @@ textarea {
   }
 
   .format-list {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 5px;
     overflow-x: visible;
     margin-inline: 0;
@@ -1837,15 +1914,15 @@ textarea {
   }
 
   .format-list button {
-    min-height: 38px;
-    padding: 6px 5px;
+    min-height: 34px;
+    padding: 5px 3px;
     justify-items: center;
     text-align: center;
   }
 
   .format-list strong {
-    font-size: 12px;
-    line-height: 1.2;
+    font-size: 11px;
+    line-height: 1.15;
   }
 
   .format-list span {
@@ -2191,6 +2268,27 @@ textarea {
     grid-template-columns: minmax(0, 1fr) 48px;
   }
 
+  .lineup-editor {
+    gap: 5px;
+    padding: 6px;
+  }
+
+  .lineup-side-editor {
+    grid-template-columns: 32px minmax(0, 1fr) minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .lineup-side-editor span,
+  .lineup-editor-heading span {
+    font-size: 11px;
+  }
+
+  .lineup-side-editor select {
+    min-height: 32px;
+    padding: 4px 5px;
+    font-size: 12px;
+  }
+
   .team-name {
     min-height: 34px;
     padding: 5px 7px;
@@ -2230,6 +2328,19 @@ textarea {
 }
 
 @media (max-width: 380px) {
+  .format-list {
+    gap: 3px;
+  }
+
+  .format-list button {
+    min-height: 32px;
+    padding-inline: 2px;
+  }
+
+  .format-list strong {
+    font-size: 10px;
+  }
+
   .row-fields {
     grid-template-columns: 0.8fr 1fr 0.8fr;
   }

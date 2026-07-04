@@ -193,7 +193,7 @@ describe('printable schedule', () => {
       images[0].replace('data:image/svg+xml;charset=utf-8,', ''),
     )
 
-    expect(svg).toContain('대회 대진표')
+    expect(svg).toContain('경쟁 대진표')
     expect(svg).toContain('1팀 (1번 시드)')
     expect(svg).toContain('2팀')
     expect(svg).toContain('결승')

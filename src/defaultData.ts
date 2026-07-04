@@ -36,6 +36,7 @@ export const defaultTournamentSettings: TournamentSettings = {
   includeThirdPlace: true,
   teamBattleMatchCount: 3,
   teamBattleSlots: ['남복', '여복', '혼복', '자유복식', '에이스전'],
+  friendlyParticipantCount: 16,
 }
 
 export const defaultTournamentTeams: TournamentTeam[] = Array.from(

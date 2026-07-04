@@ -1,4 +1,6 @@
 import type {
+  Gender,
+  Level,
   Match,
   MatchConditionOptions,
   MatchNameOverrides,
@@ -10,7 +12,10 @@ import type {
   Schedule,
   Team,
   TournamentGroup,
+  TournamentLineup,
+  TournamentLineupsByMatch,
   TournamentMatch,
+  TournamentParticipant,
   TournamentResultsByMatch,
   TournamentSchedule,
   TournamentSettings,
@@ -37,6 +42,16 @@ type Pairing = {
   teamA: Team
   teamB: Team
   score: number
+}
+
+type TournamentParticipantWithTeam = TournamentParticipant & {
+  teamId: string
+  teamName: string
+}
+
+type TournamentTeamDraft = {
+  index: number
+  members: Player[]
 }
 
 type RoundPacing = {
@@ -126,6 +141,238 @@ export const getPlayerMatchScore = (player: Player) => {
   if (player.gender === 'male') return maleScore
   if (player.gender === 'female') return femaleScore
   return Math.round((maleScore + femaleScore) / 2)
+}
+
+const tournamentParticipantAsPlayer = (
+  participant: TournamentParticipant,
+): Player => ({
+  id: participant.id,
+  name: participant.name,
+  level: participant.level,
+  ageGroup: participant.ageGroup,
+  gender: participant.gender,
+  active: true,
+  specialRequired: false,
+  isGuest: false,
+  guestGameLimit: 0,
+})
+
+const tournamentParticipantScore = (participant: TournamentParticipant) =>
+  getPlayerMatchScore(tournamentParticipantAsPlayer(participant))
+
+const tournamentPlayerName = (player: Player, index: number) =>
+  player.name.trim() || `${index + 1}번`
+
+const playerAsTournamentParticipant = (
+  player: Player,
+  index: number,
+): TournamentParticipant => ({
+  id: player.id,
+  name: tournamentPlayerName(player, index),
+  level: player.level === '스페셜' ? 'OA' : player.level,
+  ageGroup: player.ageGroup,
+  gender: player.isGuest ? 'none' : player.gender,
+})
+
+const scoreTournamentDraft = (draft: TournamentTeamDraft) =>
+  draft.members.reduce((sum, player) => sum + getPlayerMatchScore(player), 0)
+
+const draftGenderBalance = (draft: TournamentTeamDraft) =>
+  draft.members.reduce((sum, player) => {
+    if (player.gender === 'male') return sum + 1
+    if (player.gender === 'female') return sum - 1
+    return sum
+  }, 0)
+
+const balancedTournamentDraftScore = (drafts: TournamentTeamDraft[]) => {
+  const scores = drafts.map(scoreTournamentDraft)
+  const sizes = drafts.map((draft) => draft.members.length)
+  const genderValues = drafts.map(draftGenderBalance)
+  const scoreSpread = scores.length > 1 ? Math.max(...scores) - Math.min(...scores) : 0
+  const sizeSpread = sizes.length > 1 ? Math.max(...sizes) - Math.min(...sizes) : 0
+  const genderSpread =
+    genderValues.length > 1 ? Math.max(...genderValues) - Math.min(...genderValues) : 0
+
+  return scoreSpread * 18 + sizeSpread * 700 + genderSpread * 28
+}
+
+const levelSortValue: Record<Level, number> = {
+  스페셜: 0,
+  OA: 1,
+  A: 2,
+  B: 3,
+  C: 4,
+  D: 5,
+  O: 6,
+}
+
+const representativeTournamentLevel = (members: Player[]): Level => {
+  if (members.length === 0) return 'B'
+
+  const counts = new Map<Level, number>()
+  for (const member of members) {
+    const level = member.level === '스페셜' ? 'OA' : member.level
+    counts.set(level, (counts.get(level) ?? 0) + 1)
+  }
+
+  return [...counts.entries()].sort((a, b) => {
+    const countDiff = b[1] - a[1]
+    if (countDiff !== 0) return countDiff
+    return levelSortValue[a[0]] - levelSortValue[b[0]]
+  })[0][0]
+}
+
+const representativeTournamentGender = (members: Player[]): Gender => {
+  const genders = new Set(
+    members
+      .map((member) => (member.isGuest ? 'none' : member.gender))
+      .filter((gender) => gender !== 'none'),
+  )
+  if (genders.size !== 1) return 'none'
+  return [...genders][0] as Gender
+}
+
+export const generateBalancedTournamentTeams = (
+  players: Player[],
+  requestedTeamCount: number,
+) => {
+  const warnings: string[] = []
+  const activePlayers = players
+    .filter((player) => player.active && !player.isGuest)
+    .map((player, index) => ({
+      ...player,
+      name: tournamentPlayerName(player, index),
+      isGuest: false,
+      level: player.level === '스페셜' ? 'OA' : player.level,
+      gender: player.isGuest ? 'none' : player.gender,
+    }))
+
+  if (activePlayers.length === 0) {
+    return {
+      teams: [] as TournamentTeam[],
+      warnings: ['편성할 참가자가 없습니다.'],
+    }
+  }
+
+  const numericTeamCount = Number(requestedTeamCount)
+  const normalizedTeamCount = Number.isFinite(numericTeamCount)
+    ? Math.max(1, Math.floor(numericTeamCount))
+    : 2
+  const teamCount = Math.min(normalizedTeamCount, activePlayers.length)
+
+  if (teamCount !== normalizedTeamCount) {
+    warnings.push(`참가자 수 기준 ${teamCount}팀으로 편성되었습니다.`)
+  }
+
+  if (teamCount < 2) {
+    warnings.push('단체전 대진은 2팀 이상 필요합니다.')
+  }
+
+  const totalScore = activePlayers.reduce(
+    (sum, player) => sum + getPlayerMatchScore(player),
+    0,
+  )
+  const totalGenderBalance = activePlayers.reduce((sum, player) => {
+    if (player.gender === 'male') return sum + 1
+    if (player.gender === 'female') return sum - 1
+    return sum
+  }, 0)
+  const targetScore = totalScore / teamCount
+  const targetSize = activePlayers.length / teamCount
+  const targetGenderBalance = totalGenderBalance / teamCount
+  const maxTeamSize = Math.ceil(targetSize)
+  const drafts: TournamentTeamDraft[] = Array.from({ length: teamCount }, (_, index) => ({
+    index,
+    members: [],
+  }))
+  const sortedPlayers = [...activePlayers].sort((a, b) => {
+    const scoreDiff = getPlayerMatchScore(b) - getPlayerMatchScore(a)
+    if (scoreDiff !== 0) return scoreDiff
+    const genderDiff = a.gender.localeCompare(b.gender)
+    if (genderDiff !== 0) return genderDiff
+    return a.name.localeCompare(b.name)
+  })
+
+  for (const player of sortedPlayers) {
+    const playerScore = getPlayerMatchScore(player)
+    const genderValue = player.gender === 'male' ? 1 : player.gender === 'female' ? -1 : 0
+    const candidates = drafts.filter((draft) => draft.members.length < maxTeamSize)
+
+    const targetDraft = candidates
+      .map((draft) => {
+        const nextScore = scoreTournamentDraft(draft) + playerScore
+        const nextSize = draft.members.length + 1
+        const nextGenderBalance = draftGenderBalance(draft) + genderValue
+        return {
+          draft,
+          score:
+            Math.abs(nextScore - targetScore) * 10 +
+            Math.abs(nextSize - targetSize) * 120 +
+            Math.abs(nextGenderBalance - targetGenderBalance) * 16 +
+            draft.members.length * 2,
+        }
+      })
+      .sort((a, b) => {
+        const scoreDiff = a.score - b.score
+        if (scoreDiff !== 0) return scoreDiff
+        const sizeDiff = a.draft.members.length - b.draft.members.length
+        if (sizeDiff !== 0) return sizeDiff
+        return a.draft.index - b.draft.index
+      })[0].draft
+
+    targetDraft.members.push(player)
+  }
+
+  let improved = true
+  for (let pass = 0; pass < 40 && improved; pass += 1) {
+    improved = false
+    const currentScore = balancedTournamentDraftScore(drafts)
+
+    for (let leftIndex = 0; leftIndex < drafts.length - 1; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < drafts.length; rightIndex += 1) {
+        const left = drafts[leftIndex]
+        const right = drafts[rightIndex]
+
+        for (let leftMemberIndex = 0; leftMemberIndex < left.members.length; leftMemberIndex += 1) {
+          for (let rightMemberIndex = 0; rightMemberIndex < right.members.length; rightMemberIndex += 1) {
+            const leftMember = left.members[leftMemberIndex]
+            const rightMember = right.members[rightMemberIndex]
+
+            left.members[leftMemberIndex] = rightMember
+            right.members[rightMemberIndex] = leftMember
+            const nextScore = balancedTournamentDraftScore(drafts)
+
+            if (nextScore + 0.0001 < currentScore) {
+              improved = true
+              break
+            }
+
+            left.members[leftMemberIndex] = leftMember
+            right.members[rightMemberIndex] = rightMember
+          }
+          if (improved) break
+        }
+        if (improved) break
+      }
+      if (improved) break
+    }
+  }
+
+  const teams = drafts.map<TournamentTeam>((draft) => {
+    const members = draft.members.map(playerAsTournamentParticipant)
+    return {
+      id: `auto-team-${draft.index + 1}`,
+      name: `${draft.index + 1}팀`,
+      playerNames: members.map((member) => member.name).join(', '),
+      level: representativeTournamentLevel(draft.members),
+      gender: representativeTournamentGender(draft.members),
+      seed: null,
+      active: true,
+      members,
+    }
+  })
+
+  return { teams, warnings }
 }
 
 const isOpenLevel = (player: Player) => player.level === 'O'
@@ -1091,8 +1338,260 @@ const activeTournamentTeams = (teams: TournamentTeam[]) =>
       return a.name.localeCompare(b.name)
     })
 
+const isTeamBattleTournamentFormat = (format: TournamentSettings['format']) =>
+  format === 'team-battle' || format === 'friendly-team-battle'
+
 const tournamentTeamMap = (teams: TournamentTeam[]) =>
   new Map(teams.map((team) => [team.id, team]))
+
+const tournamentNameParts = (value: string) =>
+  value
+    .split(/[,\n]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+
+const fallbackTournamentMembers = (team: TournamentTeam): TournamentParticipant[] =>
+  tournamentNameParts(team.playerNames).map((name, index) => ({
+    id: `${team.id}-member-${index + 1}`,
+    name,
+    level: team.level,
+    ageGroup: '30대',
+    gender: team.gender,
+  }))
+
+export const tournamentMembersForTeam = (
+  team: TournamentTeam,
+): TournamentParticipant[] => {
+  const members = team.members?.filter((member) => member.name.trim()) ?? []
+  return members.length > 0 ? members : fallbackTournamentMembers(team)
+}
+
+export const tournamentParticipantsFromTeams = (
+  teams: TournamentTeam[],
+): TournamentParticipantWithTeam[] =>
+  teams
+    .filter((team) => team.active && team.name.trim())
+    .flatMap((team) =>
+      tournamentMembersForTeam(team).map((member) => ({
+        ...member,
+        teamId: team.id,
+        teamName: team.name,
+      })),
+    )
+
+const emptyTournamentLineup = (): TournamentLineup => ({
+  teamAPlayerIds: ['', ''],
+  teamBPlayerIds: ['', ''],
+})
+
+const normalizeLineupIds = (ids: string[] | undefined) => [
+  ids?.[0] ?? '',
+  ids?.[1] ?? '',
+]
+
+const participantUsage = (
+  participant: TournamentParticipantWithTeam,
+  usageCounts: Map<string, number>,
+) => usageCounts.get(participant.id) ?? 0
+
+const averageTournamentTeamScore = (
+  teamId: string,
+  participants: TournamentParticipantWithTeam[],
+) => {
+  const members = participants.filter((participant) => participant.teamId === teamId)
+  if (members.length === 0) return 0
+  return (
+    members.reduce(
+      (sum, participant) => sum + tournamentParticipantScore(participant),
+      0,
+    ) / members.length
+  )
+}
+
+const sortLineupCandidates = (
+  candidates: TournamentParticipantWithTeam[],
+  usageCounts: Map<string, number>,
+  targetScore: number,
+) =>
+  [...candidates].sort((a, b) => {
+    const usageDiff = participantUsage(a, usageCounts) - participantUsage(b, usageCounts)
+    if (usageDiff !== 0) return usageDiff
+    const scoreDiff =
+      Math.abs(tournamentParticipantScore(a) - targetScore) -
+      Math.abs(tournamentParticipantScore(b) - targetScore)
+    if (scoreDiff !== 0) return scoreDiff
+    const teamDiff = a.teamName.localeCompare(b.teamName)
+    if (teamDiff !== 0) return teamDiff
+    return a.name.localeCompare(b.name)
+  })
+
+const pickLineupSide = (
+  teamId: string,
+  opponentTeamId: string,
+  tieId: string,
+  participants: TournamentParticipantWithTeam[],
+  usageCounts: Map<string, number>,
+  usedByTieTeam: Map<string, Set<string>>,
+  unavailableIds: Set<string>,
+) => {
+  const sideUsedKey = `${tieId}:${teamId}`
+  const usedInTie = usedByTieTeam.get(sideUsedKey) ?? new Set<string>()
+  const selected: string[] = []
+  const targetScore = averageTournamentTeamScore(teamId, participants)
+
+  const addCandidates = (candidates: TournamentParticipantWithTeam[]) => {
+    for (const candidate of sortLineupCandidates(candidates, usageCounts, targetScore)) {
+      if (selected.length >= 2) break
+      if (unavailableIds.has(candidate.id) || selected.includes(candidate.id)) continue
+      selected.push(candidate.id)
+      unavailableIds.add(candidate.id)
+    }
+  }
+
+  const teamMembers = participants.filter((participant) => participant.teamId === teamId)
+  addCandidates(teamMembers.filter((participant) => !usedInTie.has(participant.id)))
+
+  if (selected.length < 2) {
+    addCandidates(
+      participants.filter(
+        (participant) =>
+          participant.teamId !== teamId && participant.teamId !== opponentTeamId,
+      ),
+    )
+  }
+
+  if (selected.length < 2) {
+    addCandidates(
+      participants.filter(
+        (participant) =>
+          participant.teamId !== teamId && participant.teamId === opponentTeamId,
+      ),
+    )
+  }
+
+  if (selected.length < 2) {
+    addCandidates(teamMembers)
+  }
+
+  while (selected.length < 2) selected.push('')
+
+  usedByTieTeam.set(sideUsedKey, new Set([...usedInTie, ...selected.filter(Boolean)]))
+  for (const playerId of selected.filter(Boolean)) {
+    usageCounts.set(playerId, (usageCounts.get(playerId) ?? 0) + 1)
+  }
+
+  return selected
+}
+
+const tournamentLineupStrength = (
+  lineup: TournamentLineup,
+  participantsById: Map<string, TournamentParticipantWithTeam>,
+) =>
+  [...lineup.teamAPlayerIds, ...lineup.teamBPlayerIds].reduce((sum, playerId) => {
+    const participant = participantsById.get(playerId)
+    return participant ? sum + tournamentParticipantScore(participant) : sum
+  }, 0)
+
+const orderLineupsByStrengthWithinTies = (
+  matches: TournamentMatch[],
+  lineups: TournamentLineupsByMatch,
+  participants: TournamentParticipantWithTeam[],
+): TournamentLineupsByMatch => {
+  const participantsById = new Map(
+    participants.map((participant) => [participant.id, participant]),
+  )
+  const matchesByTie = new Map<string, TournamentMatch[]>()
+
+  for (const match of matches) {
+    if (
+      match.phase !== 'team-battle' ||
+      !match.teamAId ||
+      !match.teamBId ||
+      match.isBye
+    ) {
+      continue
+    }
+
+    const tieId = match.teamBattleTieId ?? match.id
+    matchesByTie.set(tieId, [...(matchesByTie.get(tieId) ?? []), match])
+  }
+
+  const orderedLineups = { ...lineups }
+
+  for (const tieMatches of matchesByTie.values()) {
+    if (tieMatches.length <= 1) continue
+
+    const orderedMatches = [...tieMatches].sort((a, b) => a.order - b.order)
+    const sortedLineups = orderedMatches
+      .map((match, index) => ({
+        index,
+        lineup: lineups[match.id] ?? emptyTournamentLineup(),
+      }))
+      .sort((a, b) => {
+        const strengthDiff =
+          tournamentLineupStrength(a.lineup, participantsById) -
+          tournamentLineupStrength(b.lineup, participantsById)
+        if (strengthDiff !== 0) return strengthDiff
+        return a.index - b.index
+      })
+
+    orderedMatches.forEach((match, index) => {
+      orderedLineups[match.id] = sortedLineups[index].lineup
+    })
+  }
+
+  return orderedLineups
+}
+
+export const generateTournamentLineups = (
+  matches: TournamentMatch[],
+  teams: TournamentTeam[],
+): TournamentLineupsByMatch => {
+  const participants = tournamentParticipantsFromTeams(teams)
+  const usageCounts = new Map<string, number>()
+  const usedByTieTeam = new Map<string, Set<string>>()
+  const lineups: TournamentLineupsByMatch = {}
+
+  for (const match of [...matches].sort((a, b) => a.order - b.order)) {
+    if (
+      match.phase !== 'team-battle' ||
+      !match.teamAId ||
+      !match.teamBId ||
+      match.isBye
+    ) {
+      continue
+    }
+
+    const tieId = match.teamBattleTieId ?? match.id
+    const unavailableIds = new Set<string>()
+    const teamAPlayerIds = pickLineupSide(
+      match.teamAId,
+      match.teamBId,
+      tieId,
+      participants,
+      usageCounts,
+      usedByTieTeam,
+      unavailableIds,
+    )
+    const teamBPlayerIds = pickLineupSide(
+      match.teamBId,
+      match.teamAId,
+      tieId,
+      participants,
+      usageCounts,
+      usedByTieTeam,
+      unavailableIds,
+    )
+
+    lineups[match.id] = {
+      ...emptyTournamentLineup(),
+      teamAPlayerIds: normalizeLineupIds(teamAPlayerIds),
+      teamBPlayerIds: normalizeLineupIds(teamBPlayerIds),
+    }
+  }
+
+  return orderLineupsByStrengthWithinTies(matches, lineups, participants)
+}
 
 const completedTournamentScores = (
   result: TournamentResultsByMatch[string] | undefined,
@@ -1650,9 +2149,13 @@ export const generateTournamentSchedule = (
     }
   }
 
-  if (settings.format === 'team-battle') {
+  if (isTeamBattleTournamentFormat(settings.format)) {
     if (activeTeams.length < 2) {
-      return emptyTournamentSchedule(['단체전은 참가 팀이 2팀 이상 필요합니다.'])
+      return emptyTournamentSchedule([
+        settings.format === 'friendly-team-battle'
+          ? '친목전은 참가 팀이 2팀 이상 필요합니다.'
+          : '단체전은 참가 팀이 2팀 이상 필요합니다.',
+      ])
     }
 
     const matches = makeTeamBattleMatches(activeTeams, settings)

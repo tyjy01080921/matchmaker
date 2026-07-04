@@ -8,12 +8,21 @@ import {
 } from './defaultData'
 import {
   calculateStats,
+  generateBalancedTournamentTeams,
   generateSchedule,
+  generateTournamentLineups,
   generateTournamentSchedule,
   getPlayerMatchScore,
 } from './matchmaker'
 import { makePlayerNameLookup, playerDisplayName } from './playerNames'
-import type { AgeGroup, Gender, Level, Player, TournamentTeam } from './types'
+import type {
+  AgeGroup,
+  Gender,
+  Level,
+  Player,
+  TournamentParticipant,
+  TournamentTeam,
+} from './types'
 
 const makeTestPlayer = (
   id: string,
@@ -43,6 +52,31 @@ const makeTournamentTeam = (id: string, seed: number | null): TournamentTeam => 
   seed,
   active: true,
 })
+
+const makeTournamentMember = (
+  id: string,
+  level: Level = 'B',
+  gender: Gender = 'male',
+): TournamentParticipant => ({
+  id,
+  name: id,
+  level,
+  ageGroup: '30대',
+  gender,
+})
+
+const tournamentMemberScore = (member: TournamentParticipant) =>
+  getPlayerMatchScore({
+    id: member.id,
+    name: member.name,
+    level: member.level,
+    ageGroup: member.ageGroup,
+    gender: member.gender,
+    active: true,
+    specialRequired: false,
+    isGuest: false,
+    guestGameLimit: 0,
+  })
 
 const average = (values: number[]) =>
   values.reduce((sum, value) => sum + value, 0) / values.length
@@ -695,6 +729,47 @@ describe('generateSchedule', () => {
   })
 })
 
+describe('generateBalancedTournamentTeams', () => {
+  it('splits bulk players into the requested number of balanced teams', () => {
+    const players = [
+      makeTestPlayer('a-1', 'A', 'male'),
+      makeTestPlayer('a-2', 'A', 'female'),
+      makeTestPlayer('b-1', 'B', 'male'),
+      makeTestPlayer('b-2', 'B', 'female'),
+      makeTestPlayer('b-3', 'B', 'male'),
+      makeTestPlayer('c-1', 'C', 'female'),
+      makeTestPlayer('c-2', 'C', 'male'),
+      makeTestPlayer('c-3', 'C', 'female'),
+      makeTestPlayer('d-1', 'D', 'male'),
+      makeTestPlayer('d-2', 'D', 'female'),
+      makeTestPlayer('d-3', 'D', 'male'),
+      makeTestPlayer('d-4', 'D', 'female'),
+    ]
+
+    const result = generateBalancedTournamentTeams(players, 4)
+    const assignedIds = result.teams.flatMap((team) =>
+      (team.members ?? []).map((member) => member.id),
+    )
+    const teamSizes = result.teams.map((team) => team.members?.length ?? 0)
+    const scoreByPlayerId = new Map(
+      players.map((player) => [player.id, getPlayerMatchScore(player)]),
+    )
+    const teamScores = result.teams.map((team) =>
+      (team.members ?? []).reduce(
+        (sum, member) => sum + (scoreByPlayerId.get(member.id) ?? 0),
+        0,
+      ),
+    )
+
+    expect(result.teams).toHaveLength(4)
+    expect(new Set(assignedIds).size).toBe(players.length)
+    expect(assignedIds).toEqual(expect.arrayContaining(players.map((player) => player.id)))
+    expect(Math.max(...teamSizes) - Math.min(...teamSizes)).toBeLessThanOrEqual(1)
+    expect(Math.max(...teamScores) - Math.min(...teamScores)).toBeLessThan(45)
+    expect(result.warnings).toHaveLength(0)
+  })
+})
+
 describe('generateTournamentSchedule', () => {
   it('advances a bye team into the next knockout round', () => {
     const teams = [
@@ -972,5 +1047,113 @@ describe('generateTournamentSchedule', () => {
     expect(schedule.teamBattleTies[0].winnerTeamId).toBe('alpha')
     expect(schedule.teamBattleStandings[0].team.id).toBe('alpha')
     expect(schedule.teamBattleStandings[0].matchWins).toBe(2)
+  })
+
+  it('fills friendly doubles lineups with support players when a team has an odd roster', () => {
+    const teams: TournamentTeam[] = [
+      {
+        ...makeTournamentTeam('alpha', 1),
+        name: 'A팀',
+        playerNames: '',
+        members: [
+          makeTournamentMember('a-1', 'A', 'male'),
+          makeTournamentMember('a-2', 'B', 'female'),
+          makeTournamentMember('a-3', 'C', 'male'),
+        ],
+      },
+      {
+        ...makeTournamentTeam('beta', 2),
+        name: 'B팀',
+        playerNames: '',
+        members: [
+          makeTournamentMember('b-1', 'A', 'female'),
+          makeTournamentMember('b-2', 'B', 'male'),
+          makeTournamentMember('b-3', 'B', 'female'),
+          makeTournamentMember('b-4', 'C', 'male'),
+          makeTournamentMember('b-5', 'C', 'female'),
+        ],
+      },
+    ]
+    const schedule = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'friendly-team-battle',
+        teamBattleMatchCount: 2,
+      },
+      {},
+    )
+    const lineups = generateTournamentLineups(schedule.matches, teams)
+    const alphaSupportSlots = schedule.matches.flatMap((match) =>
+      lineups[match.id]?.teamAPlayerIds.filter((playerId) =>
+        playerId.startsWith('b-'),
+      ) ?? [],
+    )
+
+    expect(Object.keys(lineups)).toHaveLength(2)
+    expect(alphaSupportSlots.length).toBeGreaterThan(0)
+    expect(
+      Object.values(lineups).every(
+        (lineup) =>
+          lineup.teamAPlayerIds.filter(Boolean).length === 2 &&
+          lineup.teamBPlayerIds.filter(Boolean).length === 2,
+      ),
+    ).toBe(true)
+  })
+
+  it('orders friendly doubles lineups from lower levels to higher levels within a tie', () => {
+    const teams: TournamentTeam[] = [
+      {
+        ...makeTournamentTeam('alpha', 1),
+        name: 'A팀',
+        playerNames: '',
+        members: [
+          makeTournamentMember('a-d', 'D', 'male'),
+          makeTournamentMember('a-c', 'C', 'female'),
+          makeTournamentMember('a-b', 'B', 'male'),
+          makeTournamentMember('a-a', 'A', 'female'),
+          makeTournamentMember('a-oa', 'OA', 'male'),
+        ],
+      },
+      {
+        ...makeTournamentTeam('beta', 2),
+        name: 'B팀',
+        playerNames: '',
+        members: [
+          makeTournamentMember('b-d', 'D', 'female'),
+          makeTournamentMember('b-c', 'C', 'male'),
+          makeTournamentMember('b-b', 'B', 'female'),
+          makeTournamentMember('b-a', 'A', 'male'),
+          makeTournamentMember('b-oa', 'OA', 'female'),
+        ],
+      },
+    ]
+    const schedule = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'friendly-team-battle',
+        teamBattleMatchCount: 5,
+      },
+      {},
+    )
+    const lineups = generateTournamentLineups(schedule.matches, teams)
+    const scoreById = new Map(
+      teams.flatMap((team) =>
+        (team.members ?? []).map((member) => [member.id, tournamentMemberScore(member)]),
+      ),
+    )
+    const lineupScore = (matchId: string) => {
+      const lineup = lineups[matchId]
+      return [
+        ...(lineup?.teamAPlayerIds ?? []),
+        ...(lineup?.teamBPlayerIds ?? []),
+      ].reduce((sum, playerId) => sum + (scoreById.get(playerId) ?? 0), 0)
+    }
+    const scores = schedule.matches
+      .sort((a, b) => a.order - b.order)
+      .map((match) => lineupScore(match.id))
+
+    expect(scores).toEqual([...scores].sort((a, b) => a - b))
   })
 })
