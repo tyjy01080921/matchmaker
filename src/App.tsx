@@ -931,7 +931,8 @@ const mergeParsedPlayersWithRosterDraft = (
 }
 
 const bulkPlayerPlaceholder = [
-  '입력: 이름 먼저 · 이후 순서 무관',
+  '이름 또는 번호는 첫 순서에 작성',
+  '이후 레벨 · 성별 · 연령은 순서 무관',
   '김민수',
   '이지연',
   '박태호 남 30 B',
