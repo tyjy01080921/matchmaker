@@ -1631,6 +1631,89 @@ const completedTournamentScores = (
   return { teamAScore, teamBScore }
 }
 
+export const calculateTournamentMvpCandidates = (
+  matches: TournamentMatch[],
+  teams: TournamentTeam[],
+  results: TournamentResultsByMatch,
+  lineups: TournamentLineupsByMatch,
+) => {
+  const participants = tournamentParticipantsFromTeams(teams)
+  const stats = new Map(
+    participants.map((participant) => [
+      participant.id,
+      {
+        participant,
+        games: 0,
+        wins: 0,
+        pointsFor: 0,
+        pointsAgainst: 0,
+      },
+    ]),
+  )
+
+  const addSideStats = (
+    playerIds: string[] | undefined,
+    won: boolean,
+    pointsFor: number,
+    pointsAgainst: number,
+  ) => {
+    for (const playerId of new Set(playerIds?.filter(Boolean) ?? [])) {
+      const stat = stats.get(playerId)
+      if (!stat) continue
+
+      stat.games += 1
+      if (won) stat.wins += 1
+      stat.pointsFor += pointsFor
+      stat.pointsAgainst += pointsAgainst
+    }
+  }
+
+  for (const match of matches) {
+    if (match.phase !== 'team-battle') continue
+
+    const scores = completedTournamentScores(results[match.id])
+    const lineup = lineups[match.id]
+    if (!scores || !lineup) continue
+
+    const teamAWon = scores.teamAScore > scores.teamBScore
+    addSideStats(
+      lineup.teamAPlayerIds,
+      teamAWon,
+      scores.teamAScore,
+      scores.teamBScore,
+    )
+    addSideStats(
+      lineup.teamBPlayerIds,
+      !teamAWon,
+      scores.teamBScore,
+      scores.teamAScore,
+    )
+  }
+
+  return Object.fromEntries(
+    teams
+      .filter((team) => team.active && team.name.trim())
+      .map((team) => {
+        const candidate = [...stats.values()]
+          .filter(
+            (stat) =>
+              stat.participant.teamId === team.id &&
+              stat.games > 0,
+          )
+          .sort((a, b) => {
+            if (b.wins !== a.wins) return b.wins - a.wins
+            const pointDiff =
+              b.pointsFor - b.pointsAgainst - (a.pointsFor - a.pointsAgainst)
+            if (pointDiff !== 0) return pointDiff
+            if (b.pointsFor !== a.pointsFor) return b.pointsFor - a.pointsFor
+            return a.participant.name.localeCompare(b.participant.name)
+          })[0]
+
+        return [team.id, candidate?.participant.name ?? '대기']
+      }),
+  )
+}
+
 const tournamentMatchWinnerId = (
   match: TournamentMatch,
   result: TournamentResultsByMatch[string] | undefined,

@@ -7,6 +7,7 @@ import {
   defaultTournamentSettings,
 } from './defaultData'
 import {
+  calculateTournamentMvpCandidates,
   calculateStats,
   generateBalancedTournamentTeams,
   generateSchedule,
@@ -1066,6 +1067,78 @@ describe('generateTournamentSchedule', () => {
     expect(schedule.teamBattleStandings[0].pointsFor).toBe(60)
     expect(schedule.teamBattleStandings[0].pointsAgainst).toBe(52)
     expect(schedule.teamBattleStandings[0].pointDiff).toBe(8)
+  })
+
+  it('picks the friendly MVP candidate by wins then point difference', () => {
+    const teams: TournamentTeam[] = [
+      {
+        ...makeTournamentTeam('alpha', 1),
+        members: [
+          makeTournamentMember('a-1'),
+          makeTournamentMember('a-2'),
+          makeTournamentMember('a-3'),
+        ],
+      },
+      {
+        ...makeTournamentTeam('beta', 2),
+        members: [
+          makeTournamentMember('b-1'),
+          makeTournamentMember('b-2'),
+          makeTournamentMember('b-3'),
+        ],
+      },
+    ]
+    const schedule = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'friendly-team-battle',
+        teamBattleMatchCount: 3,
+      },
+      {},
+    )
+    const [first, second, third] = schedule.matches
+    const lineups = {
+      [first.id]: {
+        teamAPlayerIds: ['a-1', 'a-3'],
+        teamBPlayerIds: ['b-1', 'b-3'],
+      },
+      [second.id]: {
+        teamAPlayerIds: ['a-2', 'a-3'],
+        teamBPlayerIds: ['b-2', 'b-3'],
+      },
+      [third.id]: {
+        teamAPlayerIds: ['a-1', 'a-2'],
+        teamBPlayerIds: ['b-1', 'b-2'],
+      },
+    }
+    const candidates = calculateTournamentMvpCandidates(
+      schedule.matches,
+      teams,
+      {
+        [first.id]: {
+          teamAScore: '21',
+          teamBScore: '20',
+          completed: true,
+          note: '',
+        },
+        [second.id]: {
+          teamAScore: '21',
+          teamBScore: '10',
+          completed: true,
+          note: '',
+        },
+        [third.id]: {
+          teamAScore: '21',
+          teamBScore: '19',
+          completed: true,
+          note: '',
+        },
+      },
+      lineups,
+    )
+
+    expect(candidates.alpha).toBe('a-2')
   })
 
   it('fills friendly doubles lineups with support players when a team has an odd roster', () => {

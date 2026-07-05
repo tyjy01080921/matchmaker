@@ -1,5 +1,8 @@
 import { playerDisplayName, type PlayerNameLookup } from './playerNames'
-import { tournamentParticipantsFromTeams } from './matchmaker'
+import {
+  calculateTournamentMvpCandidates,
+  tournamentParticipantsFromTeams,
+} from './matchmaker'
 import type {
   Match,
   MatchNameOverrides,
@@ -448,6 +451,15 @@ export const makePrintableTournamentItems = (
       participant,
     ]),
   )
+  const tournamentMvpCandidates =
+    options.settings.format === 'friendly-team-battle'
+      ? calculateTournamentMvpCandidates(
+          options.schedule.matches,
+          options.teams,
+          options.results,
+          options.lineups ?? {},
+        )
+      : {}
   const items: PrintableTournamentItem[] = []
   const orderedMatches = [...options.schedule.matches].sort(
     (a, b) => a.order - b.order || a.label.localeCompare(b.label),
@@ -560,18 +572,34 @@ export const makePrintableTournamentItems = (
       items.push({
         kind: 'section',
         title: `${tournamentFormatPrintLabels[options.settings.format]} 순위`,
-        detail: '세부 경기 승수 합산',
+        detail:
+          options.settings.format === 'friendly-team-battle'
+            ? '세부 승패 · 총 득실 · MVP 후보'
+            : '세부 경기 승수 합산',
       })
 
       for (const standing of options.schedule.teamBattleStandings) {
-        items.push({
-          kind: 'tournament-standing',
-          detail: `세부 ${standing.matchWins}-${standing.matchLosses}`,
-          points: `득실 ${signedNumber(standing.pointDiff)}`,
-          rank: `${standing.rank}위`,
-          record: `${standing.tiesWon}승 ${standing.tiesLost}패`,
-          team: tournamentTeamPrintName(standing.team.id, teamsById),
-        })
+        if (options.settings.format === 'friendly-team-battle') {
+          items.push({
+            kind: 'tournament-standing',
+            detail: `득점 ${standing.pointsFor} · 실점 ${standing.pointsAgainst}`,
+            points: `득실 ${signedNumber(standing.pointDiff)} · MVP ${
+              tournamentMvpCandidates[standing.team.id] ?? '대기'
+            }`,
+            rank: `${standing.rank}위`,
+            record: `세부 ${standing.matchWins}-${standing.matchLosses}`,
+            team: tournamentTeamPrintName(standing.team.id, teamsById),
+          })
+        } else {
+          items.push({
+            kind: 'tournament-standing',
+            detail: `세부 ${standing.matchWins}-${standing.matchLosses}`,
+            points: `득실 ${signedNumber(standing.pointDiff)}`,
+            rank: `${standing.rank}위`,
+            record: `${standing.tiesWon}승 ${standing.tiesLost}패`,
+            team: tournamentTeamPrintName(standing.team.id, teamsById),
+          })
+        }
       }
     }
 
@@ -768,7 +796,11 @@ const drawTournamentStandingItem = (item: TournamentStandingItem, y: number) =>
     }),
     text(item.record, 640, y + 28, { color: '#18211f', size: 16, weight: 900 }),
     text(item.detail, 790, y + 28, { color: '#65716e', size: 15, weight: 800 }),
-    text(item.points, 940, y + 28, { color: '#65716e', size: 15, weight: 800 }),
+    text(truncateText(item.points, 28), 940, y + 28, {
+      color: '#65716e',
+      size: 15,
+      weight: 800,
+    }),
   ].join('')
 
 const drawTournamentBracketItem = (item: TournamentBracketItem, y: number) =>

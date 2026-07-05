@@ -17,6 +17,7 @@ import {
   samplePlayers,
 } from './defaultData'
 import {
+  calculateTournamentMvpCandidates,
   calculateStats,
   generateBalancedTournamentTeams,
   generateSchedule,
@@ -85,7 +86,7 @@ const GAME_SLOT_MINUTES = 15
 const EVENT_LIMIT_MINUTES = 120
 const EVENT_LIMIT_ROUNDS = Math.floor(EVENT_LIMIT_MINUTES / GAME_SLOT_MINUTES)
 const CONTACT_EMAIL = 'ama_official@naver.com'
-const APP_VERSION = '0.0.0'
+const APP_VERSION = '0.0.1'
 const LAST_UPDATED = '2026.07.05'
 const SHARE_LINK_SAVED_MESSAGE = '현재 생성된 이벤트의 링크를 저장하였습니다.'
 
@@ -196,6 +197,8 @@ const tournamentPhaseLabels: Record<TournamentMatch['phase'], string> = {
   'third-place': '3·4위',
   'team-battle': '단체전',
 }
+
+const signedNumber = (value: number) => (value > 0 ? `+${value}` : String(value))
 
 const legacySampleNames: Record<string, string> = {
   'guest-ko': '참가자 1',
@@ -1179,6 +1182,24 @@ function App() {
       ...tournamentLineups,
     }),
     [generatedTournamentLineups, tournamentLineups],
+  )
+  const tournamentMvpCandidates = useMemo(
+    () =>
+      isFriendlyTournamentFormat(tournamentSettings.format)
+        ? calculateTournamentMvpCandidates(
+            tournamentSchedule.matches,
+            tournamentScheduleTeams,
+            tournamentResults,
+            effectiveTournamentLineups,
+          )
+        : {},
+    [
+      effectiveTournamentLineups,
+      tournamentResults,
+      tournamentSchedule.matches,
+      tournamentScheduleTeams,
+      tournamentSettings.format,
+    ],
   )
   const playerNamePlaceholders = useMemo(() => {
     let regularCount = 0
@@ -4676,19 +4697,35 @@ function App() {
                     <div className="board-section">
                       <div className="section-heading">
                         <h2>{tournamentFormatLabels[tournamentSettings.format]} 순위</h2>
-                        <span>세부 경기 승수 합산</span>
+                        <span>
+                          {isFriendlyTournamentFormat(tournamentSettings.format)
+                            ? '세부 승패 · 총 득실 · MVP 후보'
+                            : '세부 경기 승수 합산'}
+                        </span>
                       </div>
                       <div className="stats-table-wrap">
                         <table className="stats-table">
                           <thead>
-                            <tr>
-                              <th>팀</th>
-                              <th>단체승</th>
-                              <th>단체패</th>
-                              <th>세부승</th>
-                              <th>세부패</th>
-                              <th>득실</th>
-                            </tr>
+                            {isFriendlyTournamentFormat(tournamentSettings.format) ? (
+                              <tr>
+                                <th>팀</th>
+                                <th>세부승</th>
+                                <th>세부패</th>
+                                <th>총 득점</th>
+                                <th>총 실점</th>
+                                <th>득실차</th>
+                                <th>MVP 후보</th>
+                              </tr>
+                            ) : (
+                              <tr>
+                                <th>팀</th>
+                                <th>단체승</th>
+                                <th>단체패</th>
+                                <th>세부승</th>
+                                <th>세부패</th>
+                                <th>득실</th>
+                              </tr>
+                            )}
                           </thead>
                           <tbody>
                             {tournamentSchedule.teamBattleStandings.map((standing) => (
@@ -4696,11 +4733,24 @@ function App() {
                                 <td>
                                   {standing.rank}. {standing.team.name}
                                 </td>
-                                <td>{standing.tiesWon}</td>
-                                <td>{standing.tiesLost}</td>
-                                <td>{standing.matchWins}</td>
-                                <td>{standing.matchLosses}</td>
-                                <td>{standing.pointDiff}</td>
+                                {isFriendlyTournamentFormat(tournamentSettings.format) ? (
+                                  <>
+                                    <td>{standing.matchWins}</td>
+                                    <td>{standing.matchLosses}</td>
+                                    <td>{standing.pointsFor}</td>
+                                    <td>{standing.pointsAgainst}</td>
+                                    <td>{signedNumber(standing.pointDiff)}</td>
+                                    <td>{tournamentMvpCandidates[standing.team.id] ?? '대기'}</td>
+                                  </>
+                                ) : (
+                                  <>
+                                    <td>{standing.tiesWon}</td>
+                                    <td>{standing.tiesLost}</td>
+                                    <td>{standing.matchWins}</td>
+                                    <td>{standing.matchLosses}</td>
+                                    <td>{signedNumber(standing.pointDiff)}</td>
+                                  </>
+                                )}
                               </tr>
                             ))}
                           </tbody>
