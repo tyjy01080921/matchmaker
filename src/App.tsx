@@ -37,6 +37,7 @@ import {
   playerDisplayName,
   type PlayerNameLookup,
 } from './playerNames'
+import { parseBulkPlayerDrafts } from './playerInput'
 import {
   A4_IMAGE_HEIGHT,
   A4_IMAGE_WIDTH,
@@ -899,50 +900,12 @@ const applyPairMixes = (
 })
 
 const parseBulkPlayers = (text: string): Player[] =>
-  text
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const tokens = line.split(/[\s,\t]+/).filter(Boolean)
-      const name = tokens[0]
-      const regularLevelToken = tokens.find((token) =>
-        (['OA', 'S', 'A', 'B', 'C', 'D', 'O'] as string[]).includes(
-          token.toUpperCase(),
-        ),
-      )
-      const specialLevelToken = tokens.find(
-        (token) => token === '스페셜' || token.toLowerCase() === 'special',
-      )
-      const levelToken = regularLevelToken ?? specialLevelToken
-      const ageToken = tokens.find((token) => ageGroups.includes(token as AgeGroup))
-      const genderToken = tokens.find((token) =>
-        ['남', '남자', '여', '여자', 'male', 'female', '무관'].includes(
-          token.toLowerCase(),
-        ),
-      )
-      const isSpecialPlayer = Boolean(specialLevelToken) && !regularLevelToken
-      const isGuest =
-        isSpecialPlayer || tokens.some((token) => token.includes('게스트'))
-      const specialRequired =
-        !isGuest &&
-        Boolean(regularLevelToken) &&
-        tokens.some((token) => token.includes('스페셜') || token.toLowerCase() === 'special')
-
-      return normalizePlayer({
-        id: makeId(),
-        name,
-        level: levelToken
-          ? normalizeLevel(levelToken === '스페셜' ? levelToken : levelToken.toUpperCase())
-          : 'O',
-        ageGroup: normalizeAgeGroup(ageToken),
-        gender: normalizeGender(genderToken),
-        active: true,
-        specialRequired,
-        isGuest,
-        guestGameLimit: 0,
-      })
-    })
+  parseBulkPlayerDrafts(text).map((player) =>
+    normalizePlayer({
+      ...player,
+      id: makeId(),
+    }),
+  )
 
 const mergeParsedPlayersWithRosterDraft = (
   currentPlayers: Player[],
@@ -968,11 +931,11 @@ const mergeParsedPlayersWithRosterDraft = (
 }
 
 const bulkPlayerPlaceholder = [
-  '입력 순서: 이름 레벨 성별 연령대',
+  '입력: 이름 먼저 · 이후 순서 무관',
   '김민수',
   '이지연',
-  '박태호 B 남 30대',
-  '최수빈 A 여 40대',
+  '박태호 남 30 B',
+  '최수빈 40 여 A',
   '스페셜1 스페셜',
 ].join('\n')
 
@@ -2020,7 +1983,6 @@ function App() {
     )
     resetMeetingTargetRounds()
     setPlayerDetailsOpen(true)
-    setBulkText('')
     setNotice(`${parsedPlayers.length}명 입력됨`)
   }
 
@@ -2036,7 +1998,6 @@ function App() {
         mergeParsedPlayersWithRosterDraft(current, parsedPlayers),
       )
       resetMeetingTargetRounds()
-      setBulkText('')
     }
 
     setPlayerDetailsOpen(true)
