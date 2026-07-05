@@ -4687,6 +4687,7 @@ function App() {
                               <th>단체패</th>
                               <th>세부승</th>
                               <th>세부패</th>
+                              <th>득실</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -4699,6 +4700,7 @@ function App() {
                                 <td>{standing.tiesLost}</td>
                                 <td>{standing.matchWins}</td>
                                 <td>{standing.matchLosses}</td>
+                                <td>{standing.pointDiff}</td>
                               </tr>
                             ))}
                           </tbody>

@@ -567,7 +567,7 @@ export const makePrintableTournamentItems = (
         items.push({
           kind: 'tournament-standing',
           detail: `세부 ${standing.matchWins}-${standing.matchLosses}`,
-          points: `${standing.tiesPlayed}전`,
+          points: `득실 ${signedNumber(standing.pointDiff)}`,
           rank: `${standing.rank}위`,
           record: `${standing.tiesWon}승 ${standing.tiesLost}패`,
           team: tournamentTeamPrintName(standing.team.id, teamsById),

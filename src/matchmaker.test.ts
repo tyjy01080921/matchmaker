@@ -1063,6 +1063,9 @@ describe('generateTournamentSchedule', () => {
     expect(schedule.teamBattleTies[0].winnerTeamId).toBe('alpha')
     expect(schedule.teamBattleStandings[0].team.id).toBe('alpha')
     expect(schedule.teamBattleStandings[0].matchWins).toBe(2)
+    expect(schedule.teamBattleStandings[0].pointsFor).toBe(60)
+    expect(schedule.teamBattleStandings[0].pointsAgainst).toBe(52)
+    expect(schedule.teamBattleStandings[0].pointDiff).toBe(8)
   })
 
   it('fills friendly doubles lineups with support players when a team has an odd roster', () => {

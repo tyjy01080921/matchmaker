@@ -2031,6 +2031,8 @@ const calculateTeamBattleTies = (
 const calculateTeamBattleStandings = (
   teams: TournamentTeam[],
   ties: TournamentTeamBattleTie[],
+  matches: TournamentMatch[],
+  results: TournamentResultsByMatch,
 ): TournamentTeamBattleStanding[] => {
   const standings = teams.map<TournamentTeamBattleStanding>((team) => ({
     team,
@@ -2040,8 +2042,29 @@ const calculateTeamBattleStandings = (
     tiesLost: 0,
     matchWins: 0,
     matchLosses: 0,
+    pointsFor: 0,
+    pointsAgainst: 0,
+    pointDiff: 0,
   }))
   const byTeamId = new Map(standings.map((standing) => [standing.team.id, standing]))
+
+  for (const match of matches.filter((item) => item.phase === 'team-battle')) {
+    if (!match.teamAId || !match.teamBId) continue
+
+    const teamA = byTeamId.get(match.teamAId)
+    const teamB = byTeamId.get(match.teamBId)
+    const scores = completedTournamentScores(results[match.id])
+    if (!teamA || !teamB || !scores) continue
+
+    teamA.pointsFor += scores.teamAScore
+    teamA.pointsAgainst += scores.teamBScore
+    teamB.pointsFor += scores.teamBScore
+    teamB.pointsAgainst += scores.teamAScore
+  }
+
+  standings.forEach((standing) => {
+    standing.pointDiff = standing.pointsFor - standing.pointsAgainst
+  })
 
   for (const tie of ties) {
     const teamA = byTeamId.get(tie.teamAId)
@@ -2072,6 +2095,8 @@ const calculateTeamBattleStandings = (
       b.matchWins - b.matchLosses - (a.matchWins - a.matchLosses)
     if (matchDiff !== 0) return matchDiff
     if (b.matchWins !== a.matchWins) return b.matchWins - a.matchWins
+    if (b.pointDiff !== a.pointDiff) return b.pointDiff - a.pointDiff
+    if (b.pointsFor !== a.pointsFor) return b.pointsFor - a.pointsFor
     return tournamentSeedValue(a.team) - tournamentSeedValue(b.team)
   })
 
@@ -2188,7 +2213,12 @@ export const generateTournamentSchedule = (
       standings: [],
       knockoutMatches: [],
       teamBattleTies,
-      teamBattleStandings: calculateTeamBattleStandings(activeTeams, teamBattleTies),
+      teamBattleStandings: calculateTeamBattleStandings(
+        activeTeams,
+        teamBattleTies,
+        matches,
+        results,
+      ),
       qualifiedTeamIds: [],
       warnings,
     }

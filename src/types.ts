@@ -210,6 +210,9 @@ export type TournamentTeamBattleStanding = {
   tiesLost: number
   matchWins: number
   matchLosses: number
+  pointsFor: number
+  pointsAgainst: number
+  pointDiff: number
 }
 
 export type TournamentSchedule = {
