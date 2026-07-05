@@ -18,6 +18,34 @@ export const parsePrizeList = (text: string) =>
     .map((line) => line.trim())
     .filter(Boolean)
 
+export const getNextPrizeDrawLabels = (
+  prizes: string[],
+  completedDrawCount: number,
+  drawCount: number,
+) => {
+  const completedCount = Number.isFinite(completedDrawCount)
+    ? Math.max(0, Math.floor(completedDrawCount))
+    : 0
+  const requestedCount = Number.isFinite(drawCount)
+    ? Math.max(1, Math.floor(drawCount))
+    : 1
+  if (prizes.length === 0) {
+    return Array.from(
+      { length: requestedCount },
+      (_, index) => `${completedCount + index + 1}번째`,
+    )
+  }
+
+  return prizes.slice(completedCount, completedCount + requestedCount)
+}
+
+export const getNextPrizeDrawLabel = (
+  prizes: string[],
+  completedDrawCount: number,
+) => {
+  return getNextPrizeDrawLabels(prizes, completedDrawCount, 1)[0] ?? null
+}
+
 export const parseMissionList = (text: string): MissionDrawItem[] =>
   text
     .split(/\n+/)

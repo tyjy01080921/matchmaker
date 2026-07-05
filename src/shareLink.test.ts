@@ -35,8 +35,10 @@ const makePayload = (): SharePayload => ({
   prizeDraw: {
     mode: 'people',
     prizesText: '셔틀콕\n그립',
+    prizesConfirmed: true,
     missionsText: '',
     allowDuplicateWinners: false,
+    drawCount: 1,
     results: [
       {
         prize: '셔틀콕',

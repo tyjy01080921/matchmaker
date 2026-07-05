@@ -37,8 +37,19 @@ import {
   playerDisplayName,
   type PlayerNameLookup,
 } from './playerNames'
-import { createSchedulePrintImages, createTournamentPrintImages } from './printSchedule'
-import { drawPrizeWinners, parseMissionList, parsePrizeList } from './prizeDraw'
+import {
+  A4_IMAGE_HEIGHT,
+  A4_IMAGE_WIDTH,
+  createSchedulePrintImages,
+  createTournamentPrintImages,
+} from './printSchedule'
+import {
+  drawPrizeWinners,
+  getNextPrizeDrawLabel,
+  getNextPrizeDrawLabels,
+  parseMissionList,
+  parsePrizeList,
+} from './prizeDraw'
 import type {
   AgeGroup,
   AppMode,
@@ -74,6 +85,7 @@ const EVENT_LIMIT_ROUNDS = Math.floor(EVENT_LIMIT_MINUTES / GAME_SLOT_MINUTES)
 const CONTACT_EMAIL = 'ama_official@naver.com'
 const APP_VERSION = '0.0.0'
 const LAST_UPDATED = '2026.07.05'
+const SHARE_LINK_SAVED_MESSAGE = '현재 생성된 이벤트의 링크를 저장하였습니다.'
 
 const getTargetRoundCount = (settings: MatchSettings) => {
   const numeric = Number(settings.targetRoundCount)
@@ -81,11 +93,22 @@ const getTargetRoundCount = (settings: MatchSettings) => {
   return Math.max(1, Math.floor(numeric))
 }
 
+const prizeDrawCountOptions = [1, 2, 3, 5] as const
+
+const normalizePrizeDrawCount = (value: unknown) => {
+  const count = Number(value)
+  return prizeDrawCountOptions.includes(count as (typeof prizeDrawCountOptions)[number])
+    ? count
+    : 1
+}
+
 const defaultPrizeDrawState: PrizeDrawState = {
   mode: 'people',
   prizesText: '',
+  prizesConfirmed: false,
   missionsText: '',
   allowDuplicateWinners: false,
+  drawCount: 1,
   results: [],
   missionResults: [],
   matchMissions: {},
@@ -512,15 +535,24 @@ const normalizePrizeDrawResultMap = (value: unknown) => {
 
 const normalizePrizeDrawState = (
   value: Partial<PrizeDrawState> | undefined,
-): PrizeDrawState => ({
-  mode: value?.mode === 'mission' ? 'mission' : 'people',
-  prizesText: typeof value?.prizesText === 'string' ? value.prizesText : '',
-  missionsText: typeof value?.missionsText === 'string' ? value.missionsText : '',
-  allowDuplicateWinners: value?.allowDuplicateWinners ?? false,
-  results: normalizePrizeDrawResults(value?.results),
-  missionResults: normalizePrizeDrawResults(value?.missionResults),
-  matchMissions: normalizePrizeDrawResultMap(value?.matchMissions),
-})
+): PrizeDrawState => {
+  const prizesText = typeof value?.prizesText === 'string' ? value.prizesText : ''
+  const results = normalizePrizeDrawResults(value?.results)
+  const hasPrizeEntries = parsePrizeList(prizesText).length > 0
+
+  return {
+    mode: value?.mode === 'mission' ? 'mission' : 'people',
+    prizesText,
+    prizesConfirmed:
+      hasPrizeEntries && (value?.prizesConfirmed ?? results.length > 0),
+    missionsText: typeof value?.missionsText === 'string' ? value.missionsText : '',
+    allowDuplicateWinners: value?.allowDuplicateWinners ?? false,
+    drawCount: normalizePrizeDrawCount(value?.drawCount),
+    results,
+    missionResults: normalizePrizeDrawResults(value?.missionResults),
+    matchMissions: normalizePrizeDrawResultMap(value?.matchMissions),
+  }
+}
 
 const legacyEnglishTitleCodes = [
   83,
@@ -780,7 +812,7 @@ const sanitizeFilename = (value: string) =>
     .replace(/[\\/:*?"<>|]+/g, '-')
     .replace(/\s+/g, '-')
 
-const downloadImage = (imageUrl: string, filename: string) => {
+const triggerDownload = (imageUrl: string, filename: string) => {
   const link = document.createElement('a')
   link.href = imageUrl
   link.download = filename
@@ -788,6 +820,42 @@ const downloadImage = (imageUrl: string, filename: string) => {
   document.body.appendChild(link)
   link.click()
   link.remove()
+}
+
+const printImageUrlToPngObjectUrl = (imageUrl: string) =>
+  new Promise<string>((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = A4_IMAGE_WIDTH
+      canvas.height = A4_IMAGE_HEIGHT
+
+      const context = canvas.getContext('2d')
+      if (!context) {
+        reject(new Error('canvas unavailable'))
+        return
+      }
+
+      context.fillStyle = '#fff'
+      context.fillRect(0, 0, A4_IMAGE_WIDTH, A4_IMAGE_HEIGHT)
+      context.drawImage(image, 0, 0, A4_IMAGE_WIDTH, A4_IMAGE_HEIGHT)
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error('png unavailable'))
+          return
+        }
+
+        resolve(URL.createObjectURL(blob))
+      }, 'image/png')
+    }
+    image.onerror = () => reject(new Error('image unavailable'))
+    image.src = imageUrl
+  })
+
+const downloadPrintImage = async (imageUrl: string, filename: string) => {
+  const pngUrl = await printImageUrlToPngObjectUrl(imageUrl)
+  triggerDownload(pngUrl, filename)
+  window.setTimeout(() => URL.revokeObjectURL(pngUrl), 2000)
 }
 
 const mixedMatch = (match: Match, mixIndex: number): Match => {
@@ -1035,6 +1103,7 @@ function App() {
   const [prizeDraw, setPrizeDraw] = useState<PrizeDrawState>(
     initialState.prizeDraw,
   )
+  const [prizeListOpen, setPrizeListOpen] = useState(false)
   const [tournamentTeams, setTournamentTeams] = useState<TournamentTeam[]>(
     initialState.tournamentTeams,
   )
@@ -1170,6 +1239,21 @@ function App() {
   }))
   const prizeList = parsePrizeList(prizeDraw.prizesText)
   const missionList = parseMissionList(prizeDraw.missionsText)
+  const hasNamedPrizes = prizeList.length > 0
+  const isPeoplePrizeReady = !hasNamedPrizes || prizeDraw.prizesConfirmed
+  const nextPrizeDrawLabel = getNextPrizeDrawLabel(
+    prizeList,
+    prizeDraw.results.length,
+  )
+  const nextPrizeDrawLabels = getNextPrizeDrawLabels(
+    prizeList,
+    prizeDraw.results.length,
+    prizeDraw.drawCount,
+  )
+  const remainingNamedPrizeCount = Math.max(
+    0,
+    prizeList.length - prizeDraw.results.length,
+  )
   const activePrizeResults =
     prizeDraw.mode === 'mission' ? prizeDraw.missionResults : prizeDraw.results
   const drawnPrizeWinnerIds = new Set(
@@ -1182,7 +1266,7 @@ function App() {
     ? prizeCandidates
     : prizeCandidates.filter((candidate) => !drawnPrizeWinnerIds.has(candidate.id))
   const availableMissions = missionList.filter((mission) => !drawnMissionIds.has(mission.id))
-  const isRouletteMode = prizeDraw.mode === 'people' && prizeList.length === 0
+  const isRouletteMode = prizeDraw.mode === 'people' && isPeoplePrizeReady
   const rouletteItems =
     prizeDraw.mode === 'mission'
       ? missionList.map((mission) => ({ id: mission.id, name: mission.number }))
@@ -1191,6 +1275,18 @@ function App() {
     prizeDraw.mode === 'mission'
       ? availableMissions.length
       : availableRouletteCandidates.length
+  const prizeStatusText =
+    prizeDraw.mode === 'mission'
+      ? `미션 ${availableMissions.length}/${missionList.length}개`
+      : hasNamedPrizes
+        ? prizeDraw.prizesConfirmed
+          ? `남은 경품 ${remainingNamedPrizeCount}/${prizeList.length}개 · ${prizeDraw.drawCount}명씩`
+          : `입력 ${prizeList.length}개`
+        : `룰렛 ${availableRouletteCandidates.length}/${prizeCandidates.length}명 · ${prizeDraw.drawCount}명씩`
+  const prizeActionLabel =
+    prizeDraw.mode === 'people' && hasNamedPrizes && !prizeDraw.prizesConfirmed
+      ? '입력 완료'
+      : '추첨'
   const rouletteWheelStyle = {
     '--roulette-rotation': `${rouletteRotation}deg`,
   } as CSSProperties
@@ -2015,6 +2111,34 @@ function App() {
     )
   }
 
+  const confirmPrizeEntries = () => {
+    if (prizeList.length === 0) {
+      setPrizeDraw((current) => ({ ...current, prizesConfirmed: false }))
+      setNotice('경품 없음')
+      return
+    }
+
+    setPrizeDraw((current) => ({
+      ...current,
+      prizesConfirmed: true,
+      results: current.results.slice(0, prizeList.length),
+    }))
+    setRouletteWinnerName('')
+    setPrizeListOpen(false)
+    setNotice(`${prizeList.length}개 준비됨`)
+  }
+
+  const editPrizeEntries = () => {
+    setPrizeDraw((current) => ({
+      ...current,
+      prizesConfirmed: false,
+      results: [],
+    }))
+    setRouletteWinnerName('')
+    setPrizeListOpen(false)
+    setNotice('경품 수정')
+  }
+
   const runRouletteDraw = () => {
     if (isRouletteSpinning) return
     if (prizeDraw.mode === 'mission') {
@@ -2077,21 +2201,26 @@ function App() {
       setNotice('추첨 대상 없음')
       return
     }
+    if (nextPrizeDrawLabels.length === 0) {
+      setNotice('경품 추첨 완료')
+      return
+    }
     if (availableRouletteCandidates.length === 0) {
       setNotice('전원 추첨 완료')
       return
     }
 
-    const [result] = drawPrizeWinners(
-      [`${prizeDraw.results.length + 1}번째`],
+    const results = drawPrizeWinners(
+      nextPrizeDrawLabels,
       availableRouletteCandidates,
-      true,
+      prizeDraw.allowDuplicateWinners,
     )
-    if (!result) return
+    const [firstResult] = results
+    if (!firstResult) return
 
     const winnerIndex = Math.max(
       0,
-      rouletteItems.findIndex((candidate) => candidate.id === result.winnerId),
+      rouletteItems.findIndex((candidate) => candidate.id === firstResult.winnerId),
     )
     const itemAngle = rouletteItems.length > 0 ? 360 / rouletteItems.length : 0
     const targetRotation = (360 - winnerIndex * itemAngle) % 360
@@ -2111,38 +2240,33 @@ function App() {
     rouletteTimerRef.current = window.setTimeout(() => {
       setPrizeDraw((current) => ({
         ...current,
-        results: [...current.results, result],
+        results: [...current.results, ...results],
       }))
-      setRouletteWinnerName(result.winnerName)
+      setRouletteWinnerName(
+        results.length === 1
+          ? firstResult.winnerName
+          : `${firstResult.winnerName} 외 ${results.length - 1}명`,
+      )
       setIsRouletteSpinning(false)
-      setNotice(`${result.winnerName} 당첨`)
+      setNotice(
+        results.length === 1
+          ? `${firstResult.winnerName} 당첨`
+          : `${results.length}명 당첨`,
+      )
       rouletteTimerRef.current = null
     }, 2200)
   }
 
   const runPrizeDraw = () => {
-    if (prizeDraw.mode === 'mission' || isRouletteMode) {
-      runRouletteDraw()
+    if (
+      prizeDraw.mode === 'people' &&
+      hasNamedPrizes &&
+      !prizeDraw.prizesConfirmed
+    ) {
+      confirmPrizeEntries()
       return
     }
-    if (isRouletteSpinning) return
-    if (prizeCandidates.length === 0) {
-      setNotice('추첨 대상 없음')
-      return
-    }
-
-    const results = drawPrizeWinners(
-      prizeList,
-      prizeCandidates,
-      prizeDraw.allowDuplicateWinners,
-    )
-    setPrizeDraw((current) => ({ ...current, results }))
-    setRouletteWinnerName('')
-    setNotice(
-      results.length < prizeList.length
-        ? `${results.length}개 추첨됨`
-        : `${results.length}개 추첨 완료`,
-    )
+    runRouletteDraw()
   }
 
   const resetPrizeDrawResults = () => {
@@ -2265,21 +2389,34 @@ function App() {
         tournamentLineups,
       }
       await copyToClipboard(makeShareUrl(window.location.href, sharePayload))
-      setNotice('공유 링크 복사됨')
+      window.alert(SHARE_LINK_SAVED_MESSAGE)
+      setNotice(SHARE_LINK_SAVED_MESSAGE)
     } catch {
       setNotice('공유 링크 실패')
     }
   }
 
-  const saveScheduleImages = (imageUrls: string[]) => {
+  const saveScheduleImages = async (imageUrls: string[]) => {
     const baseName = sanitizeFilename(settings.eventName)
-    imageUrls.forEach((imageUrl, index) => {
-      downloadImage(imageUrl, `${baseName}-대진표-${index + 1}.svg`)
-    })
+    await Promise.all(
+      imageUrls.map((imageUrl, index) =>
+        downloadPrintImage(imageUrl, `${baseName}-대진표-${index + 1}.png`),
+      ),
+    )
     setNotice(`대진표 저장 ${imageUrls.length}장`)
   }
 
-  const handlePrintSchedule = () => {
+  const saveScheduleImage = async (imageUrl: string, index: number) => {
+    try {
+      const baseName = sanitizeFilename(settings.eventName)
+      await downloadPrintImage(imageUrl, `${baseName}-대진표-${index + 1}.png`)
+      setNotice(`대진표 저장 ${index + 1}쪽`)
+    } catch {
+      setNotice('대진표 저장 실패')
+    }
+  }
+
+  const handlePrintSchedule = async () => {
     try {
       const imageUrls = createSchedulePrintImages({
         generatedAt: new Date(),
@@ -2291,31 +2428,47 @@ function App() {
       })
 
       setPrintImageUrls(imageUrls)
-      saveScheduleImages(imageUrls)
+      await saveScheduleImages(imageUrls)
       scrollToPrintPreview(meetingPrintPreviewRef)
     } catch {
       setNotice('대진표 저장 실패')
     }
   }
 
-  const savePreparedScheduleImages = () => {
+  const savePreparedScheduleImages = async () => {
     if (printImageUrls.length === 0) {
-      handlePrintSchedule()
+      await handlePrintSchedule()
       return
     }
 
-    saveScheduleImages(printImageUrls)
+    try {
+      await saveScheduleImages(printImageUrls)
+    } catch {
+      setNotice('대진표 저장 실패')
+    }
   }
 
-  const saveTournamentScheduleImages = (imageUrls: string[]) => {
+  const saveTournamentScheduleImages = async (imageUrls: string[]) => {
     const baseName = sanitizeFilename(`${defaultSettings.eventName}-경쟁`)
-    imageUrls.forEach((imageUrl, index) => {
-      downloadImage(imageUrl, `${baseName}-대진표-${index + 1}.svg`)
-    })
+    await Promise.all(
+      imageUrls.map((imageUrl, index) =>
+        downloadPrintImage(imageUrl, `${baseName}-대진표-${index + 1}.png`),
+      ),
+    )
     setNotice(`경쟁 대진표 저장 ${imageUrls.length}장`)
   }
 
-  const handlePrintTournament = () => {
+  const saveTournamentScheduleImage = async (imageUrl: string, index: number) => {
+    try {
+      const baseName = sanitizeFilename(`${defaultSettings.eventName}-경쟁`)
+      await downloadPrintImage(imageUrl, `${baseName}-대진표-${index + 1}.png`)
+      setNotice(`경쟁 대진표 저장 ${index + 1}쪽`)
+    } catch {
+      setNotice('경쟁 대진표 저장 실패')
+    }
+  }
+
+  const handlePrintTournament = async () => {
     try {
       const imageUrls = createTournamentPrintImages({
         generatedAt: new Date(),
@@ -2330,20 +2483,24 @@ function App() {
       })
 
       setTournamentPrintImageUrls(imageUrls)
-      saveTournamentScheduleImages(imageUrls)
+      await saveTournamentScheduleImages(imageUrls)
       scrollToPrintPreview(tournamentPrintPreviewRef)
     } catch {
       setNotice('경쟁 대진표 저장 실패')
     }
   }
 
-  const savePreparedTournamentScheduleImages = () => {
+  const savePreparedTournamentScheduleImages = async () => {
     if (tournamentPrintImageUrls.length === 0) {
-      handlePrintTournament()
+      await handlePrintTournament()
       return
     }
 
-    saveTournamentScheduleImages(tournamentPrintImageUrls)
+    try {
+      await saveTournamentScheduleImages(tournamentPrintImageUrls)
+    } catch {
+      setNotice('경쟁 대진표 저장 실패')
+    }
   }
 
   const useSharedCopy = () => {
@@ -3069,13 +3226,7 @@ function App() {
                     {prizeOpen ? '접기' : '펼치기'}
                   </button>
                 </div>
-                <span>
-                  {prizeDraw.mode === 'mission'
-                    ? `미션 ${availableMissions.length}/${missionList.length}개`
-                    : isRouletteMode
-                      ? `룰렛 ${availableRouletteCandidates.length}/${prizeCandidates.length}명`
-                      : `대상 ${prizeCandidates.length}명 · 경품 ${prizeList.length}개`}
-                </span>
+                <span>{prizeStatusText}</span>
               </div>
               <div className="compact-actions">
                 <button
@@ -3084,7 +3235,7 @@ function App() {
                   disabled={isRouletteSpinning}
                   onClick={runPrizeDraw}
                 >
-                  {isRouletteSpinning ? '회전중' : '추첨'}
+                  {isRouletteSpinning ? '회전중' : prizeActionLabel}
                 </button>
                 <button type="button" onClick={copyPrizeDrawResults}>
                   복사
@@ -3117,10 +3268,35 @@ function App() {
                   미션
                 </button>
               </div>
+              {prizeDraw.mode === 'people' ? (
+                <div className="prize-count-row">
+                  <span>추첨 인원</span>
+                  <div className="prize-count-switch" aria-label="추첨 인원">
+                    {prizeDrawCountOptions.map((count) => (
+                      <button
+                        type="button"
+                        className={prizeDraw.drawCount === count ? 'active' : ''}
+                        disabled={isRouletteSpinning}
+                        onClick={() =>
+                          setPrizeDraw((current) => ({
+                            ...current,
+                            drawCount: count,
+                          }))
+                        }
+                        key={count}
+                      >
+                        {count}명
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               <div className="bulk-help">
                 {prizeDraw.mode === 'mission'
                   ? '입력 안내: 번호 / 미션 / 상품 순'
-                  : '입력 안내: 경품은 한 줄에 하나씩 · 비워두면 참가자 룰렛'}
+                  : hasNamedPrizes && !prizeDraw.prizesConfirmed
+                    ? '입력 완료 후 룰렛 시작'
+                    : '경품은 한 줄에 하나씩 · 비우면 참가자 룰렛'}
               </div>
               {(prizeDraw.mode === 'mission' || isRouletteMode) ? (
                 <div className="prize-roulette" aria-live="polite">
@@ -3164,7 +3340,9 @@ function App() {
                         : rouletteWinnerName ||
                           (prizeDraw.mode === 'mission'
                             ? `${availableRouletteCount}개`
-                            : `${availableRouletteCount}명`)}
+                            : hasNamedPrizes
+                              ? nextPrizeDrawLabel ?? '완료'
+                              : `${availableRouletteCount}명`)}
                     </strong>
                   </div>
                 </div>
@@ -3183,17 +3361,46 @@ function App() {
                 />
               ) : (
                 <>
-                  <textarea
-                    className="prize-textarea"
-                    value={prizeDraw.prizesText}
-                    onChange={(event) =>
-                      setPrizeDraw((current) => ({
-                        ...current,
-                        prizesText: event.target.value,
-                      }))
-                    }
-                    placeholder="경품 입력창"
-                  />
+                  {hasNamedPrizes && prizeDraw.prizesConfirmed ? (
+                    <>
+                      <div className="prize-entry-summary">
+                        <strong>경품 {prizeList.length}개 준비</strong>
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => setPrizeListOpen((open) => !open)}
+                          >
+                            {prizeListOpen ? '접기' : '펼치기'}
+                          </button>
+                          <button type="button" onClick={editPrizeEntries}>
+                            수정
+                          </button>
+                        </div>
+                      </div>
+                      {prizeListOpen ? (
+                        <ol className="prize-entry-list">
+                          {prizeList.map((prize, index) => (
+                            <li key={`${prize}-${index}`}>{prize}</li>
+                          ))}
+                        </ol>
+                      ) : null}
+                    </>
+                  ) : (
+                    <textarea
+                      className="prize-textarea"
+                      value={prizeDraw.prizesText}
+                      onChange={(event) =>
+                        setPrizeDraw((current) => ({
+                          ...current,
+                          prizesText: event.target.value,
+                          prizesConfirmed: false,
+                          results: current.results.length > 0 ? [] : current.results,
+                        }))
+                      }
+                      onFocus={() => setPrizeListOpen(false)}
+                      placeholder="경품 입력창"
+                    />
+                  )}
                   <label className="settings-checkbox prize-duplicate-option">
                     <input
                       type="checkbox"
@@ -3256,11 +3463,7 @@ function App() {
             </div>
             ) : (
               <div className="collapsed-summary">
-                {prizeDraw.mode === 'mission'
-                  ? `미션 ${availableMissions.length}/${missionList.length}개`
-                  : isRouletteMode
-                    ? `룰렛 ${availableRouletteCandidates.length}/${prizeCandidates.length}명`
-                    : `대상 ${prizeCandidates.length}명 · 경품 ${prizeList.length}개`}
+                {prizeStatusText}
               </div>
             )}
           </section>
@@ -3363,9 +3566,12 @@ function App() {
                 {printImageUrls.map((imageUrl, index) => (
                   <article className="print-preview-page" key={imageUrl}>
                     <img src={imageUrl} alt={`대진표 ${index + 1}쪽`} />
-                    <a href={imageUrl} download={`대진표-${index + 1}.svg`}>
+                    <button
+                      type="button"
+                      onClick={() => void saveScheduleImage(imageUrl, index)}
+                    >
                       {index + 1}쪽 저장
-                    </a>
+                    </button>
                   </article>
                 ))}
               </div>
@@ -4211,9 +4417,14 @@ function App() {
                   {tournamentPrintImageUrls.map((imageUrl, index) => (
                     <article className="print-preview-page" key={imageUrl}>
                       <img src={imageUrl} alt={`경쟁 대진표 ${index + 1}쪽`} />
-                      <a href={imageUrl} download={`경쟁-대진표-${index + 1}.svg`}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void saveTournamentScheduleImage(imageUrl, index)
+                        }
+                      >
                         {index + 1}쪽 저장
-                      </a>
+                      </button>
                     </article>
                   ))}
                 </div>

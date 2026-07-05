@@ -630,6 +630,93 @@ textarea {
   color: transparent;
 }
 
+.prize-entry-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.prize-entry-summary strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prize-entry-summary button {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.prize-entry-summary > div {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.prize-entry-list {
+  display: grid;
+  gap: 5px;
+  max-height: 154px;
+  margin: 0;
+  padding: 8px 10px 8px 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+  overflow-y: auto;
+}
+
+.prize-entry-list li {
+  min-width: 0;
+  padding-left: 2px;
+  overflow-wrap: anywhere;
+}
+
+.prize-count-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.prize-count-row > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.prize-count-switch {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.prize-count-switch button {
+  min-height: 32px;
+  padding: 5px;
+  font-size: 12px;
+}
+
+.prize-count-switch button.active {
+  border-color: var(--green);
+  color: var(--green);
+  background: var(--soft-green);
+}
+
 .prize-duplicate-option {
   align-self: stretch;
 }
@@ -1195,7 +1282,8 @@ textarea {
   object-fit: contain;
 }
 
-.print-preview-page a {
+.print-preview-page a,
+.print-preview-page button {
   min-height: 34px;
   display: inline-flex;
   align-items: center;
@@ -2061,33 +2149,33 @@ textarea {
   }
 
   .prize-roulette {
-    min-height: 204px;
+    min-height: min(392px, calc(100vw + 24px));
   }
 
   .prize-roulette-wheel {
-    width: 178px;
-    border-width: 6px;
+    width: min(356px, calc(100vw - 32px));
+    border-width: 8px;
   }
 
   .prize-roulette-wheel::after {
-    inset: 46px;
+    inset: clamp(76px, 24vw, 92px);
   }
 
   .prize-roulette-name {
-    width: 58px;
-    margin-left: -29px;
-    font-size: 9px;
-    transform: rotate(var(--name-angle)) translateY(-70px) rotate(var(--name-angle-reverse));
+    width: clamp(88px, 26vw, 116px);
+    margin-left: calc(clamp(88px, 26vw, 116px) / -2);
+    font-size: clamp(11px, 3vw, 13px);
+    transform: rotate(var(--name-angle)) translateY(clamp(-140px, -36vw, -112px)) rotate(var(--name-angle-reverse));
   }
 
   .prize-roulette-center {
-    width: 82px;
-    min-height: 56px;
+    width: min(164px, 42vw);
+    min-height: min(112px, 30vw);
   }
 
   .prize-roulette-center strong {
-    max-width: 66px;
-    font-size: 13px;
+    max-width: min(132px, 34vw);
+    font-size: clamp(16px, 4vw, 20px);
   }
 
   .prize-textarea {

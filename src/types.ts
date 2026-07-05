@@ -124,8 +124,10 @@ export type PrizeDrawResult = {
 export type PrizeDrawState = {
   mode: 'people' | 'mission'
   prizesText: string
+  prizesConfirmed: boolean
   missionsText: string
   allowDuplicateWinners: boolean
+  drawCount: number
   results: PrizeDrawResult[]
   missionResults: PrizeDrawResult[]
   matchMissions: Record<string, PrizeDrawResult>

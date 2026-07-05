@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   drawPrizeWinners,
+  getNextPrizeDrawLabel,
+  getNextPrizeDrawLabels,
   parseMissionList,
   parsePrizeList,
   type PrizeCandidate,
@@ -38,6 +40,34 @@ describe('parseMissionList', () => {
         reward: '음료',
       },
     ])
+  })
+})
+
+describe('getNextPrizeDrawLabel', () => {
+  it('uses named prizes in order before reporting completion', () => {
+    const prizes = ['셔틀콕', '그립']
+
+    expect(getNextPrizeDrawLabel(prizes, 0)).toBe('셔틀콕')
+    expect(getNextPrizeDrawLabel(prizes, 1)).toBe('그립')
+    expect(getNextPrizeDrawLabel(prizes, 2)).toBeNull()
+  })
+
+  it('falls back to draw order when no prize list is entered', () => {
+    expect(getNextPrizeDrawLabel([], 0)).toBe('1번째')
+    expect(getNextPrizeDrawLabel([], 2)).toBe('3번째')
+  })
+})
+
+describe('getNextPrizeDrawLabels', () => {
+  it('returns the requested number of named prizes from the next position', () => {
+    expect(getNextPrizeDrawLabels(['셔틀콕', '그립', '양말'], 1, 2)).toEqual([
+      '그립',
+      '양말',
+    ])
+  })
+
+  it('returns ordered draw labels when prizes are empty', () => {
+    expect(getNextPrizeDrawLabels([], 2, 3)).toEqual(['3번째', '4번째', '5번째'])
   })
 })
 
