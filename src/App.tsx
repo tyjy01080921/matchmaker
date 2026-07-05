@@ -22,6 +22,7 @@ import {
   generateSchedule,
   generateTournamentLineups,
   generateTournamentSchedule,
+  makeNumberedTournamentPlayers,
   tournamentParticipantsFromTeams,
 } from './matchmaker'
 import {
@@ -940,10 +941,10 @@ const bulkPlayerPlaceholder = [
   '스페셜1 스페셜',
 ].join('\n')
 
-const tournamentGenderTokens = ['남', '남자', '여', '여자', 'male', 'female', '무관', '혼성', 'mixed']
+const tournamentGenderTokens = ['남', '남자', '여', '여자', 'male', 'female', '무관', '혼복', 'mixed']
 
 const normalizeTournamentTeamGender = (value: unknown): Gender => {
-  if (value === '혼성' || value === 'mixed') return 'none'
+  if (value === '혼복' || value === 'mixed') return 'none'
   return normalizeGender(value)
 }
 
@@ -2027,33 +2028,40 @@ function App() {
   }
 
   const applyBulkTournamentPlayers = () => {
+    const hasRosterInput = tournamentBulkText.trim().length > 0
     const parsedPlayers = parseBulkPlayers(tournamentBulkText)
-    if (parsedPlayers.length === 0) {
-      setNotice('편성할 명단 없음')
-      return
+    const expectedParticipantCount = tournamentSettings.friendlyParticipantCount
+    const playersForGeneration =
+      parsedPlayers.length > 0
+        ? parsedPlayers
+        : makeNumberedTournamentPlayers(expectedParticipantCount)
+
+    if (playersForGeneration.length === 0) {
+      setNotice(hasRosterInput ? '편성할 명단 없음' : '참가 수 확인 필요')
+      return false
     }
 
-    const expectedParticipantCount = tournamentSettings.friendlyParticipantCount
     if (
       expectedParticipantCount > 0 &&
+      parsedPlayers.length > 0 &&
       parsedPlayers.length !== expectedParticipantCount
     ) {
       setNotice(`참가자 수 확인: 설정 ${expectedParticipantCount}명 · 입력 ${parsedPlayers.length}명`)
-      return
+      return false
     }
 
     if (tournamentTeams.length < 2) {
       setNotice('팀 수 2팀 이상 필요')
-      return
+      return false
     }
 
     const result = generateBalancedTournamentTeams(
-      parsedPlayers,
+      playersForGeneration,
       tournamentTeams.length,
     )
     if (result.teams.length === 0) {
       setNotice(result.warnings[0] ?? '편성 실패')
-      return
+      return false
     }
 
     setTournamentSettings((current) =>
@@ -2069,8 +2077,24 @@ function App() {
     setNotice(
       result.warnings.length > 0
         ? `${result.teams.length}팀 편성 · 확인 필요`
-        : `${result.teams.length}팀 편성됨`,
+        : parsedPlayers.length > 0
+          ? `${result.teams.length}팀 편성됨`
+          : `${playersForGeneration.length}명 번호 편성됨`,
     )
+    return true
+  }
+
+  const handleGenerateTournament = () => {
+    if (isFriendlyTournamentFormat(tournamentSettings.format)) {
+      if (applyBulkTournamentPlayers()) {
+        scrollToSectionAfterRender('tournament-progress')
+      }
+      return
+    }
+
+    setTournamentView('progress')
+    scrollToSectionAfterRender('tournament-progress')
+    setNotice('경쟁 대진 생성됨')
   }
 
   const confirmPrizeEntries = () => {
@@ -2746,10 +2770,7 @@ function App() {
                 <button
                   type="button"
                   className="primary-action"
-                  onClick={() => {
-                    setTournamentView('progress')
-                    scrollToSectionAfterRender('tournament-progress')
-                  }}
+                  onClick={handleGenerateTournament}
                 >
                   생성
                 </button>
@@ -4128,13 +4149,13 @@ function App() {
                           ? '김민수 A 남 30대\n이지연 B 여 30대\n박태호 C 남 40대\n최수빈 B 여 20대'
                           : tournamentSettings.format === 'team-battle'
                           ? 'A팀 1 김철수 이영희\nB팀 박민지 최수진\nC팀, 3, 홍길동, 김하나'
-                          : 'A팀 1 A 남 김철수 이영희\nB팀, 2, B, 여, 박민지, 최수진\nC팀 혼성 홍길동 김하나'
+                          : 'A팀 1 A 남 김철수 이영희\nB팀, 2, B, 여, 박민지, 최수진\nC팀 혼복 홍길동 김하나'
                       }
                     />
                     <div className="bulk-actions">
                       {isFriendlyTournamentFormat(tournamentSettings.format) ? (
                         <button type="button" onClick={applyBulkTournamentPlayers}>
-                          생성
+                          입력 완료
                         </button>
                       ) : (
                         <>

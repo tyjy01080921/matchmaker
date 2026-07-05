@@ -165,6 +165,24 @@ const tournamentParticipantScore = (participant: TournamentParticipant) =>
 const tournamentPlayerName = (player: Player, index: number) =>
   player.name.trim() || `${index + 1}번`
 
+export const makeNumberedTournamentPlayers = (count: number): Player[] => {
+  const normalizedCount = Number.isFinite(count)
+    ? Math.max(0, Math.floor(count))
+    : 0
+
+  return Array.from({ length: normalizedCount }, (_, index) => ({
+    id: `numbered-player-${index + 1}`,
+    name: `${index + 1}번`,
+    level: 'O',
+    ageGroup: '무관',
+    gender: 'none',
+    active: true,
+    specialRequired: true,
+    isGuest: false,
+    guestGameLimit: 0,
+  }))
+}
+
 const playerAsTournamentParticipant = (
   player: Player,
   index: number,

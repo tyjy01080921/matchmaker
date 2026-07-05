@@ -13,6 +13,7 @@ import {
   generateTournamentLineups,
   generateTournamentSchedule,
   getPlayerMatchScore,
+  makeNumberedTournamentPlayers,
 } from './matchmaker'
 import { makePlayerNameLookup, playerDisplayName } from './playerNames'
 import type {
@@ -730,6 +731,21 @@ describe('generateSchedule', () => {
 })
 
 describe('generateBalancedTournamentTeams', () => {
+  it('builds friendly tournament teams from numbered participants only', () => {
+    const players = makeNumberedTournamentPlayers(8)
+    const result = generateBalancedTournamentTeams(players, 4)
+    const memberNames = result.teams.flatMap((team) =>
+      (team.members ?? []).map((member) => member.name),
+    )
+
+    expect(result.teams).toHaveLength(4)
+    expect(memberNames).toEqual(
+      expect.arrayContaining(['1번', '2번', '3번', '4번', '5번', '6번', '7번', '8번']),
+    )
+    expect(result.teams.every((team) => (team.members?.length ?? 0) === 2)).toBe(true)
+    expect(result.warnings).toHaveLength(0)
+  })
+
   it('splits bulk players into the requested number of balanced teams', () => {
     const players = [
       makeTestPlayer('a-1', 'A', 'male'),
