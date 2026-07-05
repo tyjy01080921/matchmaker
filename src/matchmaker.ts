@@ -159,9 +159,6 @@ const tournamentParticipantAsPlayer = (
   guestGameLimit: 0,
 })
 
-const tournamentParticipantScore = (participant: TournamentParticipant) =>
-  getPlayerMatchScore(tournamentParticipantAsPlayer(participant))
-
 const tournamentPlayerName = (player: Player, index: number) =>
   player.name.trim() || `${index + 1}번`
 
@@ -1410,158 +1407,168 @@ const normalizeLineupIds = (ids: string[] | undefined) => [
   ids?.[1] ?? '',
 ]
 
-const participantUsage = (
-  participant: TournamentParticipantWithTeam,
-  usageCounts: Map<string, number>,
-) => usageCounts.get(participant.id) ?? 0
-
-const averageTournamentTeamScore = (
-  teamId: string,
-  participants: TournamentParticipantWithTeam[],
-) => {
-  const members = participants.filter((participant) => participant.teamId === teamId)
-  if (members.length === 0) return 0
-  return (
-    members.reduce(
-      (sum, participant) => sum + tournamentParticipantScore(participant),
-      0,
-    ) / members.length
-  )
+type TournamentPairCandidate = {
+  playerIds: [string, string]
+  players: Team
+  rotationScore: number
 }
 
-const sortLineupCandidates = (
-  candidates: TournamentParticipantWithTeam[],
-  usageCounts: Map<string, number>,
-  targetScore: number,
-) =>
-  [...candidates].sort((a, b) => {
-    const usageDiff = participantUsage(a, usageCounts) - participantUsage(b, usageCounts)
-    if (usageDiff !== 0) return usageDiff
-    const scoreDiff =
-      Math.abs(tournamentParticipantScore(a) - targetScore) -
-      Math.abs(tournamentParticipantScore(b) - targetScore)
-    if (scoreDiff !== 0) return scoreDiff
-    const teamDiff = a.teamName.localeCompare(b.teamName)
-    if (teamDiff !== 0) return teamDiff
-    return a.name.localeCompare(b.name)
-  })
+const tournamentPlayersByTeam = (participants: TournamentParticipantWithTeam[]) => {
+  const playersByTeam = new Map<string, Player[]>()
 
-const pickLineupSide = (
-  teamId: string,
-  opponentTeamId: string,
-  tieId: string,
-  participants: TournamentParticipantWithTeam[],
-  usageCounts: Map<string, number>,
-  usedByTieTeam: Map<string, Set<string>>,
-  unavailableIds: Set<string>,
-) => {
-  const sideUsedKey = `${tieId}:${teamId}`
-  const usedInTie = usedByTieTeam.get(sideUsedKey) ?? new Set<string>()
-  const selected: string[] = []
-  const targetScore = averageTournamentTeamScore(teamId, participants)
-
-  const addCandidates = (candidates: TournamentParticipantWithTeam[]) => {
-    for (const candidate of sortLineupCandidates(candidates, usageCounts, targetScore)) {
-      if (selected.length >= 2) break
-      if (unavailableIds.has(candidate.id) || selected.includes(candidate.id)) continue
-      selected.push(candidate.id)
-      unavailableIds.add(candidate.id)
-    }
+  for (const participant of participants) {
+    const players = playersByTeam.get(participant.teamId) ?? []
+    players.push(tournamentParticipantAsPlayer(participant))
+    playersByTeam.set(participant.teamId, players)
   }
 
-  const teamMembers = participants.filter((participant) => participant.teamId === teamId)
-  addCandidates(teamMembers.filter((participant) => !usedInTie.has(participant.id)))
-
-  if (selected.length < 2) {
-    addCandidates(
-      participants.filter(
-        (participant) =>
-          participant.teamId !== teamId && participant.teamId !== opponentTeamId,
-      ),
-    )
-  }
-
-  if (selected.length < 2) {
-    addCandidates(
-      participants.filter(
-        (participant) =>
-          participant.teamId !== teamId && participant.teamId === opponentTeamId,
-      ),
-    )
-  }
-
-  if (selected.length < 2) {
-    addCandidates(teamMembers)
-  }
-
-  while (selected.length < 2) selected.push('')
-
-  usedByTieTeam.set(sideUsedKey, new Set([...usedInTie, ...selected.filter(Boolean)]))
-  for (const playerId of selected.filter(Boolean)) {
-    usageCounts.set(playerId, (usageCounts.get(playerId) ?? 0) + 1)
-  }
-
-  return selected
+  return playersByTeam
 }
 
-const tournamentLineupStrength = (
-  lineup: TournamentLineup,
-  participantsById: Map<string, TournamentParticipantWithTeam>,
-) =>
-  [...lineup.teamAPlayerIds, ...lineup.teamBPlayerIds].reduce((sum, playerId) => {
-    const participant = participantsById.get(playerId)
-    return participant ? sum + tournamentParticipantScore(participant) : sum
-  }, 0)
+const tournamentPairCandidates = (
+  teamId: string,
+  playersByTeam: Map<string, Player[]>,
+  history: HistoryState,
+  random: () => number,
+  conditions: MatchConditionOptions,
+): TournamentPairCandidate[] => {
+  const teamPlayers = playersByTeam.get(teamId) ?? []
+  const teamMinGames =
+    teamPlayers.length > 0
+      ? Math.min(...teamPlayers.map((player) => history.games[player.id] ?? 0))
+      : 0
+  const players = [...teamPlayers]
+    .sort(
+      (a, b) =>
+        playerPriority(a, history, random, conditions) -
+        playerPriority(b, history, random, conditions),
+    )
+    .slice(0, 16)
 
-const orderLineupsByStrengthWithinTies = (
-  matches: TournamentMatch[],
-  lineups: TournamentLineupsByMatch,
-  participants: TournamentParticipantWithTeam[],
-): TournamentLineupsByMatch => {
-  const participantsById = new Map(
-    participants.map((participant) => [participant.id, participant]),
-  )
-  const matchesByTie = new Map<string, TournamentMatch[]>()
+  const rotationScore = (pair: Team) =>
+    pair.reduce((sum, player) => {
+      const gameGap = (history.games[player.id] ?? 0) - teamMinGames
+      return (
+        sum +
+        (conditions.fairGames ? gameGap * 100000 : 0) +
+        (conditions.restBalance
+          ? consecutivePlayPenalty(player, history) * 12 -
+            (history.restStreaks[player.id] ?? 0) * 240 -
+            (history.rests[player.id] ?? 0) * 40
+          : 0)
+      )
+    }, 0)
 
-  for (const match of matches) {
-    if (
-      match.phase !== 'team-battle' ||
-      !match.teamAId ||
-      !match.teamBId ||
-      match.isBye
-    ) {
-      continue
-    }
-
-    const tieId = match.teamBattleTieId ?? match.id
-    matchesByTie.set(tieId, [...(matchesByTie.get(tieId) ?? []), match])
-  }
-
-  const orderedLineups = { ...lineups }
-
-  for (const tieMatches of matchesByTie.values()) {
-    if (tieMatches.length <= 1) continue
-
-    const orderedMatches = [...tieMatches].sort((a, b) => a.order - b.order)
-    const sortedLineups = orderedMatches
-      .map((match, index) => ({
-        index,
-        lineup: lineups[match.id] ?? emptyTournamentLineup(),
-      }))
-      .sort((a, b) => {
-        const strengthDiff =
-          tournamentLineupStrength(a.lineup, participantsById) -
-          tournamentLineupStrength(b.lineup, participantsById)
-        if (strengthDiff !== 0) return strengthDiff
-        return a.index - b.index
+  const candidates: TournamentPairCandidate[] = []
+  for (let left = 0; left < players.length - 1; left += 1) {
+    for (let right = left + 1; right < players.length; right += 1) {
+      const pair: Team = [players[left], players[right]]
+      candidates.push({
+        playerIds: [players[left].id, players[right].id],
+        players: pair,
+        rotationScore: rotationScore(pair),
       })
-
-    orderedMatches.forEach((match, index) => {
-      orderedLineups[match.id] = sortedLineups[index].lineup
-    })
+    }
   }
 
-  return orderedLineups
+  return candidates
+}
+
+const scoreFixedDoublesLineup = (
+  teamA: Team,
+  teamB: Team,
+  history: HistoryState,
+  random: () => number,
+  conditions: MatchConditionOptions,
+  pacing: RoundPacing,
+) => {
+  const group = [...teamA, ...teamB]
+  const gameCounts = group.map((player) => history.games[player.id] ?? 0)
+  const restStreaks = group.map((player) => history.restStreaks[player.id] ?? 0)
+  const levelSpread = playerScoreSpread(group)
+  const balanceMultiplier = lateBalanceMultiplier(pacing)
+
+  return (
+    scorePairing(teamA, teamB, history, random, conditions, pacing) +
+    group.reduce(
+      (sum, player) => sum + playerPriority(player, history, random, conditions),
+      0,
+    ) *
+      4 +
+    (conditions.fairGames ? Math.max(...gameCounts) * 3 : 0) +
+    (conditions.levelBalance ? levelSpread * 150 * balanceMultiplier : 0) -
+    (conditions.levelBalance
+      ? pairingTeamLevelGap({ teamA, teamB }) * 64 * roundProgress(pacing) ** 2
+      : 0) +
+    (conditions.restBalance
+      ? restStreaks.reduce((sum, streak) => sum + streak, 0) * 8
+      : 0) +
+    (conditions.genderBalance ? groupGenderMixPenalty(group) : 0) +
+    groupConsecutivePlayPenalty(group, history, conditions) +
+    random()
+  )
+}
+
+const pickFriendlyTournamentLineup = (
+  match: TournamentMatch,
+  playersByTeam: Map<string, Player[]>,
+  history: HistoryState,
+  random: () => number,
+  conditions: MatchConditionOptions,
+  pacing: RoundPacing,
+): TournamentLineup | null => {
+  if (!match.teamAId || !match.teamBId) return null
+
+  const teamACandidates = tournamentPairCandidates(
+    match.teamAId,
+    playersByTeam,
+    history,
+    random,
+    conditions,
+  )
+  const teamBCandidates = tournamentPairCandidates(
+    match.teamBId,
+    playersByTeam,
+    history,
+    random,
+    conditions,
+  )
+  if (teamACandidates.length === 0 || teamBCandidates.length === 0) return null
+
+  let best:
+    | {
+        teamA: TournamentPairCandidate
+        teamB: TournamentPairCandidate
+        score: number
+      }
+    | null = null
+
+  for (const teamA of teamACandidates) {
+    for (const teamB of teamBCandidates) {
+      const score = scoreFixedDoublesLineup(
+        teamA.players,
+        teamB.players,
+        history,
+        random,
+        conditions,
+        pacing,
+      ) +
+        teamA.rotationScore +
+        teamB.rotationScore
+
+      if (!best || score < best.score) {
+        best = { teamA, teamB, score }
+      }
+    }
+  }
+
+  if (!best) return null
+
+  return {
+    ...emptyTournamentLineup(),
+    teamAPlayerIds: normalizeLineupIds(best.teamA.playerIds),
+    teamBPlayerIds: normalizeLineupIds(best.teamB.playerIds),
+  }
 }
 
 export const generateTournamentLineups = (
@@ -1569,49 +1576,65 @@ export const generateTournamentLineups = (
   teams: TournamentTeam[],
 ): TournamentLineupsByMatch => {
   const participants = tournamentParticipantsFromTeams(teams)
-  const usageCounts = new Map<string, number>()
-  const usedByTieTeam = new Map<string, Set<string>>()
+  const playersByTeam = tournamentPlayersByTeam(participants)
+  const activePlayers = participants.map(tournamentParticipantAsPlayer)
+  const history = makeHistory(activePlayers)
+  const random = makeRandom(17)
+  const conditions = defaultMatchConditionOptions
+  const orderedMatches = [...matches]
+    .filter(
+      (match) =>
+        match.phase === 'team-battle' &&
+        match.teamAId &&
+        match.teamBId &&
+        !match.isBye,
+    )
+    .sort((a, b) => a.order - b.order)
   const lineups: TournamentLineupsByMatch = {}
 
-  for (const match of [...matches].sort((a, b) => a.order - b.order)) {
-    if (
-      match.phase !== 'team-battle' ||
-      !match.teamAId ||
-      !match.teamBId ||
-      match.isBye
-    ) {
-      continue
+  orderedMatches.forEach((match, index) => {
+    const pacing = {
+      roundNumber: index + 1,
+      targetRoundCount: Math.max(1, orderedMatches.length),
     }
-
-    const tieId = match.teamBattleTieId ?? match.id
-    const unavailableIds = new Set<string>()
-    const teamAPlayerIds = pickLineupSide(
-      match.teamAId,
-      match.teamBId,
-      tieId,
-      participants,
-      usageCounts,
-      usedByTieTeam,
-      unavailableIds,
+    const lineup = pickFriendlyTournamentLineup(
+      match,
+      playersByTeam,
+      history,
+      random,
+      conditions,
+      pacing,
     )
-    const teamBPlayerIds = pickLineupSide(
-      match.teamBId,
-      match.teamAId,
-      tieId,
-      participants,
-      usageCounts,
-      usedByTieTeam,
-      unavailableIds,
+    if (!lineup) return
+
+    lineups[match.id] = lineup
+    const selectedIds = new Set([
+      ...lineup.teamAPlayerIds.filter(Boolean),
+      ...lineup.teamBPlayerIds.filter(Boolean),
+    ])
+    updateHistoryForMatch(history, {
+      id: match.id,
+      round: match.round,
+      court: match.court,
+      teamA: lineup.teamAPlayerIds
+        .map((playerId) => activePlayers.find((player) => player.id === playerId))
+        .filter((player): player is Player => Boolean(player)) as Team,
+      teamB: lineup.teamBPlayerIds
+        .map((playerId) => activePlayers.find((player) => player.id === playerId))
+        .filter((player): player is Player => Boolean(player)) as Team,
+      isSpecial: false,
+    })
+    updateHistoryForRests(
+      history,
+      [
+        ...(playersByTeam.get(match.teamAId ?? '') ?? []),
+        ...(playersByTeam.get(match.teamBId ?? '') ?? []),
+      ],
+      selectedIds,
     )
+  })
 
-    lineups[match.id] = {
-      ...emptyTournamentLineup(),
-      teamAPlayerIds: normalizeLineupIds(teamAPlayerIds),
-      teamBPlayerIds: normalizeLineupIds(teamBPlayerIds),
-    }
-  }
-
-  return orderLineupsByStrengthWithinTies(matches, lineups, participants)
+  return lineups
 }
 
 const completedTournamentScores = (
@@ -2041,9 +2064,12 @@ const makeTeamBattleMatches = (
   settings: TournamentSettings,
 ): TournamentMatch[] => {
   const matchCount = normalizeTournamentCount(settings.teamBattleMatchCount, 1, 5)
-  const slotLabels = settings.teamBattleSlots.length
-    ? settings.teamBattleSlots
-    : ['남복', '여복', '혼복', '자유복식', '에이스전']
+  const slotLabels =
+    settings.format === 'friendly-team-battle'
+      ? Array.from({ length: matchCount }, (_, index) => `복식 ${index + 1}`)
+      : settings.teamBattleSlots.length
+        ? settings.teamBattleSlots
+        : ['남복', '여복', '혼복', '자유복식', '에이스전']
   const matches: TournamentMatch[] = []
 
   for (let a = 0; a < teams.length - 1; a += 1) {

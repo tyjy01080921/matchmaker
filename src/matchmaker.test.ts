@@ -67,19 +67,6 @@ const makeTournamentMember = (
   gender,
 })
 
-const tournamentMemberScore = (member: TournamentParticipant) =>
-  getPlayerMatchScore({
-    id: member.id,
-    name: member.name,
-    level: member.level,
-    ageGroup: member.ageGroup,
-    gender: member.gender,
-    active: true,
-    specialRequired: false,
-    isGuest: false,
-    guestGameLimit: 0,
-  })
-
 const average = (values: number[]) =>
   values.reduce((sum, value) => sum + value, 0) / values.length
 
@@ -1069,6 +1056,25 @@ describe('generateTournamentSchedule', () => {
     expect(schedule.teamBattleStandings[0].pointDiff).toBe(8)
   })
 
+  it('uses generic doubles slots for friendly team battles', () => {
+    const schedule = generateTournamentSchedule(
+      [makeTournamentTeam('alpha', 1), makeTournamentTeam('beta', 2)],
+      {
+        ...defaultTournamentSettings,
+        format: 'friendly-team-battle',
+        teamBattleMatchCount: 3,
+        teamBattleSlots: ['남복', '혼복', '여복'],
+      },
+      {},
+    )
+
+    expect(schedule.matches.map((match) => match.teamBattleSlot)).toEqual([
+      '복식 1',
+      '복식 2',
+      '복식 3',
+    ])
+  })
+
   it('picks the friendly MVP candidate by wins then point difference', () => {
     const teams: TournamentTeam[] = [
       {
@@ -1141,7 +1147,7 @@ describe('generateTournamentSchedule', () => {
     expect(candidates.alpha).toBe('a-2')
   })
 
-  it('fills friendly doubles lineups with support players when a team has an odd roster', () => {
+  it('builds friendly doubles lineups from each team roster when a team has an odd roster', () => {
     const teams: TournamentTeam[] = [
       {
         ...makeTournamentTeam('alpha', 1),
@@ -1176,14 +1182,13 @@ describe('generateTournamentSchedule', () => {
       {},
     )
     const lineups = generateTournamentLineups(schedule.matches, teams)
-    const alphaSupportSlots = schedule.matches.flatMap((match) =>
-      lineups[match.id]?.teamAPlayerIds.filter((playerId) =>
-        playerId.startsWith('b-'),
-      ) ?? [],
+    const alphaPlayerIds = schedule.matches.flatMap(
+      (match) => lineups[match.id]?.teamAPlayerIds ?? [],
     )
 
     expect(Object.keys(lineups)).toHaveLength(2)
-    expect(alphaSupportSlots.length).toBeGreaterThan(0)
+    expect(alphaPlayerIds.every((playerId) => playerId.startsWith('a-'))).toBe(true)
+    expect(new Set(alphaPlayerIds).size).toBeGreaterThan(2)
     expect(
       Object.values(lineups).every(
         (lineup) =>
@@ -1193,7 +1198,7 @@ describe('generateTournamentSchedule', () => {
     ).toBe(true)
   })
 
-  it('orders friendly doubles lineups from lower levels to higher levels within a tie', () => {
+  it('rotates friendly doubles lineups evenly within each team', () => {
     const teams: TournamentTeam[] = [
       {
         ...makeTournamentTeam('alpha', 1),
@@ -1230,22 +1235,28 @@ describe('generateTournamentSchedule', () => {
       {},
     )
     const lineups = generateTournamentLineups(schedule.matches, teams)
-    const scoreById = new Map(
-      teams.flatMap((team) =>
-        (team.members ?? []).map((member) => [member.id, tournamentMemberScore(member)]),
-      ),
-    )
-    const lineupScore = (matchId: string) => {
-      const lineup = lineups[matchId]
-      return [
-        ...(lineup?.teamAPlayerIds ?? []),
-        ...(lineup?.teamBPlayerIds ?? []),
-      ].reduce((sum, playerId) => sum + (scoreById.get(playerId) ?? 0), 0)
-    }
-    const scores = schedule.matches
-      .sort((a, b) => a.order - b.order)
-      .map((match) => lineupScore(match.id))
+    const playCounts = (teamIdPrefix: string, side: 'teamAPlayerIds' | 'teamBPlayerIds') => {
+      const counts = new Map(
+        teams
+          .flatMap((team) => team.members ?? [])
+          .filter((member) => member.id.startsWith(teamIdPrefix))
+          .map((member) => [member.id, 0]),
+      )
 
-    expect(scores).toEqual([...scores].sort((a, b) => a - b))
+      for (const lineup of Object.values(lineups)) {
+        for (const playerId of lineup[side]) {
+          counts.set(playerId, (counts.get(playerId) ?? 0) + 1)
+        }
+      }
+
+      return [...counts.values()]
+    }
+    const alphaCounts = playCounts('a-', 'teamAPlayerIds')
+    const betaCounts = playCounts('b-', 'teamBPlayerIds')
+
+    expect(Math.max(...alphaCounts) - Math.min(...alphaCounts)).toBeLessThanOrEqual(1)
+    expect(Math.max(...betaCounts) - Math.min(...betaCounts)).toBeLessThanOrEqual(1)
+    expect(alphaCounts.every((count) => count > 0)).toBe(true)
+    expect(betaCounts.every((count) => count > 0)).toBe(true)
   })
 })
