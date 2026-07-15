@@ -24,6 +24,11 @@ export const defaultSettings: MatchSettings = {
   courtCount: 4,
   seed: 11,
   singleGuestPerMatch: true,
+  specialLimitEnabled: false,
+  specialGameLimitEnabled: true,
+  specialGameLimit: 8,
+  specialTimeLimitEnabled: true,
+  specialTimeLimitMinutes: 120,
   targetRoundCount: 8,
   conditionOptions: defaultMatchConditionOptions,
 }

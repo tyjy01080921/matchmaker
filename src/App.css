@@ -365,6 +365,79 @@ h2 {
   accent-color: var(--mint);
 }
 
+.special-settings-card {
+  display: grid;
+  gap: 8px;
+  grid-column: 1 / -1;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.special-settings-card.expanded {
+  padding-bottom: 9px;
+  background: var(--paper);
+}
+
+.special-settings-toggles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.special-settings-toggles .settings-checkbox {
+  min-height: 42px;
+  align-self: stretch;
+  border: 0;
+  background: transparent;
+}
+
+.special-settings-toggles .settings-checkbox + .settings-checkbox {
+  border-left: 1px solid var(--line);
+}
+
+.special-limit-options label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.special-limit-options label > input:first-child {
+  width: 16px;
+  min-height: 16px;
+  margin: 0;
+  accent-color: var(--mint);
+}
+
+.special-limit-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  padding: 0 9px;
+}
+
+.special-limit-options label {
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.special-limit-options input[type='number'] {
+  width: 52px;
+  min-height: 30px;
+  margin: 0 0 0 auto;
+  padding: 4px 6px;
+}
+
+.special-limit-options select {
+  min-height: 30px;
+  margin: 0 0 0 auto;
+  padding: 4px 6px;
+}
+
 .match-condition-panel {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2366,6 +2439,10 @@ textarea {
 
   .row-fields label {
     font-size: 10px;
+  }
+
+  .special-limit-options {
+    grid-template-columns: 1fr;
   }
 
   .row-fields select {

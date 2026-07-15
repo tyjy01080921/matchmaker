@@ -646,6 +646,157 @@ describe('generateSchedule', () => {
     expect(schedule.rounds[0].matches).toHaveLength(4)
   })
 
+  it('removes a special from every match after the game limit', () => {
+    const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 24 }, (_, index) =>
+      makeTestPlayer(`regular-${index + 1}`, index < 12 ? 'B' : 'C'),
+    )
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 4,
+      targetRoundCount: 10,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 4,
+      specialTimeLimitEnabled: false,
+    })
+    const guestRounds = schedule.rounds
+      .filter((round) =>
+        round.matches.some((match) =>
+          [...match.teamA, ...match.teamB].some((player) => player.id === guest.id),
+        ),
+      )
+      .map((round) => round.number)
+
+    expect(schedule.rounds).toHaveLength(10)
+    expect(schedule.guestGameCounts[guest.id]).toBe(4)
+    expect(guestRounds).toEqual([1, 2, 3, 4])
+  })
+
+  it('removes a special after the time limit', () => {
+    const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 16 }, (_, index) =>
+      makeTestPlayer(`regular-${index + 1}`, index < 8 ? 'B' : 'C'),
+    )
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 3,
+      targetRoundCount: 6,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: false,
+      specialTimeLimitEnabled: true,
+      specialTimeLimitMinutes: 45,
+    })
+
+    expect(schedule.guestGameCounts[guest.id]).toBe(3)
+    expect(
+      schedule.rounds.slice(3).flatMap((round) => round.matches).some((match) =>
+        [...match.teamA, ...match.teamB].some((player) => player.id === guest.id),
+      ),
+    ).toBe(false)
+  })
+
+  it('uses whichever special limit is reached first', () => {
+    const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 16 }, (_, index) =>
+      makeTestPlayer(`regular-${index + 1}`, index < 8 ? 'B' : 'C'),
+    )
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 3,
+      targetRoundCount: 8,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 7,
+      specialTimeLimitEnabled: true,
+      specialTimeLimitMinutes: 45,
+    })
+
+    expect(schedule.guestGameCounts[guest.id]).toBe(3)
+  })
+
+  it('keeps an opted-out participant in general matches only', () => {
+    const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
+    const optedOut = {
+      ...makeTestPlayer('opted-out', 'B'),
+      specialMatchEligible: false,
+    }
+    const regulars = [
+      optedOut,
+      ...Array.from({ length: 11 }, (_, index) =>
+        makeTestPlayer(`regular-${index + 1}`, index < 6 ? 'B' : 'C'),
+      ),
+    ]
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 3,
+      targetRoundCount: 5,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 3,
+      specialTimeLimitEnabled: false,
+    })
+    const optedOutMatches = schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) =>
+        [...match.teamA, ...match.teamB].some((player) => player.id === optedOut.id),
+      )
+
+    expect(optedOutMatches.length).toBeGreaterThan(0)
+    expect(optedOutMatches.every((match) => !match.isSpecial)).toBe(true)
+  })
+
+  it('prioritizes low levels in the first 30 percent and high levels afterward', () => {
+    const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
+    const regulars = [
+      ...Array.from({ length: 12 }, (_, index) =>
+        makeTestPlayer(`low-${index + 1}`, 'D'),
+      ),
+      ...Array.from({ length: 12 }, (_, index) =>
+        makeTestPlayer(`high-${index + 1}`, 'A'),
+      ),
+    ]
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 4,
+      targetRoundCount: 10,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 10,
+      specialTimeLimitEnabled: false,
+    })
+    const specialMatches = schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) => match.isSpecial)
+    const earlyAverage = average(specialMatches.slice(0, 3).map(matchRegularAverageScore))
+    const laterAverage = average(specialMatches.slice(3).map(matchRegularAverageScore))
+
+    expect(specialMatches).toHaveLength(10)
+    expect(earlyAverage).toBeLessThan(laterAverage)
+  })
+
+  it('applies the game limit to each special separately', () => {
+    const guests = [
+      makeTestPlayer('guest-1', '스페셜', 'none', false, true),
+      makeTestPlayer('guest-2', '스페셜', 'none', false, true),
+    ]
+    const regulars = Array.from({ length: 16 }, (_, index) =>
+      makeTestPlayer(`regular-${index + 1}`, index < 8 ? 'B' : 'C'),
+    )
+    const schedule = generateSchedule([...guests, ...regulars], {
+      ...defaultSettings,
+      courtCount: 4,
+      targetRoundCount: 5,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 2,
+      specialTimeLimitEnabled: false,
+    })
+
+    expect(schedule.guestGameCounts['guest-1']).toBe(2)
+    expect(schedule.guestGameCounts['guest-2']).toBe(2)
+  })
+
   it('calculates wins and point difference from a selected winner with scores', () => {
     const schedule = generateSchedule(samplePlayers, defaultSettings)
     const firstMatch = schedule.rounds[0].matches[0]

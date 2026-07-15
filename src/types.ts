@@ -41,6 +41,7 @@ export type Player = {
   gender: Gender
   active: boolean
   specialRequired: boolean
+  specialMatchEligible?: boolean
   isGuest: boolean
   guestGameLimit: number
 }
@@ -50,6 +51,11 @@ export type MatchSettings = {
   courtCount: number
   seed: number
   singleGuestPerMatch: boolean
+  specialLimitEnabled: boolean
+  specialGameLimitEnabled: boolean
+  specialGameLimit: number
+  specialTimeLimitEnabled: boolean
+  specialTimeLimitMinutes: number
   targetRoundCount: number
   conditionOptions: MatchConditionOptions
 }

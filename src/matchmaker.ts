@@ -64,6 +64,8 @@ const GUEST_REPEAT_PARTNER_PENALTY = 50000
 const SPECIAL_TIMING_WEIGHT = 110
 const FAIR_GAME_MAX_WEIGHT = 10000000
 const FAIR_GAME_TOTAL_WEIGHT = 100000
+const SPECIAL_LIMIT_LEVEL_WEIGHT = 100000000
+const GAME_SLOT_MINUTES = 15
 
 const matchConditions = (settings: MatchSettings): MatchConditionOptions => ({
   ...defaultMatchConditionOptions,
@@ -106,6 +108,76 @@ const normalizeTargetRoundCount = (value: unknown) => {
 const guestHasRemainingExtraGames = (guest: Player, history: HistoryState) => {
   const limit = Math.floor(Number(guest.guestGameLimit) || 0)
   return limit <= 0 || (history.guestGameCounts[guest.id] ?? 0) < limit
+}
+
+const specialLimitGameTarget = (settings: MatchSettings) => {
+  const limits: number[] = []
+  if (settings.specialGameLimitEnabled) {
+    limits.push(Math.max(1, Math.floor(settings.specialGameLimit)))
+  }
+  if (settings.specialTimeLimitEnabled) {
+    limits.push(
+      Math.max(1, Math.floor(settings.specialTimeLimitMinutes / GAME_SLOT_MINUTES)),
+    )
+  }
+  return limits.length > 0 ? Math.min(...limits) : Number.POSITIVE_INFINITY
+}
+
+const guestWithinSpecialLimit = (
+  guest: Player,
+  history: HistoryState,
+  settings: MatchSettings,
+  roundNumber: number,
+) => {
+  if (!settings.specialLimitEnabled) return true
+  if (
+    settings.specialGameLimitEnabled &&
+    (history.guestGameCounts[guest.id] ?? 0) >= settings.specialGameLimit
+  ) {
+    return false
+  }
+  if (
+    settings.specialTimeLimitEnabled &&
+    (roundNumber - 1) * GAME_SLOT_MINUTES >= settings.specialTimeLimitMinutes
+  ) {
+    return false
+  }
+  return true
+}
+
+const specialLevelRank: Record<Exclude<Level, '스페셜'>, number> = {
+  O: 1,
+  D: 2,
+  C: 3,
+  B: 4,
+  A: 5,
+  OA: 6,
+}
+
+const limitedSpecialLevelPenalty = (
+  regulars: Player[],
+  guests: Player[],
+  history: HistoryState,
+  settings: MatchSettings,
+) => {
+  if (!settings.specialLimitEnabled || guests.length === 0) return 0
+  const targetGames = specialLimitGameTarget(settings)
+  if (!Number.isFinite(targetGames)) return 0
+  const earlyGameCount = Math.ceil(targetGames * 0.3)
+  const rankSum = regulars.reduce(
+    (sum, player) => sum + specialLevelRank[player.level as Exclude<Level, '스페셜'>],
+    0,
+  )
+  const earlyGuestCount = guests.filter(
+    (guest) => (history.guestGameCounts[guest.id] ?? 0) < earlyGameCount,
+  ).length
+  const highGuestCount = guests.length - earlyGuestCount
+  const maximumRankSum = regulars.length * specialLevelRank.OA
+
+  return (
+    earlyGuestCount * rankSum * SPECIAL_LIMIT_LEVEL_WEIGHT +
+    highGuestCount * (maximumRankSum - rankSum) * SPECIAL_LIMIT_LEVEL_WEIGHT
+  )
 }
 
 const specialGameCount = (player: Player, history: HistoryState) =>
@@ -824,6 +896,7 @@ const scoreSpecialRegulars = (
   random: () => number,
   conditions: MatchConditionOptions,
   pacing: RoundPacing,
+  settings: MatchSettings,
 ) => {
   const targetLevel = matchLevelValue(guest)
   const pendingCount = regulars.filter((player) => pendingIds.has(player.id)).length
@@ -859,6 +932,7 @@ const scoreSpecialRegulars = (
     (conditions.genderBalance ? groupGenderMixPenalty(regulars) : 0) +
     historyPenalty +
     fairGamePenalty(regulars, history, conditions) +
+    limitedSpecialLevelPenalty(regulars, [guest], history, settings) +
     pendingPenalty +
     repeatGuestPenalty +
     specialTimingPenalty([guest, ...regulars], pacing, conditions) +
@@ -876,9 +950,13 @@ const pickSpecialRegulars = (
   random: () => number,
   conditions: MatchConditionOptions,
   pacing: RoundPacing,
+  settings: MatchSettings,
 ): [Player, Player, Player] | null => {
   const availableRegulars = activePlayers.filter(
-    (player) => !player.isGuest && !usedIds.has(player.id),
+    (player) =>
+      !player.isGuest &&
+      (player.specialMatchEligible ?? true) &&
+      !usedIds.has(player.id),
   )
   if (availableRegulars.length < 3) return null
 
@@ -952,6 +1030,7 @@ const pickSpecialRegulars = (
           random,
           conditions,
           pacing,
+          settings,
         )
         if (score < bestScore) {
           bestScore = score
@@ -972,9 +1051,13 @@ const pickSingleGuestSpecialGroup = (
   conditions: MatchConditionOptions,
   pacing: RoundPacing,
   allowExtraSpecial: boolean,
+  settings: MatchSettings,
 ): [Player, Player, Player, Player] | null => {
   const candidateGuests = activePlayers.filter(
-    (player) => player.isGuest && !usedIds.has(player.id),
+    (player) =>
+      player.isGuest &&
+      !usedIds.has(player.id) &&
+      guestWithinSpecialLimit(player, history, settings, pacing.roundNumber),
   )
   if (candidateGuests.length === 0) return null
 
@@ -982,6 +1065,7 @@ const pickSingleGuestSpecialGroup = (
     .filter(
       (player) =>
         !player.isGuest &&
+        (player.specialMatchEligible ?? true) &&
         !history.specialCompleted.has(player.id) &&
         !usedIds.has(player.id),
     )
@@ -997,7 +1081,7 @@ const pickSingleGuestSpecialGroup = (
   const isExtraSpecialMatch = pending.length === 0 && !needsGuestFirstMatch
   if (isExtraSpecialMatch && !allowExtraSpecial) return null
 
-  const guests = (isExtraSpecialMatch
+  const guests = (isExtraSpecialMatch && !settings.specialLimitEnabled
     ? candidateGuests.filter((guest) => guestHasRemainingExtraGames(guest, history))
     : candidateGuests
   ).sort(
@@ -1018,6 +1102,7 @@ const pickSingleGuestSpecialGroup = (
       random,
       conditions,
       pacing,
+      settings,
     )
     if (selectedPlayers) return [guest, ...selectedPlayers]
   }
@@ -1033,6 +1118,7 @@ const scoreAdaptiveSpecialGroup = (
   random: () => number,
   conditions: MatchConditionOptions,
   pacing: RoundPacing,
+  settings: MatchSettings,
 ) => {
   const pairing = bestPairing(group, history, random, conditions, pacing)
   const guests = group.filter((player) => player.isGuest)
@@ -1081,6 +1167,7 @@ const scoreAdaptiveSpecialGroup = (
     (conditions.genderBalance ? groupGenderMixPenalty(regulars) : 0) +
     historyPenalty +
     fairGamePenalty(group, history, conditions) +
+    limitedSpecialLevelPenalty(regulars, guests, history, settings) +
     pendingPriorityPenalty -
     (conditions.specialPriority ? firstGuestCount * 40 : 0) +
     repeatGuestPenalty +
@@ -1099,9 +1186,13 @@ const pickAdaptiveSpecialGroup = (
   conditions: MatchConditionOptions,
   pacing: RoundPacing,
   allowExtraSpecial: boolean,
+  settings: MatchSettings,
 ): [Player, Player, Player, Player] | null => {
   const candidateGuests = activePlayers.filter(
-    (player) => player.isGuest && !usedIds.has(player.id),
+    (player) =>
+      player.isGuest &&
+      !usedIds.has(player.id) &&
+      guestWithinSpecialLimit(player, history, settings, pacing.roundNumber),
   )
   if (candidateGuests.length === 0) return null
 
@@ -1109,6 +1200,7 @@ const pickAdaptiveSpecialGroup = (
     .filter(
       (player) =>
         !player.isGuest &&
+        (player.specialMatchEligible ?? true) &&
         !history.specialCompleted.has(player.id) &&
         !usedIds.has(player.id),
     )
@@ -1123,7 +1215,7 @@ const pickAdaptiveSpecialGroup = (
   const isExtraSpecialMatch = pending.length === 0 && !needsGuestFirstMatch
   if (isExtraSpecialMatch && !allowExtraSpecial) return null
 
-  const guests = (isExtraSpecialMatch
+  const guests = (isExtraSpecialMatch && !settings.specialLimitEnabled
     ? candidateGuests.filter((guest) => guestHasRemainingExtraGames(guest, history))
     : candidateGuests
   ).sort(
@@ -1135,7 +1227,10 @@ const pickAdaptiveSpecialGroup = (
   if (guests.length === 0) return null
 
   const availableRegulars = activePlayers.filter(
-    (player) => !player.isGuest && !usedIds.has(player.id),
+    (player) =>
+      !player.isGuest &&
+      (player.specialMatchEligible ?? true) &&
+      !usedIds.has(player.id),
   )
   if (availableRegulars.length === 0) return null
 
@@ -1219,6 +1314,7 @@ const pickAdaptiveSpecialGroup = (
             random,
             conditions,
             pacing,
+            settings,
           )
           if (score < bestScore) {
             bestScore = score
@@ -1251,6 +1347,7 @@ const pickSpecialGroup = (
       conditions,
       pacing,
       allowExtraSpecial,
+      settings,
     )
   }
 
@@ -1262,6 +1359,7 @@ const pickSpecialGroup = (
     conditions,
     pacing,
     allowExtraSpecial,
+    settings,
   )
 }
 
@@ -2495,15 +2593,19 @@ export const generateSchedule = (
       resting: activePlayers.filter((player) => !usedIds.has(player.id)),
     })
 
-    const allRegularsCompleted = activeRegulars.every((player) =>
+    const eligibleRegulars = activeRegulars.filter(
+      (player) => player.specialMatchEligible ?? true,
+    )
+    const allRegularsCompleted = eligibleRegulars.every((player) =>
       history.specialCompleted.has(player.id),
     )
     const allGuestsPlayed = activeGuests.every(
       (guest) => (history.guestGameCounts[guest.id] ?? 0) > 0,
     )
     const reachedTargetRounds = roundNumber >= targetRoundCount
-    const completedMinimumSpecial =
-      activeGuests.length === 0 || (allRegularsCompleted && allGuestsPlayed)
+    const completedMinimumSpecial = settings.specialLimitEnabled
+      ? true
+      : activeGuests.length === 0 || (allRegularsCompleted && allGuestsPlayed)
     if (reachedTargetRounds && completedMinimumSpecial) break
 
     if (
@@ -2522,10 +2624,11 @@ export const generateSchedule = (
       ? activePlayers.filter(
           (player) =>
             !player.isGuest &&
+            (player.specialMatchEligible ?? true) &&
             !history.specialCompleted.has(player.id),
         )
       : []
-  if (pendingSpecial.length > 0) {
+  if (pendingSpecial.length > 0 && !settings.specialLimitEnabled) {
     warnings.push(
       `스페셜 경기 미완료: ${pendingSpecial.map((player) => player.name).join(', ')}`,
     )

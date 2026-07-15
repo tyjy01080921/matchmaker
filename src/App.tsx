@@ -307,6 +307,8 @@ const normalizePlayer = (player: Partial<Player>): Player => {
     active: player.active ?? true,
     specialRequired:
       isGuest || isSpecialLevel ? false : (player.specialRequired ?? true),
+    specialMatchEligible:
+      isGuest || isSpecialLevel ? false : (player.specialMatchEligible ?? true),
     isGuest,
     guestGameLimit: player.guestGameLimit ?? 0,
   }
@@ -389,6 +391,21 @@ const normalizeMatchSettings = (
   ),
   seed: normalizePositiveInteger(settings?.seed, defaultSettings.seed, 1, 999999),
   singleGuestPerMatch: settings?.singleGuestPerMatch ?? true,
+  specialLimitEnabled: settings?.specialLimitEnabled ?? false,
+  specialGameLimitEnabled: settings?.specialGameLimitEnabled ?? true,
+  specialGameLimit: normalizePositiveInteger(
+    settings?.specialGameLimit,
+    defaultSettings.specialGameLimit,
+    1,
+    99,
+  ),
+  specialTimeLimitEnabled: settings?.specialTimeLimitEnabled ?? true,
+  specialTimeLimitMinutes: normalizePositiveInteger(
+    settings?.specialTimeLimitMinutes,
+    defaultSettings.specialTimeLimitMinutes,
+    GAME_SLOT_MINUTES,
+    24 * 60,
+  ),
   targetRoundCount: normalizePositiveInteger(
     settings?.targetRoundCount,
     defaultSettings.targetRoundCount,
@@ -1291,7 +1308,25 @@ function App() {
   const activeMembers = activePlayers.filter((player) => !player.isGuest)
   const activeGuests = activePlayers.filter((player) => player.isGuest)
   const hasActiveGuests = activeGuests.length > 0
-  const requiredPlayers = hasActiveGuests ? activeMembers : []
+  const specialEligibleMembers = activeMembers.filter(
+    (player) => player.specialMatchEligible ?? true,
+  )
+  const specialLimitLabels = settings.specialLimitEnabled
+    ? [
+        settings.specialGameLimitEnabled
+          ? `${settings.specialGameLimit}경기`
+          : '',
+        settings.specialTimeLimitEnabled
+          ? `${settings.specialTimeLimitMinutes}분`
+          : '',
+      ].filter(Boolean)
+    : []
+  const specialLimitText = settings.specialLimitEnabled
+    ? specialLimitLabels.length > 0
+      ? `제한 ${specialLimitLabels.join('·')}`
+      : '제한 조건 선택 필요'
+    : '제한 없음'
+  const requiredPlayers = hasActiveGuests ? specialEligibleMembers : []
   const completedMatches = schedule.rounds
     .flatMap((round) => round.matches)
     .filter((match) => results[match.id]?.completed).length
@@ -2476,6 +2511,9 @@ function App() {
           minimumParticipants,
           participantCount: activePlayers.length,
           specialCount: activeGuests.length,
+          specialStatus: hasActiveGuests
+            ? `스페셜 가능 ${specialEligibleMembers.length}명 · ${specialLimitText}`
+            : '스페셜 없음',
         },
         settings,
         matchNameOverrides,
@@ -2993,21 +3031,119 @@ function App() {
                     }}
                   />
                   {guestPlayers.length > 0 ? (
-                    <label className="settings-checkbox">
-                      <input
-                        type="checkbox"
-                        checked={settings.singleGuestPerMatch}
-                        onChange={(event) => {
-                          setSettings((current) => ({
-                            ...current,
-                            singleGuestPerMatch: event.target.checked,
-                            targetRoundCount: EVENT_LIMIT_ROUNDS,
-                          }))
-                          clearMeetingScheduleState()
-                        }}
-                      />
-                      스페셜 1 + 참가자 3
-                    </label>
+                    <div
+                      className={`special-settings-card ${
+                        settings.specialLimitEnabled ? 'expanded' : ''
+                      }`}
+                    >
+                      <div className="special-settings-toggles">
+                        <label className="settings-checkbox">
+                          <input
+                            type="checkbox"
+                            checked={settings.singleGuestPerMatch}
+                            onChange={(event) => {
+                              setSettings((current) => ({
+                                ...current,
+                                singleGuestPerMatch: event.target.checked,
+                                targetRoundCount: EVENT_LIMIT_ROUNDS,
+                              }))
+                              clearMeetingScheduleState()
+                            }}
+                          />
+                          스페셜 1 + 참가자 3
+                        </label>
+                        <label className="settings-checkbox">
+                          <input
+                            type="checkbox"
+                            checked={settings.specialLimitEnabled}
+                            onChange={(event) => {
+                              setSettings((current) => ({
+                                ...current,
+                                specialLimitEnabled: event.target.checked,
+                              }))
+                              clearMeetingScheduleState()
+                            }}
+                          />
+                          스페셜 제한 사용
+                        </label>
+                      </div>
+                      {settings.specialLimitEnabled ? (
+                        <div className="special-limit-options">
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={settings.specialGameLimitEnabled}
+                              disabled={!settings.specialTimeLimitEnabled}
+                              onChange={(event) => {
+                                setSettings((current) => ({
+                                  ...current,
+                                  specialGameLimitEnabled: event.target.checked,
+                                }))
+                                clearMeetingScheduleState()
+                              }}
+                            />
+                            경기 수
+                            <input
+                              type="number"
+                              min="1"
+                              max="99"
+                              aria-label="스페셜 최대 경기 수"
+                              disabled={!settings.specialGameLimitEnabled}
+                              value={settings.specialGameLimit}
+                              onChange={(event) => {
+                                const specialGameLimit = normalizePositiveInteger(
+                                  event.target.value,
+                                  settings.specialGameLimit,
+                                  1,
+                                  99,
+                                )
+                                setSettings((current) => ({
+                                  ...current,
+                                  specialGameLimit,
+                                }))
+                                clearMeetingScheduleState()
+                              }}
+                            />
+                            경기
+                          </label>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={settings.specialTimeLimitEnabled}
+                              disabled={!settings.specialGameLimitEnabled}
+                              onChange={(event) => {
+                                setSettings((current) => ({
+                                  ...current,
+                                  specialTimeLimitEnabled: event.target.checked,
+                                }))
+                                clearMeetingScheduleState()
+                              }}
+                            />
+                            시간
+                            <select
+                              aria-label="스페셜 최대 시간"
+                              disabled={!settings.specialTimeLimitEnabled}
+                              value={settings.specialTimeLimitMinutes}
+                              onChange={(event) => {
+                                setSettings((current) => ({
+                                  ...current,
+                                  specialTimeLimitMinutes: Number(event.target.value),
+                                }))
+                                clearMeetingScheduleState()
+                              }}
+                            >
+                              {[30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180].map(
+                                (minutes) => (
+                                  <option value={minutes} key={minutes}>
+                                    {minutes}분
+                                  </option>
+                                ),
+                              )}
+                            </select>
+                          </label>
+                        </div>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
                 <div className="metric-grid">
@@ -3163,6 +3299,21 @@ function App() {
                               참석
                             </label>
                             {player.isGuest ? <span className="status-chip">스페셜</span> : null}
+                            {!player.isGuest && guestPlayers.length > 0 ? (
+                              <label className="checkbox-label">
+                                <input
+                                  type="checkbox"
+                                  checked={player.specialMatchEligible ?? true}
+                                  onChange={(event) => {
+                                    updatePlayer(player.id, {
+                                      specialMatchEligible: event.target.checked,
+                                    })
+                                    clearMeetingScheduleState()
+                                  }}
+                                />
+                                스페셜 매치
+                              </label>
+                            ) : null}
                           </div>
                           <button
                             type="button"
@@ -3205,8 +3356,13 @@ function App() {
                                         isGuest: true,
                                         gender: 'none' as Gender,
                                         specialRequired: false,
+                                        specialMatchEligible: false,
                                       }
-                                    : { isGuest: false }),
+                                    : {
+                                        isGuest: false,
+                                        specialRequired: true,
+                                        specialMatchEligible: true,
+                                      }),
                                 })
                                 if (guestStateChanged) {
                                   resetMeetingTargetRounds()
@@ -3546,11 +3702,17 @@ function App() {
               <div className="special-summary">
                 <span>참가 {activeMembers.length}명</span>
                 <span>스페셜 {activeGuests.length}명</span>
+                <span>매치 가능 {specialEligibleMembers.length}명</span>
+                <span>{specialLimitText}</span>
                 <span>최소 {specialMinimumRoundCount}R</span>
                 {activeGuests.map((guest) => (
                   <span key={guest.id}>
                     {playerDisplayName(guest, displayNames)} · 배정{' '}
-                    {schedule.guestGameCounts[guest.id] ?? 0}경기
+                    {schedule.guestGameCounts[guest.id] ?? 0}
+                    {settings.specialLimitEnabled && settings.specialGameLimitEnabled
+                      ? `/${settings.specialGameLimit}`
+                      : ''}
+                    경기
                   </span>
                 ))}
               </div>

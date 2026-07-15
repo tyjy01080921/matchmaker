@@ -137,6 +137,7 @@ describe('printable schedule', () => {
         minimumParticipants: '최수빈',
         participantCount: 5,
         specialCount: 0,
+        specialStatus: '스페셜 없음',
       },
       settings,
       matchNameOverrides: {

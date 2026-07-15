@@ -87,6 +87,7 @@ type PrintScheduleOptions = {
     minimumParticipants: string
     participantCount: number
     specialCount: number
+    specialStatus: string
   }
   settings: MatchSettings
   matchNameOverrides?: MatchNameOverrides
@@ -768,6 +769,11 @@ const renderPageSvg = (
       82,
       { color: '#65716e', size: 11, weight: 800 },
     ),
+    text(truncateText(options.summary.specialStatus, 80), 620, 101, {
+      color: '#18685c',
+      size: 11,
+      weight: 900,
+    }),
     text(
       `생성 ${formatGeneratedAt(options.generatedAt)} · ${pageIndex + 1}/${pageCount}쪽`,
       68,
