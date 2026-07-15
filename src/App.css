@@ -1285,8 +1285,8 @@ textarea {
 
 .time-bar {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr) minmax(180px, 0.7fr);
-  align-items: center;
+  grid-template-columns: 180px minmax(0, 1fr);
+  align-items: start;
   gap: 14px;
   margin-top: 12px;
   padding: 14px 16px;
@@ -1298,6 +1298,20 @@ textarea {
 .time-bar h2 {
   margin-top: 3px;
   font-size: 26px;
+}
+
+.schedule-overview-heading > span:not(.eyebrow) {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.schedule-overview-heading .time-alert,
+.schedule-overview-heading .time-ok {
+  display: inline-flex;
+  margin-top: 10px;
 }
 
 .time-overrun {
@@ -1402,32 +1416,6 @@ textarea {
   white-space: nowrap;
 }
 
-.schedule-summary {
-  display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
-  gap: 14px;
-  margin-top: 12px;
-  padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background:
-    linear-gradient(135deg, rgba(47, 208, 180, 0.1), transparent 44%),
-    #fff;
-}
-
-.schedule-summary-heading h2 {
-  margin-top: 3px;
-  font-size: 24px;
-}
-
-.schedule-summary-heading > span:last-child {
-  display: block;
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
-}
-
 .schedule-summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1456,6 +1444,14 @@ textarea {
   font-size: 14px;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.schedule-summary-grid small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
 }
 
 .schedule-summary-grid .schedule-summary-wide {
@@ -2069,7 +2065,6 @@ textarea {
 
   .special-bar,
   .time-bar,
-  .schedule-summary,
   .tournament-summary-bar {
     grid-template-columns: 1fr;
   }
@@ -2528,7 +2523,6 @@ textarea {
   .special-bar,
   .time-bar,
   .progress-panel,
-  .schedule-summary,
   .tournament-summary-bar {
     grid-template-columns: 1fr;
     gap: 8px;
@@ -2552,11 +2546,6 @@ textarea {
 
   .progress-grid div {
     padding: 7px;
-  }
-
-  .schedule-summary-heading h2 {
-    margin-top: 0;
-    font-size: 18px;
   }
 
   .schedule-summary-grid {

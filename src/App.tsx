@@ -1363,6 +1363,7 @@ function App() {
   const remainingRounds = Math.max(totalGameSlots - completedRounds, 0)
   const remainingMinutes = remainingRounds * GAME_SLOT_MINUTES
   const scheduleParticipantStats = stats.filter((stat) =>
+    !stat.player.isGuest &&
     activePlayers.some((player) => player.id === stat.player.id),
   )
   const averageGames = scheduleParticipantStats.length
@@ -1387,24 +1388,6 @@ function App() {
       (stat) =>
         stat.games === minimumParticipantGames && stat.games < averageGames,
     )
-    .map((stat) => playerDisplayName(stat.player, displayNames))
-    .join(', ')
-  const activePlayerStats = stats.filter((stat) =>
-    !stat.player.isGuest &&
-    activePlayers.some((player) => player.id === stat.player.id),
-  )
-  const mostGames = activePlayerStats.length
-    ? Math.max(...activePlayerStats.map((stat) => stat.games))
-    : 0
-  const leastGames = activePlayerStats.length
-    ? Math.min(...activePlayerStats.map((stat) => stat.games))
-    : 0
-  const mostPlayedPlayers = activePlayerStats
-    .filter((stat) => stat.games === mostGames)
-    .map((stat) => playerDisplayName(stat.player, displayNames))
-    .join(', ')
-  const leastPlayedPlayers = activePlayerStats
-    .filter((stat) => stat.games === leastGames)
     .map((stat) => playerDisplayName(stat.player, displayNames))
     .join(', ')
   const activeTournamentTeams = tournamentTeams.filter(
@@ -3710,8 +3693,6 @@ function App() {
                 <p className="metric-subtext">예상 {formatDuration(specialMinimumMinutes)}</p>
               </div>
               <div className="special-summary">
-                <span>참가 {activeMembers.length}명</span>
-                <span>스페셜 {activeGuests.length}명</span>
                 <span>매치 가능 {specialEligibleMembers.length}명</span>
                 <span>{specialLimitText}</span>
                 <span>최소 {specialMinimumRoundCount}R</span>
@@ -3738,20 +3719,50 @@ function App() {
           ) : null}
 
           <section className={`time-bar ${overtimeGameSlots > 0 ? 'time-overrun' : ''}`}>
-            <div>
-              <span className="eyebrow">진행 시간</span>
-              <h2>{totalGameSlots}R</h2>
+            <div className="schedule-overview-heading">
+              <span className="eyebrow">대진표 요약</span>
+              <h2>{activePlayers.length}명 참가</h2>
+              <span>스페셜 {activeGuests.length}명 포함</span>
+              <div className={overtimeGameSlots > 0 ? 'time-alert' : 'time-ok'}>
+                {overtimeGameSlots > 0
+                  ? `${EVENT_LIMIT_ROUNDS + 1}R부터 초과 · ${overtimeGameSlots}R`
+                  : '2시간 내 완료'}
+              </div>
             </div>
-            <div className="time-summary">
-              <span>라운드당 {GAME_SLOT_MINUTES}분</span>
-              <span>총 {totalMatches}경기</span>
-              <span>목표 {targetRoundCount}R</span>
-              <span>예상 {formatDuration(estimatedMinutes)}</span>
-            </div>
-            <div className={overtimeGameSlots > 0 ? 'time-alert' : 'time-ok'}>
-              {overtimeGameSlots > 0
-                ? `${EVENT_LIMIT_ROUNDS + 1}R부터 초과 · ${overtimeGameSlots}R`
-                : '2시간 내 완료'}
+            <div className="schedule-summary-grid">
+              <div>
+                <span>라운드</span>
+                <strong>{totalGameSlots}R · 목표 {targetRoundCount}R</strong>
+              </div>
+              <div>
+                <span>총 경기</span>
+                <strong>{totalMatches}경기</strong>
+              </div>
+              <div>
+                <span>예상 시간</span>
+                <strong>{formatDuration(estimatedMinutes)}</strong>
+                <small>라운드당 {GAME_SLOT_MINUTES}분</small>
+              </div>
+              <div>
+                <span>평균 경기</span>
+                <strong>{averageGames.toFixed(1)}경기</strong>
+              </div>
+              <div className="schedule-summary-wide">
+                <span>최다 경기 · 평균 초과</span>
+                <strong>
+                  {maximumParticipants
+                    ? `${maximumParticipants} · ${maximumParticipantGames}경기`
+                    : '없음'}
+                </strong>
+              </div>
+              <div className="schedule-summary-wide">
+                <span>최소 경기 · 평균 미만</span>
+                <strong>
+                  {minimumParticipants
+                    ? `${minimumParticipants} · ${minimumParticipantGames}경기`
+                    : '없음'}
+                </strong>
+              </div>
             </div>
           </section>
 
@@ -3769,12 +3780,12 @@ function App() {
                 <strong>{formatDuration(remainingMinutes)}</strong>
               </div>
               <div>
-                <span>최다 경기</span>
-                <strong>{mostPlayedPlayers || '-'}</strong>
+                <span>완료 경기</span>
+                <strong>{completedMatches}/{totalMatches}경기</strong>
               </div>
               <div>
-                <span>최소 경기</span>
-                <strong>{leastPlayedPlayers || '-'}</strong>
+                <span>완료 라운드</span>
+                <strong>{completedRounds}/{totalGameSlots}R</strong>
               </div>
             </div>
           </section>
@@ -3840,49 +3851,6 @@ function App() {
 
           {view === 'schedule' ? (
             <>
-              {schedule.rounds.length > 0 ? (
-                <section className="schedule-summary" aria-labelledby="schedule-summary-title">
-                  <div className="schedule-summary-heading">
-                    <span className="eyebrow">대진 현황</span>
-                    <h2 id="schedule-summary-title">{activePlayers.length}명 참가</h2>
-                    <span>스페셜 {activeGuests.length}명 포함</span>
-                  </div>
-                  <div className="schedule-summary-grid">
-                    <div>
-                      <span>라운드</span>
-                      <strong>{totalGameSlots}R</strong>
-                    </div>
-                    <div>
-                      <span>총 경기</span>
-                      <strong>{totalMatches}경기</strong>
-                    </div>
-                    <div>
-                      <span>예상 시간</span>
-                      <strong>{formatDuration(estimatedMinutes)}</strong>
-                    </div>
-                    <div>
-                      <span>평균 경기</span>
-                      <strong>{averageGames.toFixed(1)}경기</strong>
-                    </div>
-                    <div className="schedule-summary-wide">
-                      <span>최다 경기 · 평균 초과</span>
-                      <strong>
-                        {maximumParticipants
-                          ? `${maximumParticipants} · ${maximumParticipantGames}경기`
-                          : '없음'}
-                      </strong>
-                    </div>
-                    <div className="schedule-summary-wide">
-                      <span>최소 경기 · 평균 미만</span>
-                      <strong>
-                        {minimumParticipants
-                          ? `${minimumParticipants} · ${minimumParticipantGames}경기`
-                          : '없음'}
-                      </strong>
-                    </div>
-                  </div>
-                </section>
-              ) : null}
               <div className="round-list">
               {schedule.rounds.map((round) => {
                 const isOvertimeRound = round.number > EVENT_LIMIT_ROUNDS
