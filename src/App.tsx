@@ -3312,6 +3312,16 @@ function App() {
                                   }}
                                 />
                                 스페셜 매치
+                                <span
+                                  className="inline-help-tooltip"
+                                  role="img"
+                                  tabIndex={0}
+                                  aria-label="해제 시, 스페셜과 경기를 하지 않습니다."
+                                  data-tooltip="해제 시, 스페셜과 경기를 하지 않습니다."
+                                  onClick={(event) => event.preventDefault()}
+                                >
+                                  ?
+                                </span>
                               </label>
                             ) : null}
                           </div>
