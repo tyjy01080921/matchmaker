@@ -1,6 +1,6 @@
 export type Gender = 'male' | 'female' | 'none'
 
-export type Level = 'OA' | 'A' | 'B' | 'C' | 'D' | 'O' | '스페셜'
+export type Level = 'OA' | 'A' | 'B' | 'C' | 'D' | 'E' | 'O' | '스페셜'
 
 export type AgeGroup =
   | '무관'
@@ -12,7 +12,7 @@ export type AgeGroup =
   | '55대이상'
 
 export type MatchAgeGroup = Exclude<AgeGroup, '무관'>
-export type MatchLevel = Extract<Level, 'A' | 'B' | 'C' | 'D'>
+export type MatchLevel = Extract<Level, 'A' | 'B' | 'C' | 'D' | 'E'>
 export type MatchGender = Extract<Gender, 'male' | 'female'>
 export type LevelTierTable = Record<
   MatchAgeGroup,
@@ -58,6 +58,8 @@ export type Player = {
 export type MatchSettings = {
   eventName: string
   courtCount: number
+  startTime: string
+  endTime: string
   seed: number
   singleGuestPerMatch: boolean
   specialLimitEnabled: boolean
@@ -65,6 +67,10 @@ export type MatchSettings = {
   specialGameLimit: number
   specialTimeLimitEnabled: boolean
   specialTimeLimitMinutes: number
+  specialLowPriorityEnabled: boolean
+  specialLowPriorityPercent: number
+  specialHighPriorityEnabled: boolean
+  specialHighPriorityPercent: number
   levelTiers: LevelTierTable
   targetRoundCount: number
   pacingRoundCount: number
@@ -75,6 +81,8 @@ export type MatchSettings = {
 export type TournamentSettings = {
   format: TournamentFormat
   courtCount: number
+  startTime: string
+  endTime: string
   groupCount: number
   advancePerGroup: number
   includeThirdPlace: boolean

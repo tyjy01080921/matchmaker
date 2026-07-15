@@ -152,6 +152,8 @@ describe('printable schedule', () => {
 
     expect(svg).toContain('1경기')
     expect(svg).toContain('1코트')
+    expect(svg).toContain('18:00–20:00')
+    expect(svg).toContain('18:00–18:15')
     expect(svg).toContain('현장참가자 + 이지연')
     expect(svg).toContain('5명 · 스페셜 0명')
     expect(svg).toContain('평균 경기')
@@ -209,6 +211,8 @@ describe('printable schedule', () => {
     )
 
     expect(svg).toContain('경쟁 대진표')
+    expect(svg).toContain('예약 18:00–20:00')
+    expect(svg).toContain('18:00–18:15')
     expect(svg).toContain('1팀 (1번 시드)')
     expect(svg).toContain('2팀')
     expect(svg).toContain('결승')

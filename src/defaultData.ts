@@ -9,28 +9,28 @@ import type {
 
 export const defaultLevelTiers: LevelTierTable = {
   '20대': {
-    male: { A: 1, B: 2, C: 4, D: 7 },
-    female: { A: 3, B: 4, C: 6, D: 7 },
+    male: { A: 1, B: 2, C: 4, D: 7, E: 11 },
+    female: { A: 3, B: 4, C: 6, D: 7, E: 11 },
   },
   '30대': {
-    male: { A: 1, B: 2, C: 4, D: 7 },
-    female: { A: 3, B: 4, C: 6, D: 7 },
+    male: { A: 1, B: 2, C: 4, D: 7, E: 11 },
+    female: { A: 3, B: 4, C: 6, D: 7, E: 11 },
   },
   '40대': {
-    male: { A: 2, B: 3, C: 4, D: 7 },
-    female: { A: 4, B: 5, C: 6, D: 7 },
+    male: { A: 2, B: 3, C: 4, D: 7, E: 11 },
+    female: { A: 4, B: 5, C: 6, D: 7, E: 11 },
   },
   '45대': {
-    male: { A: 3, B: 4, C: 5, D: 8 },
-    female: { A: 5, B: 6, C: 7, D: 8 },
+    male: { A: 3, B: 4, C: 5, D: 8, E: 11 },
+    female: { A: 5, B: 6, C: 7, D: 8, E: 11 },
   },
   '50대': {
-    male: { A: 4, B: 5, C: 6, D: 9 },
-    female: { A: 6, B: 7, C: 8, D: 9 },
+    male: { A: 4, B: 5, C: 6, D: 9, E: 11 },
+    female: { A: 6, B: 7, C: 8, D: 9, E: 11 },
   },
   '55대이상': {
-    male: { A: 5, B: 6, C: 7, D: 10 },
-    female: { A: 7, B: 8, C: 9, D: 10 },
+    male: { A: 5, B: 6, C: 7, D: 10, E: 11 },
+    female: { A: 7, B: 8, C: 9, D: 10, E: 11 },
   },
 }
 
@@ -50,6 +50,8 @@ export const defaultMatchConditionOptions: MatchConditionOptions = {
 export const defaultSettings: MatchSettings = {
   eventName: 'A.M.A Match Maker Pro',
   courtCount: 4,
+  startTime: '18:00',
+  endTime: '20:00',
   seed: 11,
   singleGuestPerMatch: true,
   specialLimitEnabled: false,
@@ -57,16 +59,22 @@ export const defaultSettings: MatchSettings = {
   specialGameLimit: 8,
   specialTimeLimitEnabled: true,
   specialTimeLimitMinutes: 120,
+  specialLowPriorityEnabled: true,
+  specialLowPriorityPercent: 10,
+  specialHighPriorityEnabled: true,
+  specialHighPriorityPercent: 90,
   levelTiers: defaultLevelTiers,
   targetRoundCount: 8,
   pacingRoundCount: 8,
-  roundCountLocked: false,
+  roundCountLocked: true,
   conditionOptions: defaultMatchConditionOptions,
 }
 
 export const defaultTournamentSettings: TournamentSettings = {
   format: 'knockout',
   courtCount: 4,
+  startTime: '18:00',
+  endTime: '20:00',
   groupCount: 2,
   advancePerGroup: 2,
   includeThirdPlace: true,

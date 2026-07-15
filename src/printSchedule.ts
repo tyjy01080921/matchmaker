@@ -19,6 +19,14 @@ import type {
   TournamentSettings,
   TournamentTeam,
 } from './types'
+import {
+  DEFAULT_START_TIME,
+  GAME_SLOT_MINUTES,
+  clockTimeAtOffset,
+  getBookingDurationMinutes,
+  getBookingRoundCount,
+  roundTimeRange,
+} from './scheduleTime'
 
 export const A4_IMAGE_WIDTH = 1240
 export const A4_IMAGE_HEIGHT = 1754
@@ -195,15 +203,17 @@ const rect = (
 ) =>
   `<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="${options.fill ?? '#fff'}" stroke="${options.stroke ?? 'none'}" stroke-width="${options.strokeWidth ?? 0}" />`
 
-const makeRoundText = (round: Round, names: PlayerNameLookup) => {
-  const startsAt = (round.number - 1) * 15
-  const endsAt = round.number * 15
+const makeRoundText = (
+  round: Round,
+  names: PlayerNameLookup,
+  startTime: string,
+) => {
   const resting =
     round.resting.length > 0
       ? round.resting.map((player) => playerDisplayName(player, names)).join(', ')
       : '없음'
 
-  return `${round.number}경기 · 예상 ${formatDuration(startsAt)}-${formatDuration(endsAt)} · 휴식 ${resting}`
+  return `${round.number}경기 · ${roundTimeRange(startTime, round.number)} · 휴식 ${resting}`
 }
 
 const svgDataUrl = (svg: string) =>
@@ -361,7 +371,13 @@ const drawScheduleSummary = (options: PrintScheduleOptions) => {
       label: '총 경기',
       value: `${options.schedule.rounds.reduce((sum, round) => sum + round.matches.length, 0)}경기`,
     },
-    { label: '예상 시간', value: formatDuration(summary.estimatedMinutes) },
+    {
+      label: '예약·예상 종료',
+      value: `${options.settings.startTime}–${options.settings.endTime} · ${clockTimeAtOffset(
+        options.settings.startTime,
+        summary.estimatedMinutes,
+      )}`,
+    },
     { label: '평균 경기', value: `${summary.averageGames.toFixed(1)}경기` },
   ]
   const top = 118
@@ -491,11 +507,12 @@ const drawMatchItem = (
 export const makePrintableScheduleItems = (
   schedule: Schedule,
   names: PlayerNameLookup,
+  startTime = DEFAULT_START_TIME,
 ): PrintableScheduleItem[] =>
   schedule.rounds.flatMap((round) => [
     {
       kind: 'round' as const,
-      text: makeRoundText(round, names),
+      text: makeRoundText(round, names, startTime),
     },
     ...round.matches.map((match) => ({
       kind: 'match' as const,
@@ -562,7 +579,7 @@ export const makePrintableTournamentItems = (
     items.push({
       kind: 'section',
       title: '진행 순서',
-      detail: `${orderedMatches.length}경기 · ${options.settings.courtCount}코트`,
+      detail: `${orderedMatches.length}경기 · ${options.settings.courtCount}코트 · ${options.settings.startTime}–${options.settings.endTime}`,
     })
 
     for (const match of orderedMatches) {
@@ -578,7 +595,7 @@ export const makePrintableTournamentItems = (
         ]
           .filter(Boolean)
           .join(' · '),
-        order: `${match.round}순서`,
+        order: roundTimeRange(options.settings.startTime, match.round),
         result: tournamentMatchResultText(
           match,
           options.results[match.id],
@@ -839,9 +856,9 @@ const drawTournamentMatchItem = (item: TournamentMatchItem, y: number) =>
     rect(902, y, 288, tournamentLayout.matchHeight, {
       fill: item.result === '대기' ? '#f6f8f7' : '#e7f2ef',
     }),
-    text(truncateText(item.order, 7), 66, y + 28, {
+    text(truncateText(item.order, 13), 58, y + 28, {
       color: '#65716e',
-      size: 14,
+      size: 10,
       weight: 900,
     }),
     text(truncateText(item.court, 7), 66, y + 57, {
@@ -940,6 +957,19 @@ const renderTournamentPageSvg = (
     tournamentWinnerTeamId(match, options.results[match.id]),
   ).length
   const title = options.title?.trim() || 'A.M.A Match Maker Pro'
+  const scheduledRounds = options.schedule.matches.reduce(
+    (maximum, match) => match.isBye ? maximum : Math.max(maximum, match.round),
+    0,
+  )
+  const bookingRounds = getBookingRoundCount(
+    options.settings.startTime,
+    options.settings.endTime,
+  )
+  const overtimeMinutes = Math.max(0, scheduledRounds - bookingRounds) * GAME_SLOT_MINUTES
+  const estimatedEndTime = clockTimeAtOffset(
+    options.settings.startTime,
+    scheduledRounds * GAME_SLOT_MINUTES,
+  )
   const body: string[] = [
     rect(0, 0, A4_IMAGE_WIDTH, A4_IMAGE_HEIGHT, { fill: '#ffffff' }),
     text(truncateText(`${title} · 경쟁 대진표`, 48), 50, 38, {
@@ -947,7 +977,7 @@ const renderTournamentPageSvg = (
       weight: 900,
     }),
     text(
-      `${tournamentFormatPrintLabels[options.settings.format]} · ${activeTeams.length}팀 · ${options.settings.courtCount}코트 · 완료 ${completedMatches}/${options.schedule.matches.length}경기 · ${pageIndex + 1}/${pageCount}쪽`,
+      `${tournamentFormatPrintLabels[options.settings.format]} · ${activeTeams.length}팀 · ${options.settings.courtCount}코트 · 예약 ${options.settings.startTime}–${options.settings.endTime}(${formatDuration(getBookingDurationMinutes(options.settings.startTime, options.settings.endTime))}) · 예상 ${estimatedEndTime}${overtimeMinutes > 0 ? `(${formatDuration(overtimeMinutes)} 초과)` : ''} · 완료 ${completedMatches}/${options.schedule.matches.length} · ${pageIndex + 1}/${pageCount}쪽`,
       50,
       61,
       { color: '#65716e', size: 11, weight: 800 },
@@ -965,7 +995,11 @@ const renderTournamentPageSvg = (
 }
 
 export const createSchedulePrintImages = (options: PrintScheduleOptions) => {
-  const items = makePrintableScheduleItems(options.schedule, options.names)
+  const items = makePrintableScheduleItems(
+    options.schedule,
+    options.names,
+    options.settings.startTime,
+  )
   const pages = paginatePrintableScheduleItems(items)
 
   return pages.map((page, index) =>

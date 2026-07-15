@@ -42,4 +42,15 @@ describe('parseBulkPlayerDrafts', () => {
       ageGroup: '40대',
     })
   })
+
+  it('recognizes E as a regular level', () => {
+    const [player] = parseBulkPlayerDrafts('이하늘 E 여 55대이상')
+
+    expect(player).toMatchObject({
+      name: '이하늘',
+      level: 'E',
+      gender: 'female',
+      ageGroup: '55대이상',
+    })
+  })
 })

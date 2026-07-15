@@ -6,6 +6,78 @@
     var(--paper);
 }
 
+.generation-overlay {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(7, 28, 50, 0.66);
+  backdrop-filter: blur(10px);
+}
+
+.generation-card {
+  display: grid;
+  width: min(440px, 100%);
+  justify-items: center;
+  gap: 14px;
+  padding: 32px 28px;
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 24px 70px rgba(5, 22, 41, 0.28);
+  text-align: center;
+}
+
+.generation-card img {
+  width: 148px;
+  max-width: 48vw;
+  height: auto;
+}
+
+.generation-card strong {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.generation-card p {
+  margin: 0;
+  color: var(--navy);
+  font-size: clamp(20px, 5.2vw, 24px);
+  font-weight: 900;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+.generation-spinner {
+  width: 34px;
+  height: 34px;
+  border: 4px solid rgba(14, 52, 87, 0.14);
+  border-top-color: var(--mint);
+  border-radius: 50%;
+  animation: generation-spin 0.8s linear infinite;
+}
+
+.draft-status {
+  color: #7a4b00;
+  background: #fff2cd;
+}
+
+@keyframes generation-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .generation-spinner {
+    animation-duration: 1.8s;
+  }
+}
+
 .app-header {
   position: sticky;
   top: 0;
@@ -378,6 +450,36 @@ h2 {
   margin-top: 12px;
 }
 
+.common-tier-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--soft-green);
+}
+
+.common-tier-control span {
+  display: grid;
+  gap: 2px;
+}
+
+.common-tier-control small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.common-tier-control input {
+  width: 64px;
+  min-height: 36px;
+  text-align: center;
+  font-weight: 900;
+}
+
 .contact-copy-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 38px;
@@ -416,6 +518,42 @@ h2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.booking-time-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  grid-column: 1 / -1;
+  align-items: end;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.booking-time-controls label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.booking-time-controls input {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 5px 7px;
+  font-weight: 900;
+}
+
+.booking-time-controls > span {
+  align-self: center;
+  white-space: nowrap;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 900;
 }
 
 .settings-checkbox {
@@ -513,6 +651,50 @@ h2 {
   padding: 4px 6px;
 }
 
+.special-allocation-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  padding: 0 9px;
+}
+
+.special-allocation-options label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.special-allocation-options input {
+  width: 16px;
+  min-height: 16px;
+  margin: 0;
+  accent-color: var(--mint);
+}
+
+.special-allocation-options select {
+  min-width: 62px;
+  min-height: 30px;
+  margin-left: auto;
+  padding: 4px 6px;
+}
+
+.special-allocation-summary {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-align: right;
+}
+
 .match-condition-panel {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -582,7 +764,23 @@ h2 {
 }
 
 .tournament-settings-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-top: 10px;
+}
+
+.tournament-booking-time {
+  display: contents;
+}
+
+.tournament-booking-time label {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.tournament-booking-time > span {
+  display: none;
 }
 
 .slot-editor {
@@ -2603,6 +2801,33 @@ textarea {
     min-width: 50px;
     min-height: 28px;
     padding: 3px;
+    font-size: 10px;
+  }
+
+  .special-allocation-options {
+    gap: 5px;
+    padding: 0 6px;
+  }
+
+  .special-allocation-options label {
+    gap: 4px;
+    padding: 6px;
+    font-size: 10px;
+  }
+
+  .special-allocation-options input {
+    width: 13px;
+    min-height: 13px;
+  }
+
+  .special-allocation-options select {
+    min-width: 48px;
+    min-height: 28px;
+    padding: 3px;
+    font-size: 10px;
+  }
+
+  .special-allocation-summary {
     font-size: 10px;
   }
 

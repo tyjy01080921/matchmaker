@@ -28,6 +28,7 @@ import type {
   TournamentTeamBattleTie,
 } from './types'
 import { defaultLevelTiers, defaultMatchConditionOptions } from './defaultData'
+import { getBookingRoundCount } from './scheduleTime'
 
 type HistoryState = {
   games: Record<string, number>
@@ -65,11 +66,11 @@ type RoundPacing = {
 const DEFAULT_TARGET_ROUND_COUNT = 8
 const GUEST_REPEAT_PARTNER_PENALTY = 50000
 const SPECIAL_TIMING_WEIGHT = 110
-const SPECIAL_TIMING_LARGE_ROSTER_MULTIPLIER = 100000
 const FAIR_GAME_MAX_WEIGHT = 10000000
 const FAIR_GAME_TOTAL_WEIGHT = 100000
-const SPECIAL_LIMIT_LEVEL_WEIGHT = 100000000
 const GAME_SLOT_MINUTES = 15
+
+type SpecialAllocationSegment = 'low' | 'random' | 'high'
 
 const matchConditions = (settings: MatchSettings): MatchConditionOptions => ({
   ...defaultMatchConditionOptions,
@@ -127,6 +128,102 @@ const specialLimitGameTarget = (settings: MatchSettings) => {
   return limits.length > 0 ? Math.min(...limits) : Number.POSITIVE_INFINITY
 }
 
+const specialPlannedGameTarget = (
+  guest: Player,
+  activePlayers: Player[],
+  settings: MatchSettings,
+) => {
+  if (settings.specialLimitEnabled) {
+    const limitedTarget = specialLimitGameTarget(settings)
+    return Number.isFinite(limitedTarget)
+      ? limitedTarget
+      : getBookingRoundCount(settings.startTime, settings.endTime)
+  }
+
+  const eligibleCount = activePlayers.filter(
+    (player) =>
+      !player.isGuest &&
+      (player.specialMatchEligible ?? true),
+  ).length
+  const guestCount = Math.max(
+    1,
+    activePlayers.filter((player) => player.isGuest).length,
+  )
+  const coverageTarget = Math.max(1, Math.ceil(eligibleCount / 3 / guestCount))
+  const configuredTarget = Math.max(0, Math.floor(guest.guestGameLimit || 0))
+  return Math.max(coverageTarget, configuredTarget)
+}
+
+const specialAllocationCounts = (
+  targetGames: number,
+  settings: MatchSettings,
+) => {
+  const target = Math.max(1, Math.floor(targetGames))
+  const lowPercent = settings.specialLowPriorityEnabled
+    ? settings.specialLowPriorityPercent
+    : 0
+  const highPercent = settings.specialHighPriorityEnabled
+    ? Math.min(settings.specialHighPriorityPercent, 100 - lowPercent)
+    : 0
+  const randomPercent = Math.max(0, 100 - lowPercent - highPercent)
+  const shares = [
+    { key: 'low' as const, exact: target * lowPercent / 100 },
+    { key: 'random' as const, exact: target * randomPercent / 100 },
+    { key: 'high' as const, exact: target * highPercent / 100 },
+  ]
+  const counts = Object.fromEntries(
+    shares.map(({ key, exact }) => [key, Math.floor(exact)]),
+  ) as Record<SpecialAllocationSegment, number>
+  let remaining = target - Object.values(counts).reduce((sum, count) => sum + count, 0)
+
+  for (const share of [...shares].sort((left, right) => {
+    const remainderDiff =
+      (right.exact - Math.floor(right.exact)) -
+      (left.exact - Math.floor(left.exact))
+    if (remainderDiff !== 0) return remainderDiff
+    return ['low', 'random', 'high'].indexOf(left.key) -
+      ['low', 'random', 'high'].indexOf(right.key)
+  })) {
+    if (remaining <= 0) break
+    counts[share.key] += 1
+    remaining -= 1
+  }
+
+  const enabledShares = shares.filter((share) => share.exact > 0)
+  if (target >= enabledShares.length) {
+    for (const share of enabledShares) {
+      if (counts[share.key] > 0) continue
+      const donor = [...enabledShares]
+        .filter((candidate) => counts[candidate.key] > 1)
+        .sort(
+          (left, right) =>
+            counts[right.key] - counts[left.key] || right.exact - left.exact,
+        )[0]
+      if (!donor) continue
+      counts[donor.key] -= 1
+      counts[share.key] += 1
+    }
+  }
+
+  return counts
+}
+
+const specialAllocationSegment = (
+  guest: Player,
+  activePlayers: Player[],
+  history: HistoryState,
+  settings: MatchSettings,
+): SpecialAllocationSegment => {
+  const counts = specialAllocationCounts(
+    specialPlannedGameTarget(guest, activePlayers, settings),
+    settings,
+  )
+  const gameIndex = history.guestGameCounts[guest.id] ?? 0
+  if (gameIndex < counts.low) return 'low'
+  if (gameIndex < counts.low + counts.random) return 'random'
+  return 'high'
+}
+
 const guestWithinSpecialLimit = (
   guest: Player,
   history: HistoryState,
@@ -147,32 +244,6 @@ const guestWithinSpecialLimit = (
     return false
   }
   return true
-}
-
-const limitedSpecialLevelPenalty = (
-  regulars: Player[],
-  guests: Player[],
-  history: HistoryState,
-  settings: MatchSettings,
-) => {
-  if (!settings.specialLimitEnabled || guests.length === 0) return 0
-  const targetGames = specialLimitGameTarget(settings)
-  if (!Number.isFinite(targetGames)) return 0
-  const earlyGameCount = Math.ceil(targetGames * 0.3)
-  const tierSum = regulars.reduce(
-    (sum, player) => sum + getPlayerMatchTier(player, settings.levelTiers),
-    0,
-  )
-  const earlyGuestCount = guests.filter(
-    (guest) => (history.guestGameCounts[guest.id] ?? 0) < earlyGameCount,
-  ).length
-  const highGuestCount = guests.length - earlyGuestCount
-  const maximumTierSum = regulars.length * 20
-
-  return (
-    earlyGuestCount * (maximumTierSum - tierSum) * SPECIAL_LIMIT_LEVEL_WEIGHT +
-    highGuestCount * tierSum * SPECIAL_LIMIT_LEVEL_WEIGHT
-  )
 }
 
 const specialGameCount = (player: Player, history: HistoryState) =>
@@ -207,6 +278,7 @@ export const getPlayerMatchScore = (player: Player) => {
 
 const tournamentParticipantAsPlayer = (
   participant: TournamentParticipant,
+  levelTiers: LevelTierTable = defaultLevelTiers,
 ): Player => ({
   id: participant.id,
   name: participant.name,
@@ -215,6 +287,16 @@ const tournamentParticipantAsPlayer = (
   gender: participant.gender,
   active: true,
   specialRequired: false,
+  matchLevelTier: getPlayerMatchTier(
+    {
+      ...participant,
+      active: true,
+      specialRequired: false,
+      isGuest: false,
+      guestGameLimit: 0,
+    },
+    levelTiers,
+  ),
   isGuest: false,
   guestGameLimit: 0,
 })
@@ -280,7 +362,8 @@ const levelSortValue: Record<Level, number> = {
   B: 3,
   C: 4,
   D: 5,
-  O: 6,
+  E: 6,
+  O: 7,
 }
 
 const representativeTournamentLevel = (members: Player[]): Level => {
@@ -312,6 +395,7 @@ const representativeTournamentGender = (members: Player[]): Gender => {
 export const generateBalancedTournamentTeams = (
   players: Player[],
   requestedTeamCount: number,
+  levelTiers: LevelTierTable = defaultLevelTiers,
 ) => {
   const warnings: string[] = []
   const activePlayers = players
@@ -322,6 +406,7 @@ export const generateBalancedTournamentTeams = (
       isGuest: false,
       level: player.level === '스페셜' ? 'OA' : player.level,
       gender: player.isGuest ? 'none' : player.gender,
+      matchLevelTier: getPlayerMatchTier(player, levelTiers),
     }))
 
   if (activePlayers.length === 0) {
@@ -505,6 +590,14 @@ const playerScoreSpread = (players: Player[]) => {
   return Math.max(...scores) - Math.min(...scores)
 }
 
+const playerAgeSpread = (players: Player[]) => {
+  const ages = players
+    .filter((player) => player.ageGroup !== '무관')
+    .map(ageValue)
+  if (ages.length <= 1) return 0
+  return Math.max(...ages) - Math.min(...ages)
+}
+
 const averageMatchScore = (players: Player[]) => {
   const scores = players
     .filter((player) => !isOpenLevel(player))
@@ -539,8 +632,8 @@ const genderCounts = (players: Player[]) => ({
   women: players.filter((player) => !player.isGuest && player.gender === 'female').length,
 })
 
-const isMixedRegularTeam = (team: Team) => {
-  const counts = genderCounts(team)
+const isMixedRegularTeam = (players: Player[]) => {
+  const counts = genderCounts(players)
   return counts.men > 0 && counts.women > 0
 }
 
@@ -593,6 +686,34 @@ const lateBalanceMultiplier = (pacing: RoundPacing) =>
 
 const pairingTeamLevelGap = (pairing: Pick<Pairing, 'teamA' | 'teamB'>) =>
   Math.abs(teamLevel(pairing.teamA) - teamLevel(pairing.teamB))
+
+const isProtectedLowLevel = (player: Player) =>
+  !player.isGuest && (player.level === 'D' || player.level === 'E')
+
+const pairingLowLevelSupportPenalty = (
+  pairing: Pick<Pairing, 'teamA' | 'teamB'>,
+) => {
+  const regulars = [...pairing.teamA, ...pairing.teamB].filter(
+    (player) => !player.isGuest,
+  )
+
+  return [pairing.teamA, pairing.teamB].reduce((total, team) => {
+    const [left, right] = team
+    return total + [
+      [left, right],
+      [right, left],
+    ].reduce((teamPenalty, [player, partner]) => {
+      if (!isProtectedLowLevel(player)) return teamPenalty
+      const playerScore = getPlayerMatchScore(player)
+      const hasStrongerOption = regulars.some(
+        (candidate) => getPlayerMatchScore(candidate) > playerScore,
+      )
+      const hasStrongerPartner =
+        !partner.isGuest && getPlayerMatchScore(partner) > playerScore
+      return teamPenalty + (hasStrongerOption && !hasStrongerPartner ? 1 : 0)
+    }, 0)
+  }, 0)
+}
 
 const specialTargetAverageScore = (pacing: RoundPacing) => {
   if (pacing.roundNumber >= Math.max(1, pacing.targetRoundCount - 1)) return 46
@@ -733,7 +854,70 @@ const bestPairing = (
       teamB,
       score: scorePairing(teamA, teamB, history, random, conditions, pacing),
     }))
-    .sort((a, b) => a.score - b.score)[0]
+    .sort((a, b) => {
+      if (conditions.levelBalance) {
+        const lowLevelSupportGap =
+          pairingLowLevelSupportPenalty(a) - pairingLowLevelSupportPenalty(b)
+        if (lowLevelSupportGap !== 0) return lowLevelSupportGap
+
+        const balanceGap = pairingTeamLevelGap(a) - pairingTeamLevelGap(b)
+        if (balanceGap !== 0) return balanceGap
+      }
+
+      return a.score - b.score
+    })[0]
+}
+
+const bestSingleGuestPairing = (
+  players: [Player, Player, Player, Player],
+  history: HistoryState,
+  random: () => number,
+  conditions: MatchConditionOptions,
+): Pairing | null => {
+  const guest = players.find((player) => player.isGuest)
+  const regulars = players.filter((player) => !player.isGuest)
+  if (!guest || regulars.length !== 3) return null
+
+  const partner = regulars
+    .map((player) => ({
+      player,
+      opponentGenderPenalty:
+        conditions.genderBalance &&
+        isMixedRegularTeam(
+          regulars.filter((opponent) => opponent.id !== player.id),
+        )
+          ? 1
+          : 0,
+      playerScore: getPlayerMatchScore(player),
+      score:
+        (conditions.guestPartnerRepeat
+          ? (history.partners[pairKey(guest.id, player.id)] ?? 0) *
+            GUEST_REPEAT_PARTNER_PENALTY
+          : 0) +
+        (conditions.partnerRepeat
+          ? regulars.reduce(
+              (sum, other) =>
+                sum + (history.partners[pairKey(player.id, other.id)] ?? 0),
+              0,
+            )
+          : 0) +
+        random(),
+    }))
+    .sort((left, right) => {
+      const comparisons = [
+        left.opponentGenderPenalty - right.opponentGenderPenalty,
+        left.playerScore - right.playerScore,
+        left.score - right.score,
+      ]
+      return comparisons.find((difference) => difference !== 0) ?? 0
+    })[0].player
+  const opponents = regulars.filter((player) => player.id !== partner.id)
+
+  return {
+    teamA: [guest, partner],
+    teamB: [opponents[0], opponents[1]],
+    score: 0,
+  }
 }
 
 const createMatch = (
@@ -746,7 +930,10 @@ const createMatch = (
   pacing: RoundPacing,
   isSpecial: boolean,
 ): Match => {
-  const pairing = bestPairing(players, history, random, conditions, pacing)
+  const pairing = isSpecial
+    ? bestSingleGuestPairing(players, history, random, conditions) ??
+      bestPairing(players, history, random, conditions, pacing)
+    : bestPairing(players, history, random, conditions, pacing)
   return {
     id: `r${round}-c${court}-${players.map((player) => player.id).join('-')}`,
     round,
@@ -846,7 +1033,6 @@ const playerPriority = (
   (conditions.restBalance ? (history.restStreaks[player.id] ?? 0) * 18 : 0) -
   (conditions.restBalance ? (history.rests[player.id] ?? 0) * 4 : 0) +
   (conditions.restBalance ? consecutivePlayPenalty(player, history) : 0) +
-  (conditions.levelBalance ? getPlayerMatchScore(player) * 0.015 : 0) +
   random()
 
 const uniquePlayers = (players: Player[]) =>
@@ -873,60 +1059,99 @@ const isValidGuestGroup = (
   return true
 }
 
+type SpecialRegularScore = {
+  genderPenalty: number
+  levelSpread: number
+  ageSpread: number
+  levelDirection: number
+  pendingPenalty: number
+  maximumSpecialGames: number
+  totalSpecialGames: number
+  maximumGames: number
+  totalGames: number
+  restPenalty: number
+  guestPartnerPenalty: number
+  randomValue: number
+}
+
 const scoreSpecialRegulars = (
   guest: Player,
   regulars: [Player, Player, Player],
   pendingIds: Set<string>,
-  hasPending: boolean,
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
-  pacing: RoundPacing,
-  settings: MatchSettings,
-  preferTimedLevel: boolean,
-) => {
-  const targetLevel = matchLevelValue(guest)
+  segment: SpecialAllocationSegment,
+): SpecialRegularScore => {
   const pendingCount = regulars.filter((player) => pendingIds.has(player.id)).length
-  const levelWeight = hasPending ? 48 : 8
-  const levelPenalty = conditions.levelBalance
-    ? regulars.reduce(
-        (sum, player) => sum + scoreDistanceToTarget(player, targetLevel) * levelWeight,
-        0,
-      )
-    : 0
-  const levelSpread = playerScoreSpread(regulars)
   const specialCounts = regulars.map((player) => specialGameCount(player, history))
-  const historyPenalty = regulars.reduce(
-    (sum, player) =>
-      sum -
-      (conditions.restBalance ? (history.restStreaks[player.id] ?? 0) * 9 : 0) -
-      (conditions.restBalance ? (history.rests[player.id] ?? 0) * 3 : 0),
+  const gameCounts = regulars.map((player) => history.games[player.id] ?? 0)
+  const regularScoreSum = regulars.reduce(
+    (sum, player) => sum + getPlayerMatchScore(player),
     0,
   )
-  const pendingPenalty =
-    conditions.specialPriority && hasPending ? (3 - pendingCount) * 90 : 0
-  const repeatGuestPenalty = conditions.specialPriority
-    ? hasPending
-      ? specialCounts.reduce((sum, count) => sum + count, 0) * 4
-      : specialCounts.reduce((sum, count) => sum + count, 0) * 900 +
-        Math.max(...specialCounts) * 360
-    : 0
-
-  return (
-    levelPenalty +
-    (conditions.levelBalance ? levelSpread * (hasPending ? 45 : 8) : 0) +
-    (conditions.femaleLevelFit ? mixedGenderLevelPenalty(regulars) * 4 : 0) +
-    (conditions.genderBalance ? groupGenderMixPenalty(regulars) : 0) +
-    historyPenalty +
-    fairGamePenalty(regulars, history, conditions) +
-    limitedSpecialLevelPenalty(regulars, [guest], history, settings) +
-    pendingPenalty +
-    repeatGuestPenalty +
-    specialTimingPenalty([guest, ...regulars], pacing, conditions) *
-      (preferTimedLevel ? SPECIAL_TIMING_LARGE_ROSTER_MULTIPLIER : 1) +
-    groupConsecutivePlayPenalty(regulars, history, conditions) +
-    random()
+  const weakestScore = Math.min(
+    ...regulars.map((player) => getPlayerMatchScore(player)),
   )
+  const guestPartnerPenalty = Math.min(
+    ...regulars
+      .filter((player) => getPlayerMatchScore(player) === weakestScore)
+      .map((player) => history.partners[pairKey(guest.id, player.id)] ?? 0),
+  )
+
+  return {
+    genderPenalty: conditions.genderBalance
+      ? Math.min(...Object.values(genderCounts(regulars)))
+      : 0,
+    levelSpread: conditions.levelBalance ? playerScoreSpread(regulars) : 0,
+    ageSpread: conditions.ageBalance ? playerAgeSpread(regulars) : 0,
+    levelDirection:
+      segment === 'low'
+        ? regularScoreSum
+        : segment === 'high'
+          ? -regularScoreSum
+          : 0,
+    pendingPenalty: 3 - pendingCount,
+    maximumSpecialGames: Math.max(...specialCounts),
+    totalSpecialGames: specialCounts.reduce((sum, count) => sum + count, 0),
+    maximumGames: conditions.fairGames ? Math.max(...gameCounts) : 0,
+    totalGames: conditions.fairGames
+      ? gameCounts.reduce((sum, count) => sum + count, 0)
+      : 0,
+    restPenalty: regulars.reduce(
+      (sum, player) =>
+        sum -
+        (conditions.restBalance
+          ? (history.restStreaks[player.id] ?? 0) * 9
+          : 0) -
+        (conditions.restBalance ? (history.rests[player.id] ?? 0) * 3 : 0),
+      0,
+    ),
+    guestPartnerPenalty,
+    randomValue: random(),
+  }
+}
+
+const compareSpecialRegularScores = (
+  left: SpecialRegularScore,
+  right: SpecialRegularScore,
+  segment: SpecialAllocationSegment,
+) => {
+  const commonComparisons = [
+    left.genderPenalty - right.genderPenalty,
+    left.levelSpread - right.levelSpread,
+    left.ageSpread - right.ageSpread,
+    segment === 'random' ? 0 : left.levelDirection - right.levelDirection,
+    left.maximumSpecialGames - right.maximumSpecialGames,
+    left.totalSpecialGames - right.totalSpecialGames,
+    left.pendingPenalty - right.pendingPenalty,
+    left.maximumGames - right.maximumGames,
+    left.totalGames - right.totalGames,
+    left.guestPartnerPenalty - right.guestPartnerPenalty,
+    left.restPenalty - right.restPenalty,
+    left.randomValue - right.randomValue,
+  ]
+  return commonComparisons.find((difference) => difference !== 0) ?? 0
 }
 
 const pickSpecialRegulars = (
@@ -937,7 +1162,6 @@ const pickSpecialRegulars = (
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
-  pacing: RoundPacing,
   settings: MatchSettings,
 ): [Player, Player, Player] | null => {
   const availableRegulars = activePlayers.filter(
@@ -951,49 +1175,46 @@ const pickSpecialRegulars = (
   const pendingIds = new Set(pending.map((player) => player.id))
   const hasPending = pending.length > 0
   const expectedPendingCount = hasPending ? Math.min(3, pendingIds.size) : 0
-  const preferTimedLevel =
-    !settings.specialLimitEnabled && hasPending && availableRegulars.length >= 12
-  const targetLevel = matchLevelValue(guest)
-  const levelFit = [...availableRegulars]
-    .sort((a, b) => {
-      if (conditions.specialPriority && !hasPending) {
-        const specialGameDiff =
-          specialGameCount(a, history) - specialGameCount(b, history)
-        if (specialGameDiff !== 0) return specialGameDiff
+  const requirePending = hasPending
+  const segment = specialAllocationSegment(
+    guest,
+    activePlayers,
+    history,
+    settings,
+  )
+  const rankedRegulars = availableRegulars
+    .map((player) => ({ player, randomValue: random() }))
+    .sort((left, right) => {
+      if (requirePending) {
+        const pendingDiff =
+          Number(pendingIds.has(right.player.id)) -
+          Number(pendingIds.has(left.player.id))
+        if (pendingDiff !== 0) return pendingDiff
       }
-      if (conditions.levelBalance) {
+      if (segment !== 'random') {
         const levelDiff =
-          scoreDistanceToTarget(a, targetLevel) -
-          scoreDistanceToTarget(b, targetLevel)
-        if (levelDiff !== 0) return levelDiff
+          getPlayerMatchScore(left.player) - getPlayerMatchScore(right.player)
+        if (levelDiff !== 0) return segment === 'low' ? levelDiff : -levelDiff
       }
-      return (
-        playerPriority(a, history, random, conditions) -
-        playerPriority(b, history, random, conditions)
-      )
+      const specialGameDiff =
+        specialGameCount(left.player, history) -
+        specialGameCount(right.player, history)
+      if (specialGameDiff !== 0) return specialGameDiff
+      const gameDiff =
+        (history.games[left.player.id] ?? 0) -
+        (history.games[right.player.id] ?? 0)
+      if (gameDiff !== 0) return gameDiff
+      return left.randomValue - right.randomValue
     })
-    .slice(0, 18)
-  const preferredMenForWomen = conditions.femaleLevelFit
-    ? pending
-        .filter((player) => player.gender === 'female')
-        .flatMap((woman) =>
-          availableRegulars
-            .filter((player) => player.gender === 'male')
-            .sort(
-              (a, b) =>
-                femaleMaleLevelPenalty(woman, a) - femaleMaleLevelPenalty(woman, b),
-            )
-            .slice(0, 6),
-        )
-    : []
+    .map(({ player }) => player)
   const candidatePool = uniquePlayers([
-    ...pending.slice(0, 18),
-    ...preferredMenForWomen,
-    ...levelFit,
-  ]).slice(0, 26)
+    ...rankedRegulars.filter((player) => player.gender === 'male').slice(0, 10),
+    ...rankedRegulars.filter((player) => player.gender === 'female').slice(0, 10),
+    ...rankedRegulars.filter((player) => player.gender === 'none').slice(0, 4),
+  ])
 
   let bestGroup: [Player, Player, Player] | null = null
-  let bestScore = Number.POSITIVE_INFINITY
+  let bestScore: SpecialRegularScore | null = null
 
   for (let a = 0; a < candidatePool.length - 2; a += 1) {
     for (let b = a + 1; b < candidatePool.length - 1; b += 1) {
@@ -1004,7 +1225,7 @@ const pickSpecialRegulars = (
           candidatePool[c],
         ]
         if (
-          hasPending &&
+          requirePending &&
           regulars.filter((player) => pendingIds.has(player.id)).length <
             expectedPendingCount
         ) {
@@ -1015,15 +1236,15 @@ const pickSpecialRegulars = (
           guest,
           regulars,
           pendingIds,
-          hasPending,
           history,
           random,
           conditions,
-          pacing,
-          settings,
-          preferTimedLevel,
+          segment,
         )
-        if (score < bestScore) {
+        if (
+          bestScore === null ||
+          compareSpecialRegularScores(score, bestScore, segment) < 0
+        ) {
           bestScore = score
           bestGroup = regulars
         }
@@ -1092,7 +1313,6 @@ const pickSingleGuestSpecialGroup = (
       history,
       random,
       conditions,
-      pacing,
       settings,
     )
     if (selectedPlayers) return [guest, ...selectedPlayers]
@@ -1109,7 +1329,6 @@ const scoreAdaptiveSpecialGroup = (
   random: () => number,
   conditions: MatchConditionOptions,
   pacing: RoundPacing,
-  settings: MatchSettings,
 ) => {
   const pairing = bestPairing(group, history, random, conditions, pacing)
   const guests = group.filter((player) => player.isGuest)
@@ -1158,7 +1377,6 @@ const scoreAdaptiveSpecialGroup = (
     (conditions.genderBalance ? groupGenderMixPenalty(regulars) : 0) +
     historyPenalty +
     fairGamePenalty(group, history, conditions) +
-    limitedSpecialLevelPenalty(regulars, guests, history, settings) +
     pendingPriorityPenalty -
     (conditions.specialPriority ? firstGuestCount * 40 : 0) +
     repeatGuestPenalty +
@@ -1305,7 +1523,6 @@ const pickAdaptiveSpecialGroup = (
             random,
             conditions,
             pacing,
-            settings,
           )
           if (score < bestScore) {
             bestScore = score
@@ -1364,20 +1581,19 @@ const scoreGroup = (
   const pairing = bestPairing(group, history, random, conditions, pacing)
   const restStreaks = group.map((player) => history.restStreaks[player.id] ?? 0)
   const levelSpread = playerScoreSpread(group)
+  const ageSpread = playerAgeSpread(group)
   const guestCount = group.filter((player) => player.isGuest).length
   const balanceMultiplier = lateBalanceMultiplier(pacing)
 
   return (
     pairing.score +
     fairGamePenalty(group, history, conditions) +
-    (conditions.levelBalance ? levelSpread * 150 * balanceMultiplier : 0) -
-    (conditions.levelBalance
-      ? pairingTeamLevelGap(pairing) * 64 * roundProgress(pacing) ** 2
-      : 0) +
+    (conditions.levelBalance ? levelSpread * 500 * balanceMultiplier : 0) +
+    (conditions.ageBalance ? ageSpread * 900 : 0) +
     (conditions.restBalance
       ? restStreaks.reduce((sum, streak) => sum + streak, 0) * 8
       : 0) +
-    (conditions.genderBalance ? groupGenderMixPenalty(group) : 0) +
+    (conditions.genderBalance ? groupGenderMixPenalty(group) * 120 : 0) +
     groupConsecutivePlayPenalty(group, history, conditions) +
     Math.max(0, guestCount - 1) * 50 +
     random()
@@ -1393,32 +1609,97 @@ const pickGeneralGroup = (
   conditions: MatchConditionOptions,
   pacing: RoundPacing,
 ): [Player, Player, Player, Player] | null => {
-  const candidates = activePlayers
+  const availablePlayers = activePlayers
     .filter((player) => {
       if (usedIds.has(player.id)) return false
       return !player.isGuest
     })
-    .sort(
-      (a, b) =>
-        playerPriority(a, history, random, conditions) -
-        playerPriority(b, history, random, conditions),
-    )
-    .slice(0, 18)
+    .map((player) => ({
+      player,
+      priority: playerPriority(player, history, random, conditions),
+    }))
+    .sort((left, right) => left.priority - right.priority)
+    .map(({ player }) => player)
 
-  if (candidates.length < 4) return null
+  if (availablePlayers.length < 4) return null
+
+  const minimumGameCount = Math.min(
+    ...availablePlayers.map((player) => history.games[player.id] ?? 0),
+  )
+  const fairAnchorPool = conditions.fairGames
+    ? availablePlayers.filter(
+        (player) => (history.games[player.id] ?? 0) === minimumGameCount,
+      )
+    : availablePlayers
+  const cohortMap = new Map<string, Player[]>()
+  for (const player of fairAnchorPool) {
+    const cohortKey = [
+      conditions.genderBalance ? player.gender : '*',
+      conditions.levelBalance ? getPlayerMatchScore(player) : '*',
+      conditions.ageBalance ? player.ageGroup : '*',
+    ].join(':')
+    cohortMap.set(cohortKey, [...(cohortMap.get(cohortKey) ?? []), player])
+  }
+  const cohesiveAnchors = [...cohortMap.values()]
+    .sort((left, right) => right.length - left.length)
+    .map((cohort) => cohort[0])
+    .slice(0, 2)
+  const anchorCandidates = uniquePlayers([
+    availablePlayers[0],
+    ...cohesiveAnchors,
+  ])
 
   let bestGroup: [Player, Player, Player, Player] | null = null
   let bestScore = Number.POSITIVE_INFINITY
 
-  for (let a = 0; a < candidates.length - 3; a += 1) {
-    for (let b = a + 1; b < candidates.length - 2; b += 1) {
-      for (let c = b + 1; c < candidates.length - 1; c += 1) {
-        for (let d = c + 1; d < candidates.length; d += 1) {
+  for (const anchor of anchorCandidates) {
+    const companionCandidates = availablePlayers
+      .filter((player) => player.id !== anchor.id)
+      .map((player) => ({
+        player,
+        priority: playerPriority(player, history, random, conditions),
+        randomValue: random(),
+      }))
+      .sort((left, right) => {
+        if (conditions.fairGames) {
+          const gameDiff =
+            (history.games[left.player.id] ?? 0) -
+            (history.games[right.player.id] ?? 0)
+          if (gameDiff !== 0) return gameDiff
+        }
+        if (conditions.genderBalance && anchor.gender !== 'none') {
+          const genderDiff =
+            Number(left.player.gender !== anchor.gender) -
+            Number(right.player.gender !== anchor.gender)
+          if (genderDiff !== 0) return genderDiff
+        }
+        if (conditions.levelBalance) {
+          const levelDiff =
+            scoreDistanceBetweenPlayers(anchor, left.player) -
+            scoreDistanceBetweenPlayers(anchor, right.player)
+          if (levelDiff !== 0) return levelDiff
+        }
+        if (conditions.ageBalance && anchor.ageGroup !== '무관') {
+          const ageDiff =
+            Math.abs(ageValue(anchor) - ageValue(left.player)) -
+            Math.abs(ageValue(anchor) - ageValue(right.player))
+          if (ageDiff !== 0) return ageDiff
+        }
+        const priorityDiff = left.priority - right.priority
+        if (priorityDiff !== 0) return priorityDiff
+        return left.randomValue - right.randomValue
+      })
+      .slice(0, 9)
+      .map(({ player }) => player)
+
+    for (let a = 0; a < companionCandidates.length - 2; a += 1) {
+      for (let b = a + 1; b < companionCandidates.length - 1; b += 1) {
+        for (let c = b + 1; c < companionCandidates.length; c += 1) {
           const group: [Player, Player, Player, Player] = [
-            candidates[a],
-            candidates[b],
-            candidates[c],
-            candidates[d],
+            anchor,
+            companionCandidates[a],
+            companionCandidates[b],
+            companionCandidates[c],
           ]
           if (!isValidGuestGroup(group, settings.singleGuestPerMatch)) continue
 
@@ -1518,18 +1799,6 @@ type TournamentPairCandidate = {
   rotationScore: number
 }
 
-const tournamentPlayersByTeam = (participants: TournamentParticipantWithTeam[]) => {
-  const playersByTeam = new Map<string, Player[]>()
-
-  for (const participant of participants) {
-    const players = playersByTeam.get(participant.teamId) ?? []
-    players.push(tournamentParticipantAsPlayer(participant))
-    playersByTeam.set(participant.teamId, players)
-  }
-
-  return playersByTeam
-}
-
 const tournamentPairCandidates = (
   teamId: string,
   playersByTeam: Map<string, Player[]>,
@@ -1601,10 +1870,7 @@ const scoreFixedDoublesLineup = (
     ) *
       4 +
     (conditions.fairGames ? Math.max(...gameCounts) * 3 : 0) +
-    (conditions.levelBalance ? levelSpread * 150 * balanceMultiplier : 0) -
-    (conditions.levelBalance
-      ? pairingTeamLevelGap({ teamA, teamB }) * 64 * roundProgress(pacing) ** 2
-      : 0) +
+    (conditions.levelBalance ? levelSpread * 150 * balanceMultiplier : 0) +
     (conditions.restBalance
       ? restStreaks.reduce((sum, streak) => sum + streak, 0) * 8
       : 0) +
@@ -1679,10 +1945,18 @@ const pickFriendlyTournamentLineup = (
 export const generateTournamentLineups = (
   matches: TournamentMatch[],
   teams: TournamentTeam[],
+  levelTiers: LevelTierTable = defaultLevelTiers,
 ): TournamentLineupsByMatch => {
   const participants = tournamentParticipantsFromTeams(teams)
-  const playersByTeam = tournamentPlayersByTeam(participants)
-  const activePlayers = participants.map(tournamentParticipantAsPlayer)
+  const playersByTeam = new Map<string, Player[]>()
+  for (const participant of participants) {
+    const players = playersByTeam.get(participant.teamId) ?? []
+    players.push(tournamentParticipantAsPlayer(participant, levelTiers))
+    playersByTeam.set(participant.teamId, players)
+  }
+  const activePlayers = participants.map((participant) =>
+    tournamentParticipantAsPlayer(participant, levelTiers),
+  )
   const history = makeHistory(activePlayers)
   const random = makeRandom(17)
   const conditions = defaultMatchConditionOptions
@@ -1873,15 +2147,86 @@ const assignTournamentOrder = (
   startOrder = 1,
 ) => {
   const courtCount = normalizeTournamentCourtCount(settings)
-  return matches.map((match, index) => {
-    const order = startOrder + index
-    return {
-      ...match,
-      order,
-      round: Math.ceil(order / courtCount),
-      court: ((order - 1) % courtCount) + 1,
+  const bookingRoundCount = getBookingRoundCount(
+    settings.startTime,
+    settings.endTime,
+  )
+  const firstRound = Math.max(1, Math.ceil(startOrder / courtCount))
+  const matchesByRound = new Map<number, TournamentMatch[]>()
+  const lastRoundByTeam = new Map<string, number>()
+  const lastRoundByBracketStage = new Map<number, number>()
+
+  const teamsForMatch = (match: TournamentMatch) =>
+    [match.teamAId, match.teamBId].filter(
+      (teamId): teamId is string => Boolean(teamId),
+    )
+
+  const canUseRound = (
+    match: TournamentMatch,
+    round: number,
+    requireRest: boolean,
+  ) => {
+    const placed = matchesByRound.get(round) ?? []
+    if (placed.length >= courtCount) return false
+
+    const teams = teamsForMatch(match)
+    const occupiedTeams = new Set(placed.flatMap(teamsForMatch))
+    if (teams.some((teamId) => occupiedTeams.has(teamId))) return false
+    if (
+      requireRest &&
+      teams.some((teamId) => (lastRoundByTeam.get(teamId) ?? -2) >= round - 1)
+    ) {
+      return false
     }
+
+    if ((match.bracketRound ?? 0) > 1) {
+      const previousStageRound = lastRoundByBracketStage.get(
+        (match.bracketRound ?? 1) - 1,
+      )
+      if (previousStageRound !== undefined && round <= previousStageRound) {
+        return false
+      }
+    }
+    return true
+  }
+
+  const scheduledMatches = matches.map((match) => {
+    const findRound = (requireRest: boolean) => {
+      for (let round = firstRound; round <= firstRound + matches.length * 2; round += 1) {
+        if (canUseRound(match, round, requireRest)) return round
+      }
+      return firstRound + matches.length * 2
+    }
+    const preferredRound = findRound(true)
+    const earliestRound = findRound(false)
+    const round = preferredRound <= bookingRoundCount
+      ? preferredRound
+      : earliestRound
+    const placed = matchesByRound.get(round) ?? []
+    const scheduled = {
+      ...match,
+      order: 0,
+      round,
+      court: placed.length + 1,
+    }
+    matchesByRound.set(round, [...placed, scheduled])
+    for (const teamId of teamsForMatch(match)) {
+      lastRoundByTeam.set(teamId, round)
+    }
+    if (match.bracketRound) {
+      lastRoundByBracketStage.set(
+        match.bracketRound,
+        Math.max(lastRoundByBracketStage.get(match.bracketRound) ?? 0, round),
+      )
+    }
+    return scheduled
   })
+
+  return scheduledMatches
+    .sort((left, right) =>
+      left.round - right.round || left.court - right.court,
+    )
+    .map((match, index) => ({ ...match, order: startOrder + index }))
 }
 
 const makeTournamentGroups = (
@@ -2133,9 +2478,9 @@ const makeKnockoutMatches = (
     entries = nextEntries
   }
 
-  const orderedMatches = assignTournamentOrder(matches, settings, startOrder)
-
-  if (!includeThirdPlace || semifinalMatches.length !== 2) return orderedMatches
+  if (!includeThirdPlace || semifinalMatches.length !== 2) {
+    return assignTournamentOrder(matches, settings, startOrder)
+  }
 
   const thirdPlaceEntries = semifinalMatches.map<BracketEntry>((match) => {
     const loserId = tournamentMatchLoserId(match, results[match.id])
@@ -2158,10 +2503,51 @@ const makeKnockoutMatches = (
     bracketRound: Math.max(1, Math.log2(nextPowerOfTwo(teams.length))),
   }
 
-  return [
-    ...orderedMatches,
-    ...assignTournamentOrder([thirdPlaceMatch], settings, startOrder + orderedMatches.length),
-  ]
+  return assignTournamentOrder([...matches, thirdPlaceMatch], settings, startOrder)
+}
+
+const makePlannedKnockoutMatches = (
+  qualifierCount: number,
+  settings: TournamentSettings,
+  prefix: string,
+  startOrder: number,
+) => {
+  if (qualifierCount < 2) return []
+  const placeholders = Array.from({ length: qualifierCount }, (_, index) => ({
+    id: `planned-qualifier-${index + 1}`,
+    name: `${index + 1}번 진출팀`,
+    playerNames: '',
+    level: 'O' as const,
+    gender: 'none' as const,
+    seed: index + 1,
+    active: true,
+  }))
+
+  return makeKnockoutMatches(
+    placeholders,
+    settings,
+    {},
+    prefix,
+    startOrder,
+    settings.includeThirdPlace,
+  ).map((match) => {
+    const plannedSource = (teamId: string | undefined, fallback: string | undefined) => {
+      if (!teamId?.startsWith('planned-qualifier-')) return fallback
+      const number = teamId.replace('planned-qualifier-', '')
+      return `${number}번 진출팀`
+    }
+    return {
+      ...match,
+      sourceA: plannedSource(match.teamAId, match.sourceA),
+      sourceB: plannedSource(match.teamBId, match.sourceB),
+      teamAId: match.teamAId?.startsWith('planned-qualifier-')
+        ? undefined
+        : match.teamAId,
+      teamBId: match.teamBId?.startsWith('planned-qualifier-')
+        ? undefined
+        : match.teamBId,
+    }
+  })
 }
 
 const makeTeamBattleMatches = (
@@ -2388,14 +2774,30 @@ export const generateTournamentSchedule = (
       .map((teamId) => teamsById.get(teamId))
       .filter((team): team is TournamentTeam => Boolean(team))
 
-    const knockoutMatches = makeKnockoutMatches(
-      qualifiedTeams,
-      settings,
-      results,
-      'gk-ko',
-      groupMatches.length + 1,
-      settings.includeThirdPlace,
-    )
+    const knockoutStartOrder =
+      (groupMatches.reduce(
+        (maximum, match) => Math.max(maximum, match.round),
+        0,
+      ) * normalizeTournamentCourtCount(settings)) + 1
+
+    const knockoutMatches = incompleteGroups.length > 0
+      ? makePlannedKnockoutMatches(
+          groups.reduce(
+            (sum, group) => sum + Math.min(advancePerGroup, group.teamIds.length),
+            0,
+          ),
+          settings,
+          'gk-ko',
+          knockoutStartOrder,
+        )
+      : makeKnockoutMatches(
+          qualifiedTeams,
+          settings,
+          results,
+          'gk-ko',
+          knockoutStartOrder,
+          settings.includeThirdPlace,
+        )
 
     return {
       groups,

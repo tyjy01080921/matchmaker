@@ -202,13 +202,13 @@ describe('generateSchedule', () => {
     expect(schedule.warnings).toHaveLength(0)
   })
 
-  it('prioritizes same-level same-gender teams when available', () => {
+  it('balances team strength before keeping same levels together', () => {
     const schedule = generateSchedule(
       [
-        makeTestPlayer('male-a1', 'A', 'male'),
-        makeTestPlayer('male-a2', 'A', 'male'),
-        makeTestPlayer('female-b1', 'B', 'female'),
-        makeTestPlayer('female-b2', 'B', 'female'),
+        makeTestPlayer('a-1', 'A'),
+        makeTestPlayer('a-2', 'A'),
+        makeTestPlayer('e-1', 'E'),
+        makeTestPlayer('e-2', 'E'),
       ],
       {
         ...defaultSettings,
@@ -218,11 +218,88 @@ describe('generateSchedule', () => {
     )
     const match = schedule.rounds[0].matches[0]
 
-    const teamAKeys = match.teamA.map((player) => `${player.gender}-${player.level}`)
-    const teamBKeys = match.teamB.map((player) => `${player.gender}-${player.level}`)
+    expect(matchTeamScoreGap(match)).toBe(0)
+    expect(match.teamA.map((player) => player.level).sort()).toEqual(['A', 'E'])
+    expect(match.teamB.map((player) => player.level).sort()).toEqual(['A', 'E'])
+  })
 
-    expect(new Set(teamAKeys).size).toBe(1)
-    expect(new Set(teamBKeys).size).toBe(1)
+  it('selects a same-gender, same-level, close-age general group when available', () => {
+    const preferred = Array.from({ length: 4 }, (_, index) =>
+      makeTestPlayer(`preferred-${index + 1}`, 'B', 'male', false, false, '30대'),
+    )
+    const alternatives = [
+      makeTestPlayer('alternative-1', 'A', 'female', false, false, '20대'),
+      makeTestPlayer('alternative-2', 'C', 'female', false, false, '40대'),
+      makeTestPlayer('alternative-3', 'D', 'female', false, false, '50대'),
+      makeTestPlayer('alternative-4', 'E', 'female', false, false, '55대이상'),
+    ]
+    const schedule = generateSchedule([...preferred, ...alternatives], {
+      ...defaultSettings,
+      courtCount: 1,
+      targetRoundCount: 1,
+    })
+    const playerIds = [
+      ...schedule.rounds[0].matches[0].teamA,
+      ...schedule.rounds[0].matches[0].teamB,
+    ].map((player) => player.id)
+
+    expect(playerIds.every((playerId) => playerId.startsWith('preferred-'))).toBe(true)
+  })
+
+  it('pairs D and E players with stronger partners when possible', () => {
+    const schedule = generateSchedule(
+      [
+        makeTestPlayer('b-player', 'B'),
+        makeTestPlayer('c-player', 'C'),
+        makeTestPlayer('d-player', 'D'),
+        makeTestPlayer('e-player', 'E'),
+      ],
+      {
+        ...defaultSettings,
+        courtCount: 1,
+        targetRoundCount: 1,
+      },
+    )
+    const match = schedule.rounds[0].matches[0]
+
+    for (const team of [match.teamA, match.teamB]) {
+      const lowPlayer = team.find(
+        (player) => player.level === 'D' || player.level === 'E',
+      )
+      const partner = team.find((player) => player.id !== lowPlayer?.id)
+      expect(lowPlayer).toBeDefined()
+      expect(getPlayerMatchScore(partner!)).toBeGreaterThan(
+        getPlayerMatchScore(lowPlayer!),
+      )
+    }
+  })
+
+  it('does not pair two E-level players together in an imbalanced special match', () => {
+    const schedule = generateSchedule(
+      [
+        makeTestPlayer('guest', '스페셜', 'none', false, true),
+        makeTestPlayer('d-player', 'D', 'female'),
+        makeTestPlayer('e-1', 'E', 'female'),
+        makeTestPlayer('e-2', 'E', 'female'),
+      ],
+      {
+        ...defaultSettings,
+        courtCount: 1,
+        targetRoundCount: 1,
+        pacingRoundCount: 1,
+      },
+    )
+    const match = schedule.rounds[0].matches[0]
+    const ePlayersTogether = [match.teamA, match.teamB].some(
+      (team) => team.every((player) => player.level === 'E'),
+    )
+    const guestTeam = [match.teamA, match.teamB].find((team) =>
+      team.some((player) => player.isGuest),
+    )
+
+    expect(match.isSpecial).toBe(true)
+    expect(ePlayersTogether).toBe(false)
+    expect(guestTeam?.some((player) => player.level === 'E')).toBe(true)
   })
 
   it('keeps a valid schedule when the same-gender condition is unchecked', () => {
@@ -271,6 +348,8 @@ describe('generateSchedule', () => {
     )
     const d20 = makeTestPlayer('d-20', 'D', 'male', false, false, '20대')
     const d55 = makeTestPlayer('d-55', 'D', 'female', false, false, '55대이상')
+    const e20 = makeTestPlayer('e-20', 'E', 'male', false, false, '20대')
+    const e55 = makeTestPlayer('e-55', 'E', 'female', false, false, '55대이상')
     const oa20 = makeTestPlayer('oa-20', 'OA', 'female', false, false, '20대')
     const oa55 = makeTestPlayer('oa-55', 'OA', 'male', false, false, '55대이상')
     const o20 = makeTestPlayer('o-20', 'O', 'female', false, false, '20대')
@@ -284,6 +363,8 @@ describe('generateSchedule', () => {
     expect(getPlayerMatchScore(female20A)).toBeGreaterThan(getPlayerMatchScore(male30C))
     expect(getPlayerMatchScore(d20)).toBeGreaterThan(getPlayerMatchScore(female55C))
     expect(getPlayerMatchScore(d20)).toBeGreaterThan(getPlayerMatchScore(d55))
+    expect(getPlayerMatchScore(e20)).toBe(getPlayerMatchScore(e55))
+    expect(getPlayerMatchScore(d55)).toBeGreaterThan(getPlayerMatchScore(e20))
     expect(getPlayerMatchScore(oa20)).toBe(getPlayerMatchScore(oa55))
     expect(getPlayerMatchScore(o20)).toBe(getPlayerMatchScore(oa20))
   })
@@ -365,7 +446,7 @@ describe('generateSchedule', () => {
     expect(schedule.warnings).toHaveLength(0)
   })
 
-  it('places stronger special matches near the middle and lighter ones at the end', () => {
+  it('keeps special trios same-gender throughout a balanced meeting', () => {
     const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
     const regulars = Array.from({ length: 24 }, (_, index) => {
       const level = index < 8 ? 'A' : index < 16 ? 'B' : index < 20 ? 'C' : 'D'
@@ -386,15 +467,19 @@ describe('generateSchedule', () => {
       singleGuestPerMatch: true,
       targetRoundCount: 8,
     })
-    const specialAverages = schedule.rounds
+    const specialRegularGroups = schedule.rounds
       .flatMap((round) => round.matches)
       .filter((match) => match.isSpecial)
-      .map(matchRegularAverageScore)
-    const middleAverage = average(specialAverages.slice(3, 5))
-    const finalAverage = average(specialAverages.slice(-2))
+      .map((match) =>
+        [...match.teamA, ...match.teamB].filter((player) => !player.isGuest),
+      )
 
-    expect(specialAverages).toHaveLength(8)
-    expect(middleAverage).toBeGreaterThan(finalAverage)
+    expect(specialRegularGroups).toHaveLength(8)
+    expect(
+      specialRegularGroups.every(
+        (regulars) => new Set(regulars.map((player) => player.gender)).size === 1,
+      ),
+    ).toBe(true)
   })
 
   it('tightens general match team gaps toward the final rounds', () => {
@@ -511,7 +596,8 @@ describe('generateSchedule', () => {
     expect(specialMatches.length).toBeGreaterThan(
       Math.ceil(regularStats.length / 3),
     )
-    expect(regularStats.every((stat) => stat.guestGames >= 2)).toBe(true)
+    expect(regularStats.every((stat) => stat.guestGames >= 1)).toBe(true)
+    expect(regularStats.some((stat) => stat.guestGames >= 2)).toBe(true)
   })
 
   it('keeps available courts filled while applying streak penalties', () => {
@@ -529,9 +615,9 @@ describe('generateSchedule', () => {
   it('moves a guest partner to the opposite team when they meet that guest again', () => {
     const players = [
       makeTestPlayer('guest', '스페셜', 'none', false, true),
-      makeTestPlayer('regular-1', 'A', 'male', true),
-      makeTestPlayer('regular-2', 'B', 'female', true),
-      makeTestPlayer('regular-3', 'C', 'male', true),
+      makeTestPlayer('regular-1', 'B', 'male', true),
+      makeTestPlayer('regular-2', 'B', 'male', true),
+      makeTestPlayer('regular-3', 'B', 'male', true),
     ]
     const schedule = generateSchedule(players, {
       ...defaultSettings,
@@ -577,6 +663,7 @@ describe('generateSchedule', () => {
         courtCount: 1,
         seed: 19,
         targetRoundCount: 1,
+        roundCountLocked: false,
       },
     )
     const regularIds = players
@@ -661,15 +748,16 @@ describe('generateSchedule', () => {
     )
   })
 
-  it('prefers regular participants near the special guest level', () => {
+  it('builds a special match from the closest regular levels', () => {
     const schedule = generateSchedule(
       [
         makeTestPlayer('guest', '스페셜', 'none', false, true),
         makeTestPlayer('a1', 'A'),
         makeTestPlayer('a2', 'A'),
-        makeTestPlayer('b1', 'B'),
+        makeTestPlayer('a3', 'A'),
         makeTestPlayer('c1', 'C'),
         makeTestPlayer('d1', 'D'),
+        makeTestPlayer('e1', 'E'),
       ],
       {
         ...defaultSettings,
@@ -683,19 +771,106 @@ describe('generateSchedule', () => {
       .filter((player) => !player.isGuest)
       .map((player) => player.level)
 
-    expect(regularLevels).toEqual(expect.arrayContaining(['A', 'A', 'B']))
-    expect(regularLevels).not.toContain('D')
+    expect(regularLevels).toEqual(['A', 'A', 'A'])
   })
 
-  it('prefers same-gender regulars in the first special match', () => {
+  it('prioritizes a same-gender special trio before the low-level allocation', () => {
     const schedule = generateSchedule(
       [
         makeTestPlayer('guest', '스페셜', 'none', false, true),
-        makeTestPlayer('female-a', 'A', 'female', true),
+        makeTestPlayer('male-d1', 'D'),
+        makeTestPlayer('male-d2', 'D'),
+        makeTestPlayer('male-d3', 'D'),
+        makeTestPlayer('male-e', 'E'),
+        makeTestPlayer('female-e1', 'E', 'female'),
+        makeTestPlayer('female-e2', 'E', 'female'),
+      ],
+      {
+        ...defaultSettings,
+        courtCount: 1,
+        targetRoundCount: 1,
+        pacingRoundCount: 1,
+        specialLimitEnabled: true,
+        specialGameLimitEnabled: true,
+        specialGameLimit: 1,
+        specialTimeLimitEnabled: false,
+        specialLowPriorityEnabled: true,
+        specialLowPriorityPercent: 100,
+        specialHighPriorityEnabled: false,
+        specialHighPriorityPercent: 0,
+      },
+    )
+    const regulars = [
+      ...schedule.rounds[0].matches[0].teamA,
+      ...schedule.rounds[0].matches[0].teamB,
+    ].filter((player) => !player.isGuest)
+
+    expect(regulars.every((player) => player.gender === 'male')).toBe(true)
+    expect(regulars.every((player) => player.level === 'D')).toBe(true)
+  })
+
+  it('uses the smallest age gap after special gender and level match', () => {
+    const schedule = generateSchedule(
+      [
+        makeTestPlayer('guest', '스페셜', 'none', false, true),
+        makeTestPlayer('age-30-1', 'C', 'male', false, false, '30대'),
+        makeTestPlayer('age-30-2', 'C', 'male', false, false, '30대'),
+        makeTestPlayer('age-30-3', 'C', 'male', false, false, '30대'),
+        makeTestPlayer('age-20', 'C', 'male', false, false, '20대'),
+        makeTestPlayer('age-40', 'C', 'male', false, false, '40대'),
+      ],
+      {
+        ...defaultSettings,
+        courtCount: 1,
+        targetRoundCount: 1,
+        pacingRoundCount: 1,
+        specialLimitEnabled: true,
+        specialGameLimitEnabled: true,
+        specialGameLimit: 1,
+        specialTimeLimitEnabled: false,
+      },
+    )
+    const regulars = [
+      ...schedule.rounds[0].matches[0].teamA,
+      ...schedule.rounds[0].matches[0].teamB,
+    ].filter((player) => !player.isGuest)
+
+    expect(regulars.every((player) => player.ageGroup === '30대')).toBe(true)
+  })
+
+  it('keeps the opposing special team same-gender when a mixed trio is unavoidable', () => {
+    const schedule = generateSchedule(
+      [
+        makeTestPlayer('guest', '스페셜', 'none', false, true),
+        makeTestPlayer('female-a', 'A', 'female'),
+        makeTestPlayer('male-d', 'D'),
+        makeTestPlayer('male-e', 'E'),
+      ],
+      {
+        ...defaultSettings,
+        courtCount: 1,
+        targetRoundCount: 1,
+        pacingRoundCount: 1,
+      },
+    )
+    const match = schedule.rounds[0].matches[0]
+    const opposingTeam = [match.teamA, match.teamB].find(
+      (team) => team.every((player) => !player.isGuest),
+    )!
+
+    expect(new Set(opposingTeam.map((player) => player.gender))).toHaveLength(1)
+    expect(opposingTeam.every((player) => player.gender === 'male')).toBe(true)
+  })
+
+  it('uses same-gender before adjusted level similarity for special trios', () => {
+    const schedule = generateSchedule(
+      [
+        makeTestPlayer('guest', '스페셜', 'none', false, true),
+        makeTestPlayer('female-a1', 'A', 'female', true),
+        makeTestPlayer('female-a2', 'A', 'female', true),
+        makeTestPlayer('male-40-b', 'B', 'male', true, false, '40대'),
         makeTestPlayer('male-a1', 'A'),
         makeTestPlayer('male-a2', 'A'),
-        makeTestPlayer('male-b', 'B'),
-        makeTestPlayer('male-c', 'C'),
       ],
       {
         ...defaultSettings,
@@ -704,12 +879,12 @@ describe('generateSchedule', () => {
       },
     )
 
-    const matchPlayers = [...schedule.rounds[0].matches[0].teamA, ...schedule.rounds[0].matches[0].teamB]
+    const regulars = [
+      ...schedule.rounds[0].matches[0].teamA,
+      ...schedule.rounds[0].matches[0].teamB,
+    ].filter((player) => !player.isGuest)
 
-    expect(matchPlayers.map((player) => player.id)).toEqual(
-      expect.arrayContaining(['male-a1', 'male-a2', 'male-b']),
-    )
-    expect(matchPlayers.map((player) => player.id)).not.toContain('female-a')
+    expect(regulars.every((player) => player.gender === 'male')).toBe(true)
   })
 
   it('fills every court when enough active players are available', () => {
@@ -787,6 +962,43 @@ describe('generateSchedule', () => {
     ).toBe(false)
   })
 
+  it('fills every available court with general matches after the special time limit', () => {
+    const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 55 }, (_, index) =>
+      makeTestPlayer(
+        `regular-${index + 1}`,
+        index < 18 ? 'B' : index < 37 ? 'C' : 'D',
+        index % 3 === 0 ? 'female' : 'male',
+      ),
+    )
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 6,
+      startTime: '18:00',
+      endTime: '21:00',
+      targetRoundCount: 12,
+      pacingRoundCount: 12,
+      roundCountLocked: true,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: false,
+      specialTimeLimitEnabled: true,
+      specialTimeLimitMinutes: 120,
+    })
+
+    expect(schedule.rounds).toHaveLength(12)
+    expect(schedule.guestGameCounts[guest.id]).toBe(8)
+    expect(schedule.specialCompletedIds).toHaveLength(24)
+    for (const round of schedule.rounds.slice(8)) {
+      expect(round.matches).toHaveLength(6)
+      expect(round.matches.every((match) => !match.isSpecial)).toBe(true)
+      expect(
+        round.matches.some((match) =>
+          [...match.teamA, ...match.teamB].some((player) => player.isGuest),
+        ),
+      ).toBe(false)
+    }
+  })
+
   it('uses whichever special limit is reached first', () => {
     const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
     const regulars = Array.from({ length: 16 }, (_, index) =>
@@ -837,7 +1049,7 @@ describe('generateSchedule', () => {
     expect(optedOutMatches.every((match) => !match.isSpecial)).toBe(true)
   })
 
-  it('prioritizes low levels in the first 30 percent and high levels afterward', () => {
+  it('allocates low and high priorities without repeating before coverage', () => {
     const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
     const regulars = [
       ...Array.from({ length: 12 }, (_, index) =>
@@ -855,15 +1067,63 @@ describe('generateSchedule', () => {
       specialGameLimitEnabled: true,
       specialGameLimit: 10,
       specialTimeLimitEnabled: false,
+      specialLowPriorityEnabled: true,
+      specialLowPriorityPercent: 10,
+      specialHighPriorityEnabled: true,
+      specialHighPriorityPercent: 90,
     })
     const specialMatches = schedule.rounds
       .flatMap((round) => round.matches)
       .filter((match) => match.isSpecial)
-    const earlyAverage = average(specialMatches.slice(0, 3).map(matchRegularAverageScore))
-    const laterAverage = average(specialMatches.slice(3).map(matchRegularAverageScore))
+    const firstAverage = matchRegularAverageScore(specialMatches[0])
+    const laterAverages = specialMatches.slice(1).map(matchRegularAverageScore)
 
     expect(specialMatches).toHaveLength(10)
-    expect(earlyAverage).toBeLessThan(laterAverage)
+    expect(schedule.specialCompletedIds).toHaveLength(24)
+    expect(firstAverage).toBe(getPlayerMatchScore(regulars[0]))
+    expect(
+      laterAverages.slice(0, 4).every(
+        (score) => score === getPlayerMatchScore(regulars[12]),
+      ),
+    ).toBe(true)
+  })
+
+  it('falls back from high to middle levels before low levels', () => {
+    const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
+    const regulars = (['A', 'B', 'C', 'D'] as const).flatMap((level) =>
+      Array.from({ length: 3 }, (_, index) =>
+        makeTestPlayer(`${level.toLowerCase()}-${index + 1}`, level),
+      ),
+    )
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 1,
+      targetRoundCount: 4,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 4,
+      specialTimeLimitEnabled: false,
+      specialLowPriorityEnabled: false,
+      specialLowPriorityPercent: 0,
+      specialHighPriorityEnabled: true,
+      specialHighPriorityPercent: 100,
+    })
+    const specialLevels = schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) => match.isSpecial)
+      .map((match) =>
+        [...match.teamA, ...match.teamB]
+          .filter((player) => !player.isGuest)
+          .map((player) => player.level),
+      )
+
+    expect(specialLevels).toEqual([
+      ['A', 'A', 'A'],
+      ['B', 'B', 'B'],
+      ['C', 'C', 'C'],
+      ['D', 'D', 'D'],
+    ])
+    expect(schedule.specialCompletedIds).toHaveLength(12)
   })
 
   it('applies the game limit to each special separately', () => {
@@ -886,6 +1146,18 @@ describe('generateSchedule', () => {
 
     expect(schedule.guestGameCounts['guest-1']).toBe(2)
     expect(schedule.guestGameCounts['guest-2']).toBe(2)
+    for (const guest of guests) {
+      const guestMatches = schedule.rounds
+        .flatMap((round) => round.matches)
+        .filter((match) =>
+          [...match.teamA, ...match.teamB].some(
+            (player) => player.id === guest.id,
+          ),
+        )
+      expect(matchRegularAverageScore(guestMatches[0])).toBeLessThan(
+        matchRegularAverageScore(guestMatches[1]),
+      )
+    }
   })
 
   it('calculates wins and point difference from a selected winner with scores', () => {
@@ -1045,6 +1317,60 @@ describe('generateBalancedTournamentTeams', () => {
 })
 
 describe('generateTournamentSchedule', () => {
+  it('avoids assigning the same competition team to two courts at once', () => {
+    const teams = Array.from({ length: 6 }, (_, index) =>
+      makeTournamentTeam(`team-${index + 1}`, index + 1),
+    )
+    const schedule = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'group-knockout',
+        courtCount: 4,
+        groupCount: 2,
+      },
+      {},
+    )
+
+    const matchesByRound = new Map<number, typeof schedule.matches>()
+    for (const match of schedule.matches) {
+      matchesByRound.set(match.round, [
+        ...(matchesByRound.get(match.round) ?? []),
+        match,
+      ])
+    }
+    for (const matches of matchesByRound.values()) {
+      const teamIds = matches.flatMap((match) =>
+        [match.teamAId, match.teamBId].filter(Boolean),
+      )
+      expect(new Set(teamIds).size).toBe(teamIds.length)
+    }
+  })
+
+  it('places a knockout final after the semifinal time slot', () => {
+    const teams = Array.from({ length: 4 }, (_, index) =>
+      makeTournamentTeam(`team-${index + 1}`, index + 1),
+    )
+    const schedule = generateTournamentSchedule(
+      teams,
+      {
+        ...defaultTournamentSettings,
+        format: 'knockout',
+        courtCount: 4,
+        includeThirdPlace: true,
+      },
+      {},
+    )
+    const semifinals = schedule.matches.filter((match) => match.bracketRound === 1)
+    const final = schedule.matches.find(
+      (match) => match.label === '결승' && match.phase === 'knockout',
+    )
+
+    expect(final?.round).toBeGreaterThan(
+      Math.max(...semifinals.map((match) => match.round)),
+    )
+  })
+
   it('advances a bye team into the next knockout round', () => {
     const teams = [
       makeTournamentTeam('seed-1', 1),
@@ -1254,7 +1580,7 @@ describe('generateTournamentSchedule', () => {
     expect(schedule.knockoutMatches[0].label).toBe('결승')
   })
 
-  it('keeps knockout closed until every group match is completed', () => {
+  it('reserves knockout time slots until every group match is completed', () => {
     const teams = Array.from({ length: 6 }, (_, index) =>
       makeTournamentTeam(`team-${index + 1}`, index + 1),
     )
@@ -1271,7 +1597,14 @@ describe('generateTournamentSchedule', () => {
     )
 
     expect(schedule.qualifiedTeamIds).toHaveLength(0)
-    expect(schedule.knockoutMatches).toHaveLength(0)
+    expect(schedule.knockoutMatches).toHaveLength(1)
+    expect(schedule.knockoutMatches[0]).toMatchObject({
+      label: '결승',
+      teamAId: undefined,
+      teamBId: undefined,
+      sourceA: '1번 진출팀',
+      sourceB: '2번 진출팀',
+    })
     expect(schedule.warnings.some((warning) => warning.includes('조별 경기 미완료'))).toBe(
       true,
     )

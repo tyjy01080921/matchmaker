@@ -1,6 +1,6 @@
 import type { AgeGroup, Gender, Level, Player } from './types'
 
-const regularLevelTokens = ['OA', 'S', 'A', 'B', 'C', 'D', 'O']
+const regularLevelTokens = ['OA', 'S', 'A', 'B', 'C', 'D', 'E', 'O']
 const specialLevelTokens = ['스페셜', 'SPECIAL']
 
 export const parseBulkAgeGroup = (value: string): AgeGroup | undefined => {
