@@ -128,6 +128,16 @@ describe('printable schedule', () => {
       names,
       results: {} satisfies ResultsByMatch,
       schedule,
+      summary: {
+        averageGames: 0.8,
+        estimatedMinutes: 15,
+        maximumGames: 1,
+        maximumParticipants: '김민수 1, 김민수 2, 이지연, 박태호',
+        minimumGames: 0,
+        minimumParticipants: '최수빈',
+        participantCount: 5,
+        specialCount: 0,
+      },
       settings,
       matchNameOverrides: {
         'm-1': {
@@ -142,6 +152,10 @@ describe('printable schedule', () => {
     expect(svg).toContain('1경기')
     expect(svg).toContain('1코트')
     expect(svg).toContain('현장참가자 + 이지연')
+    expect(svg).toContain('5명 · 스페셜 0명')
+    expect(svg).toContain('평균 경기')
+    expect(svg).toContain('최다 경기 · 평균 초과')
+    expect(svg).toContain('최소 경기 · 평균 미만')
     expect(svg).not.toContain('상태')
     expect(svg).not.toContain('점수')
   })

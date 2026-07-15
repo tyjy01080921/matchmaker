@@ -78,6 +78,16 @@ type PrintScheduleOptions = {
   names: PlayerNameLookup
   results: ResultsByMatch
   schedule: Schedule
+  summary: {
+    averageGames: number
+    estimatedMinutes: number
+    maximumGames: number
+    maximumParticipants: string
+    minimumGames: number
+    minimumParticipants: string
+    participantCount: number
+    specialCount: number
+  }
   settings: MatchSettings
   matchNameOverrides?: MatchNameOverrides
 }
@@ -96,7 +106,7 @@ type TournamentPrintParticipant = ReturnType<typeof tournamentParticipantsFromTe
 
 const layout = {
   contentBottom: A4_IMAGE_HEIGHT - 62,
-  contentTop: 176,
+  contentTop: 330,
   matchHeight: 74,
   roundHeight: 36,
 }
@@ -339,6 +349,80 @@ const drawTableHeader = (y: number) => {
     }),
     ...labels,
   ].join('')
+}
+
+const drawScheduleSummary = (options: PrintScheduleOptions) => {
+  const { summary } = options
+  const cells = [
+    { label: '참가자', value: `${summary.participantCount}명 · 스페셜 ${summary.specialCount}명` },
+    { label: '라운드', value: `${options.schedule.rounds.length}R` },
+    {
+      label: '총 경기',
+      value: `${options.schedule.rounds.reduce((sum, round) => sum + round.matches.length, 0)}경기`,
+    },
+    { label: '예상 시간', value: formatDuration(summary.estimatedMinutes) },
+    { label: '평균 경기', value: `${summary.averageGames.toFixed(1)}경기` },
+  ]
+  const top = 118
+  const gap = 8
+  const cellWidth = (A4_IMAGE_WIDTH - 100 - gap * 4) / 5
+  const nodes = cells.flatMap((cell, index) => {
+    const x = 50 + index * (cellWidth + gap)
+    return [
+      rect(x, top, cellWidth, 54, {
+        fill: '#f6f8f7',
+        stroke: '#dce3df',
+        strokeWidth: 1,
+      }),
+      text(cell.label, x + 12, top + 19, {
+        color: '#65716e',
+        size: 11,
+        weight: 900,
+      }),
+      text(truncateText(cell.value, 24), x + 12, top + 41, {
+        size: 15,
+        weight: 900,
+      }),
+    ]
+  })
+  const detailTop = top + 62
+  const detailWidth = (A4_IMAGE_WIDTH - 100 - gap) / 2
+  const details = [
+    {
+      label: '최다 경기 · 평균 초과',
+      value: summary.maximumParticipants
+        ? `${summary.maximumParticipants} · ${summary.maximumGames}경기`
+        : '없음',
+    },
+    {
+      label: '최소 경기 · 평균 미만',
+      value: summary.minimumParticipants
+        ? `${summary.minimumParticipants} · ${summary.minimumGames}경기`
+        : '없음',
+    },
+  ]
+
+  for (const [index, detail] of details.entries()) {
+    const x = 50 + index * (detailWidth + gap)
+    nodes.push(
+      rect(x, detailTop, detailWidth, 62, {
+        fill: '#edf8f5',
+        stroke: '#dce3df',
+        strokeWidth: 1,
+      }),
+      text(detail.label, x + 12, detailTop + 20, {
+        color: '#18685c',
+        size: 11,
+        weight: 900,
+      }),
+      text(truncateText(detail.value, 54), x + 12, detailTop + 45, {
+        size: 16,
+        weight: 900,
+      }),
+    )
+  }
+
+  return nodes.join('')
 }
 
 const drawRoundItem = (item: RoundItem, y: number) =>
@@ -690,7 +774,8 @@ const renderPageSvg = (
       101,
       { color: '#65716e', size: 11, weight: 800 },
     ),
-    drawTableHeader(132),
+    drawScheduleSummary(options),
+    drawTableHeader(286),
   )
 
   let y = layout.contentTop

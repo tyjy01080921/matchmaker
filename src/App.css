@@ -1284,6 +1284,66 @@ textarea {
   white-space: nowrap;
 }
 
+.schedule-summary {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 14px;
+  margin-top: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(47, 208, 180, 0.1), transparent 44%),
+    #fff;
+}
+
+.schedule-summary-heading h2 {
+  margin-top: 3px;
+  font-size: 24px;
+}
+
+.schedule-summary-heading > span:last-child {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.schedule-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.schedule-summary-grid > div {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+}
+
+.schedule-summary-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.schedule-summary-grid strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.schedule-summary-grid .schedule-summary-wide {
+  grid-column: span 2;
+}
+
 .tournament-summary-bar {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr) minmax(150px, 0.45fr);
@@ -1891,6 +1951,7 @@ textarea {
 
   .special-bar,
   .time-bar,
+  .schedule-summary,
   .tournament-summary-bar {
     grid-template-columns: 1fr;
   }
@@ -2316,6 +2377,7 @@ textarea {
   .special-bar,
   .time-bar,
   .progress-panel,
+  .schedule-summary,
   .tournament-summary-bar {
     grid-template-columns: 1fr;
     gap: 8px;
@@ -2339,6 +2401,24 @@ textarea {
 
   .progress-grid div {
     padding: 7px;
+  }
+
+  .schedule-summary-heading h2 {
+    margin-top: 0;
+    font-size: 18px;
+  }
+
+  .schedule-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .schedule-summary-grid > div {
+    padding: 7px;
+  }
+
+  .schedule-summary-grid .schedule-summary-wide {
+    grid-column: 1 / -1;
   }
 
   .special-summary,

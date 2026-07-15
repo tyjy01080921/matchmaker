@@ -1327,6 +1327,33 @@ function App() {
   ).length
   const remainingRounds = Math.max(totalGameSlots - completedRounds, 0)
   const remainingMinutes = remainingRounds * GAME_SLOT_MINUTES
+  const scheduleParticipantStats = stats.filter((stat) =>
+    activePlayers.some((player) => player.id === stat.player.id),
+  )
+  const averageGames = scheduleParticipantStats.length
+    ? scheduleParticipantStats.reduce((sum, stat) => sum + stat.games, 0) /
+      scheduleParticipantStats.length
+    : 0
+  const maximumParticipantGames = scheduleParticipantStats.length
+    ? Math.max(...scheduleParticipantStats.map((stat) => stat.games))
+    : 0
+  const minimumParticipantGames = scheduleParticipantStats.length
+    ? Math.min(...scheduleParticipantStats.map((stat) => stat.games))
+    : 0
+  const maximumParticipants = scheduleParticipantStats
+    .filter(
+      (stat) =>
+        stat.games === maximumParticipantGames && stat.games > averageGames,
+    )
+    .map((stat) => playerDisplayName(stat.player, displayNames))
+    .join(', ')
+  const minimumParticipants = scheduleParticipantStats
+    .filter(
+      (stat) =>
+        stat.games === minimumParticipantGames && stat.games < averageGames,
+    )
+    .map((stat) => playerDisplayName(stat.player, displayNames))
+    .join(', ')
   const activePlayerStats = stats.filter((stat) =>
     !stat.player.isGuest &&
     activePlayers.some((player) => player.id === stat.player.id),
@@ -2440,6 +2467,16 @@ function App() {
         names: displayNames,
         results,
         schedule,
+        summary: {
+          averageGames,
+          estimatedMinutes,
+          maximumGames: maximumParticipantGames,
+          maximumParticipants,
+          minimumGames: minimumParticipantGames,
+          minimumParticipants,
+          participantCount: activePlayers.length,
+          specialCount: activeGuests.length,
+        },
         settings,
         matchNameOverrides,
       })
@@ -3630,7 +3667,51 @@ function App() {
           </nav>
 
           {view === 'schedule' ? (
-            <div className="round-list">
+            <>
+              {schedule.rounds.length > 0 ? (
+                <section className="schedule-summary" aria-labelledby="schedule-summary-title">
+                  <div className="schedule-summary-heading">
+                    <span className="eyebrow">대진 현황</span>
+                    <h2 id="schedule-summary-title">{activePlayers.length}명 참가</h2>
+                    <span>스페셜 {activeGuests.length}명 포함</span>
+                  </div>
+                  <div className="schedule-summary-grid">
+                    <div>
+                      <span>라운드</span>
+                      <strong>{totalGameSlots}R</strong>
+                    </div>
+                    <div>
+                      <span>총 경기</span>
+                      <strong>{totalMatches}경기</strong>
+                    </div>
+                    <div>
+                      <span>예상 시간</span>
+                      <strong>{formatDuration(estimatedMinutes)}</strong>
+                    </div>
+                    <div>
+                      <span>평균 경기</span>
+                      <strong>{averageGames.toFixed(1)}경기</strong>
+                    </div>
+                    <div className="schedule-summary-wide">
+                      <span>최다 경기 · 평균 초과</span>
+                      <strong>
+                        {maximumParticipants
+                          ? `${maximumParticipants} · ${maximumParticipantGames}경기`
+                          : '없음'}
+                      </strong>
+                    </div>
+                    <div className="schedule-summary-wide">
+                      <span>최소 경기 · 평균 미만</span>
+                      <strong>
+                        {minimumParticipants
+                          ? `${minimumParticipants} · ${minimumParticipantGames}경기`
+                          : '없음'}
+                      </strong>
+                    </div>
+                  </div>
+                </section>
+              ) : null}
+              <div className="round-list">
               {schedule.rounds.map((round) => {
                 const isOvertimeRound = round.number > EVENT_LIMIT_ROUNDS
                 const startsAt = (round.number - 1) * GAME_SLOT_MINUTES
@@ -3908,7 +3989,8 @@ function App() {
                   </span>
                 </div>
               ) : null}
-            </div>
+              </div>
+            </>
           ) : (
             <section className="stats-section">
               <div className="stats-table-wrap">
