@@ -1053,8 +1053,8 @@ const printImageUrlToPngObjectUrl = (imageUrl: string) =>
     const image = new Image()
     image.onload = () => {
       const canvas = document.createElement('canvas')
-      canvas.width = A4_IMAGE_WIDTH
-      canvas.height = A4_IMAGE_HEIGHT
+      canvas.width = image.naturalWidth || A4_IMAGE_WIDTH
+      canvas.height = image.naturalHeight || A4_IMAGE_HEIGHT
 
       const context = canvas.getContext('2d')
       if (!context) {
@@ -1063,8 +1063,8 @@ const printImageUrlToPngObjectUrl = (imageUrl: string) =>
       }
 
       context.fillStyle = '#fff'
-      context.fillRect(0, 0, A4_IMAGE_WIDTH, A4_IMAGE_HEIGHT)
-      context.drawImage(image, 0, 0, A4_IMAGE_WIDTH, A4_IMAGE_HEIGHT)
+      context.fillRect(0, 0, canvas.width, canvas.height)
+      context.drawImage(image, 0, 0, canvas.width, canvas.height)
       canvas.toBlob((blob) => {
         if (!blob) {
           reject(new Error('png unavailable'))

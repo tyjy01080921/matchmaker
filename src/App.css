@@ -1837,7 +1837,7 @@ textarea {
 
 .print-preview-page img {
   width: 100%;
-  aspect-ratio: 210 / 297;
+  height: auto;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fff;

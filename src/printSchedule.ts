@@ -830,32 +830,46 @@ const renderCourtGridPageSvg = (
   pageCount: number,
   options: PrintScheduleOptions,
 ) => {
-  const left = 50
-  const top = 286
-  const indexWidth = 74
-  const headerHeight = 50
-  const rowHeight = 118
-  const courtWidth = (A4_IMAGE_WIDTH - 100 - indexWidth) / courts.length
+  const pageWidth = A4_IMAGE_HEIGHT
+  const pageHeight = A4_IMAGE_WIDTH
+  const left = 28
+  const top = 150
+  const indexWidth = 52
+  const headerHeight = 38
+  const bottomMargin = 24
+  const rowHeight = Math.min(
+    72,
+    Math.floor((pageHeight - top - headerHeight - bottomMargin) / Math.max(1, rowCount)),
+  )
+  const courtWidth = (pageWidth - left * 2 - indexWidth) / courts.length
+  const compact = courtWidth < 170
+  const nameLimit = Math.max(7, Math.floor(courtWidth / (compact ? 11 : 13)))
+  const allMatches = options.schedule.rounds.flatMap((round) => round.matches)
+  const averageGames = options.summary.averageGames.toFixed(1)
   const nodes = [
-    rect(0, 0, A4_IMAGE_WIDTH, A4_IMAGE_HEIGHT, { fill: '#ffffff' }),
-    rect(50, 34, 6, 56, { fill: '#18685c' }),
-    text(truncateText(options.settings.eventName, 48), 68, 58, { size: 22, weight: 900 }),
+    rect(0, 0, pageWidth, pageHeight, { fill: '#ffffff' }),
+    rect(left, 24, 5, 44, { fill: '#18685c' }),
+    text(truncateText(options.settings.eventName, 60), left + 16, 45, { size: 20, weight: 900 }),
     text(
       `코트별 대진표 · ${options.settings.startTime}–${options.settings.endTime} · ${pageIndex + 1}/${pageCount}쪽`,
-      68,
-      84,
+      left + 16,
+      65,
       { color: '#65716e', size: 11, weight: 800 },
     ),
-    drawScheduleSummary(options),
+    rect(left, 82, pageWidth - left * 2, 48, { fill: '#f6f8f7', stroke: '#dce3df' }),
+    text(`참가 ${options.summary.participantCount}명 · 스페셜 ${options.summary.specialCount}명`, left + 14, 112, { size: 14, weight: 900 }),
+    text(`총 ${allMatches.length}경기`, left + 280, 112, { size: 14, weight: 900 }),
+    text(`코트 ${courts.length}개`, left + 430, 112, { size: 14, weight: 900 }),
+    text(`참가자 평균 ${averageGames}경기`, left + 570, 112, { size: 14, weight: 900 }),
     rect(left, top, indexWidth, headerHeight, { fill: '#e7f2ef', stroke: '#dce3df' }),
-    text('경기', left + 18, top + 32, { color: '#18685c', size: 16, weight: 900 }),
+    text('경기', left + 12, top + 25, { color: '#18685c', size: 13, weight: 900 }),
   ]
 
   courts.forEach(({ court }, courtIndex) => {
     const x = left + indexWidth + courtIndex * courtWidth
     nodes.push(
       rect(x, top, courtWidth, headerHeight, { fill: '#e7f2ef', stroke: '#dce3df' }),
-      text(`${court}코트`, x + 16, top + 32, { color: '#18685c', size: 17, weight: 900 }),
+      text(`${court}코트`, x + 10, top + 25, { color: '#18685c', size: compact ? 12 : 15, weight: 900 }),
     )
   })
 
@@ -864,7 +878,7 @@ const renderCourtGridPageSvg = (
     const y = top + headerHeight + row * rowHeight
     nodes.push(
       rect(left, y, indexWidth, rowHeight, { fill: '#f6f8f7', stroke: '#dce3df' }),
-      text(`${matchIndex + 1}번`, left + 14, y + 66, { size: 16, weight: 900 }),
+      text(`${matchIndex + 1}번`, left + 10, y + Math.floor(rowHeight / 2) + 5, { size: 12, weight: 900 }),
     )
     courts.forEach(({ matches }, courtIndex) => {
       const match = matches[matchIndex]
@@ -883,17 +897,17 @@ const renderCourtGridPageSvg = (
       nodes.push(
         text(
           `${clockTimeAtOffset(options.settings.startTime, start)}–${clockTimeAtOffset(options.settings.startTime, start + duration)} · ${duration}분${match.isSpecial ? ' · 스페셜' : ''}`,
-          x + 12,
-          y + 24,
-          { color: match.isSpecial ? '#a75e19' : '#65716e', size: 10, weight: 900 },
+          x + 8,
+          y + Math.min(17, Math.floor(rowHeight * 0.28)),
+          { color: match.isSpecial ? '#a75e19' : '#65716e', size: compact ? 8 : 9, weight: 900 },
         ),
-        text(truncateText(teamName(match.teamA), 22), x + 12, y + 60, { size: 17, weight: 900 }),
-        text(truncateText(teamName(match.teamB), 22), x + 12, y + 94, { size: 17, weight: 900 }),
+        text(truncateText(teamName(match.teamA), nameLimit), x + 8, y + Math.floor(rowHeight * 0.58), { size: compact ? 10 : 12, weight: 900 }),
+        text(truncateText(teamName(match.teamB), nameLimit), x + 8, y + rowHeight - 8, { size: compact ? 10 : 12, weight: 900 }),
       )
     })
   }
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${A4_IMAGE_WIDTH}" height="${A4_IMAGE_HEIGHT}" viewBox="0 0 ${A4_IMAGE_WIDTH} ${A4_IMAGE_HEIGHT}">${nodes.join('')}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${pageWidth}" height="${pageHeight}" viewBox="0 0 ${pageWidth} ${pageHeight}">${nodes.join('')}</svg>`
 }
 
 const drawTournamentSectionItem = (item: TournamentSectionItem, y: number) =>
@@ -1077,18 +1091,13 @@ export const createSchedulePrintImages = (options: PrintScheduleOptions) => {
       .sort((left, right) =>
         (left.startOffsetMinutes ?? 0) - (right.startOffsetMinutes ?? 0)),
   })).filter(({ matches: courtMatches }) => courtMatches.length > 0)
-  const courtGroups = Array.from(
-    { length: Math.ceil(allCourts.length / 4) },
-    (_, index) => allCourts.slice(index * 4, index * 4 + 4),
-  )
-  const pageInputs = courtGroups.flatMap((courts) => {
-    const maximumGames = Math.max(...courts.map((court) => court.matches.length))
-    return Array.from({ length: Math.ceil(maximumGames / 11) }, (_, index) => ({
-      courts,
-      rowStart: index * 11,
-      rowCount: Math.min(11, maximumGames - index * 11),
-    }))
-  })
+  const maximumGames = Math.max(...allCourts.map((court) => court.matches.length))
+  const rowsPerPage = 21
+  const pageInputs = Array.from({ length: Math.ceil(maximumGames / rowsPerPage) }, (_, index) => ({
+    courts: allCourts,
+    rowStart: index * rowsPerPage,
+    rowCount: Math.min(rowsPerPage, maximumGames - index * rowsPerPage),
+  }))
 
   return pageInputs.map((page, index) => svgDataUrl(renderCourtGridPageSvg(
     page.courts,
