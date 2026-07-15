@@ -760,7 +760,7 @@ export const paginatePrintableTournamentItems = (
   return pages.length > 0 || currentPage.length > 0 ? [...pages, currentPage] : [[]]
 }
 
-const renderPageSvg = (
+export const renderLegacySchedulePageSvg = (
   page: PrintableScheduleItem[],
   pageIndex: number,
   pageCount: number,
@@ -820,6 +820,80 @@ const renderPageSvg = (
   )
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${A4_IMAGE_WIDTH}" height="${A4_IMAGE_HEIGHT}" viewBox="0 0 ${A4_IMAGE_WIDTH} ${A4_IMAGE_HEIGHT}">${body.join('')}</svg>`
+}
+
+const renderCourtGridPageSvg = (
+  courts: Array<{ court: number; matches: Match[] }>,
+  rowStart: number,
+  rowCount: number,
+  pageIndex: number,
+  pageCount: number,
+  options: PrintScheduleOptions,
+) => {
+  const left = 50
+  const top = 286
+  const indexWidth = 74
+  const headerHeight = 50
+  const rowHeight = 118
+  const courtWidth = (A4_IMAGE_WIDTH - 100 - indexWidth) / courts.length
+  const nodes = [
+    rect(0, 0, A4_IMAGE_WIDTH, A4_IMAGE_HEIGHT, { fill: '#ffffff' }),
+    rect(50, 34, 6, 56, { fill: '#18685c' }),
+    text(truncateText(options.settings.eventName, 48), 68, 58, { size: 22, weight: 900 }),
+    text(
+      `코트별 대진표 · ${options.settings.startTime}–${options.settings.endTime} · ${pageIndex + 1}/${pageCount}쪽`,
+      68,
+      84,
+      { color: '#65716e', size: 11, weight: 800 },
+    ),
+    drawScheduleSummary(options),
+    rect(left, top, indexWidth, headerHeight, { fill: '#e7f2ef', stroke: '#dce3df' }),
+    text('경기', left + 18, top + 32, { color: '#18685c', size: 16, weight: 900 }),
+  ]
+
+  courts.forEach(({ court }, courtIndex) => {
+    const x = left + indexWidth + courtIndex * courtWidth
+    nodes.push(
+      rect(x, top, courtWidth, headerHeight, { fill: '#e7f2ef', stroke: '#dce3df' }),
+      text(`${court}코트`, x + 16, top + 32, { color: '#18685c', size: 17, weight: 900 }),
+    )
+  })
+
+  for (let row = 0; row < rowCount; row += 1) {
+    const matchIndex = rowStart + row
+    const y = top + headerHeight + row * rowHeight
+    nodes.push(
+      rect(left, y, indexWidth, rowHeight, { fill: '#f6f8f7', stroke: '#dce3df' }),
+      text(`${matchIndex + 1}번`, left + 14, y + 66, { size: 16, weight: 900 }),
+    )
+    courts.forEach(({ matches }, courtIndex) => {
+      const match = matches[matchIndex]
+      const x = left + indexWidth + courtIndex * courtWidth
+      nodes.push(rect(x, y, courtWidth, rowHeight, {
+        fill: match?.isSpecial ? '#fff8ef' : '#ffffff',
+        stroke: '#dce3df',
+      }))
+      if (!match) return
+      const overrides = options.matchNameOverrides?.[match.id] ?? {}
+      const teamName = (team: Team) => team
+        .map((player) => overrides[player.id]?.trim() || playerDisplayName(player, options.names))
+        .join(' + ')
+      const start = match.startOffsetMinutes ?? (match.round - 1) * GAME_SLOT_MINUTES
+      const duration = match.durationMinutes ?? GAME_SLOT_MINUTES
+      nodes.push(
+        text(
+          `${clockTimeAtOffset(options.settings.startTime, start)}–${clockTimeAtOffset(options.settings.startTime, start + duration)} · ${duration}분${match.isSpecial ? ' · 스페셜' : ''}`,
+          x + 12,
+          y + 24,
+          { color: match.isSpecial ? '#a75e19' : '#65716e', size: 10, weight: 900 },
+        ),
+        text(truncateText(teamName(match.teamA), 22), x + 12, y + 60, { size: 17, weight: 900 }),
+        text(truncateText(teamName(match.teamB), 22), x + 12, y + 94, { size: 17, weight: 900 }),
+      )
+    })
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${A4_IMAGE_WIDTH}" height="${A4_IMAGE_HEIGHT}" viewBox="0 0 ${A4_IMAGE_WIDTH} ${A4_IMAGE_HEIGHT}">${nodes.join('')}</svg>`
 }
 
 const drawTournamentSectionItem = (item: TournamentSectionItem, y: number) =>
@@ -995,16 +1069,35 @@ const renderTournamentPageSvg = (
 }
 
 export const createSchedulePrintImages = (options: PrintScheduleOptions) => {
-  const items = makePrintableScheduleItems(
-    options.schedule,
-    options.names,
-    options.settings.startTime,
+  const matches = options.schedule.rounds.flatMap((round) => round.matches)
+  const allCourts = Array.from({ length: options.settings.courtCount }, (_, index) => ({
+    court: index + 1,
+    matches: matches
+      .filter((match) => match.court === index + 1)
+      .sort((left, right) =>
+        (left.startOffsetMinutes ?? 0) - (right.startOffsetMinutes ?? 0)),
+  })).filter(({ matches: courtMatches }) => courtMatches.length > 0)
+  const courtGroups = Array.from(
+    { length: Math.ceil(allCourts.length / 4) },
+    (_, index) => allCourts.slice(index * 4, index * 4 + 4),
   )
-  const pages = paginatePrintableScheduleItems(items)
+  const pageInputs = courtGroups.flatMap((courts) => {
+    const maximumGames = Math.max(...courts.map((court) => court.matches.length))
+    return Array.from({ length: Math.ceil(maximumGames / 11) }, (_, index) => ({
+      courts,
+      rowStart: index * 11,
+      rowCount: Math.min(11, maximumGames - index * 11),
+    }))
+  })
 
-  return pages.map((page, index) =>
-    svgDataUrl(renderPageSvg(page, index, pages.length, options)),
-  )
+  return pageInputs.map((page, index) => svgDataUrl(renderCourtGridPageSvg(
+    page.courts,
+    page.rowStart,
+    page.rowCount,
+    index,
+    pageInputs.length,
+    options,
+  )))
 }
 
 export const createTournamentPrintImages = (options: PrintTournamentOptions) => {

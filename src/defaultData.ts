@@ -52,6 +52,7 @@ export const defaultSettings: MatchSettings = {
   courtCount: 4,
   startTime: '18:00',
   endTime: '20:00',
+  normalGameMinutes: 15,
   seed: 11,
   singleGuestPerMatch: true,
   specialLimitEnabled: false,

@@ -7,6 +7,7 @@ import type {
   Match,
   MatchConditionOptions,
   MatchNameOverrides,
+  MeetingLineupsByMatch,
   MatchSettings,
   Player,
   PlayerStat,
@@ -28,7 +29,7 @@ import type {
   TournamentTeamBattleTie,
 } from './types'
 import { defaultLevelTiers, defaultMatchConditionOptions } from './defaultData'
-import { getBookingRoundCount } from './scheduleTime'
+import { getBookingDurationMinutes, getBookingRoundCount } from './scheduleTime'
 
 type HistoryState = {
   games: Record<string, number>
@@ -69,6 +70,106 @@ const SPECIAL_TIMING_WEIGHT = 110
 const FAIR_GAME_MAX_WEIGHT = 10000000
 const FAIR_GAME_TOTAL_WEIGHT = 100000
 const GAME_SLOT_MINUTES = 15
+
+const replaceMatchPlayer = (match: Match, outgoingId: string, incoming: Player): Match => ({
+  ...match,
+  teamA: match.teamA.map((player) =>
+    player.id === outgoingId ? incoming : player) as Team,
+  teamB: match.teamB.map((player) =>
+    player.id === outgoingId ? incoming : player) as Team,
+})
+
+const matchTimeWindow = (match: Match) => {
+  const start = match.startOffsetMinutes ?? (match.round - 1) * GAME_SLOT_MINUTES
+  return { start, end: start + (match.durationMinutes ?? GAME_SLOT_MINUTES) }
+}
+
+const windowsOverlap = (left: Match, right: Match) => {
+  const a = matchTimeWindow(left)
+  const b = matchTimeWindow(right)
+  return a.start < b.end && b.start < a.end
+}
+
+export const applyMeetingLineups = (
+  schedule: Schedule,
+  players: Player[],
+  lineups: MeetingLineupsByMatch,
+): Schedule => {
+  const playersById = new Map(players.map((player) => [player.id, player]))
+  return {
+    ...schedule,
+    rounds: schedule.rounds.map((round) => ({
+      ...round,
+      matches: round.matches.map((match) => {
+        const lineup = lineups[match.id]
+        if (!lineup) return match
+        const teamA = lineup.teamAPlayerIds.map((id) => playersById.get(id)).filter(Boolean)
+        const teamB = lineup.teamBPlayerIds.map((id) => playersById.get(id)).filter(Boolean)
+        return teamA.length === 2 && teamB.length === 2
+          ? { ...match, teamA: teamA as Team, teamB: teamB as Team }
+          : match
+      }),
+    })),
+  }
+}
+
+export const findScheduleOverlap = (schedule: Schedule): string | null => {
+  const matches = schedule.rounds.flatMap((round) => round.matches)
+  for (const match of matches) {
+    const ids = [...match.teamA, ...match.teamB].map((player) => player.id)
+    const duplicate = ids.find((id, index) => ids.indexOf(id) !== index)
+    if (duplicate) return duplicate
+  }
+  for (let left = 0; left < matches.length; left += 1) {
+    for (let right = left + 1; right < matches.length; right += 1) {
+      if (!windowsOverlap(matches[left], matches[right])) continue
+      const rightIds = new Set([...matches[right].teamA, ...matches[right].teamB].map((player) => player.id))
+      const duplicate = [...matches[left].teamA, ...matches[left].teamB]
+        .find((player) => rightIds.has(player.id))
+      if (duplicate) return duplicate.id
+    }
+  }
+  return null
+}
+
+export const swapMeetingPlayers = (
+  schedule: Schedule,
+  matchId: string,
+  outgoingId: string,
+  incomingId: string,
+): { schedule: Schedule; changedMatchIds: string[] } | null => {
+  if (outgoingId === incomingId) return { schedule, changedMatchIds: [] }
+  const matches = schedule.rounds.flatMap((round) => round.matches)
+  const sourceMatch = matches.find((match) => match.id === matchId)
+  const outgoing = sourceMatch && [...sourceMatch.teamA, ...sourceMatch.teamB]
+    .find((player) => player.id === outgoingId)
+  const incoming = matches.flatMap((match) => [...match.teamA, ...match.teamB])
+    .find((player) => player.id === incomingId)
+  if (!sourceMatch || !outgoing || !incoming) return null
+
+  const targetMatch = matches.find((match) =>
+    match.id !== sourceMatch.id &&
+    windowsOverlap(sourceMatch, match) &&
+    [...match.teamA, ...match.teamB].some((player) => player.id === incomingId))
+  const changedMatchIds = [sourceMatch.id]
+  const nextSchedule: Schedule = {
+    ...schedule,
+    rounds: schedule.rounds.map((round) => ({
+      ...round,
+      matches: round.matches.map((match) => {
+        if (match.id === sourceMatch.id) {
+          return replaceMatchPlayer(match, outgoingId, incoming)
+        }
+        if (targetMatch && match.id === targetMatch.id) {
+          changedMatchIds.push(match.id)
+          return replaceMatchPlayer(match, incomingId, outgoing)
+        }
+        return match
+      }),
+    })),
+  }
+  return findScheduleOverlap(nextSchedule) ? null : { schedule: nextSchedule, changedMatchIds }
+}
 
 type SpecialAllocationSegment = 'low' | 'random' | 'high'
 
@@ -2905,23 +3006,44 @@ export const generateSchedule = (
     settings.pacingRoundCount ?? targetRoundCount,
   )
   const requiredCompletionRoundLimit = activePlayers.length * 2 + activeGuests.length + 4
-  const maxAutoRounds = settings.roundCountLocked
-    ? targetRoundCount
-    : Math.max(targetRoundCount, requiredCompletionRoundLimit)
+  const bookingMinutes = getBookingDurationMinutes(settings.startTime, settings.endTime)
+  const normalGameMinutes = [10, 12, 15].includes(settings.normalGameMinutes)
+    ? settings.normalGameMinutes
+    : GAME_SLOT_MINUTES
+  const schedulingMinutes = normalGameMinutes === GAME_SLOT_MINUTES
+    ? Math.max(bookingMinutes, targetRoundCount * GAME_SLOT_MINUTES)
+    : bookingMinutes
+  const courtAvailableAt = Array.from({ length: settings.courtCount }, () => 0)
+  const playerAvailableAt = Object.fromEntries(activePlayers.map((player) => [player.id, 0]))
+  const maxAutoRounds = Math.max(
+    targetRoundCount,
+    requiredCompletionRoundLimit,
+    settings.courtCount * Math.ceil(bookingMinutes / Math.min(normalGameMinutes, GAME_SLOT_MINUTES)),
+  )
   let stalledRounds = 0
 
   for (let roundNumber = 1; roundNumber <= maxAutoRounds; roundNumber += 1) {
-    const usedIds = new Set<string>()
+    if (settings.roundCountLocked && normalGameMinutes === GAME_SLOT_MINUTES && roundNumber > targetRoundCount) break
+    const startOffset = Math.min(...courtAvailableAt)
+    if (startOffset >= schedulingMinutes) break
+    const openCourts = courtAvailableAt
+      .map((availableAt, index) => ({ availableAt, court: index + 1 }))
+      .filter(({ availableAt }) => availableAt === startOffset)
+    const usedIds = new Set(
+      activePlayers
+        .filter((player) => (playerAvailableAt[player.id] ?? 0) > startOffset)
+        .map((player) => player.id),
+    )
     const matches: Match[] = []
     const completedBeforeRound = history.specialCompleted.size
     const allowExtraSpecial =
-      settings.specialLimitEnabled || roundNumber <= pacingRoundCount
-    const pacing = { roundNumber, targetRoundCount: pacingRoundCount }
+      settings.specialLimitEnabled || startOffset < pacingRoundCount * GAME_SLOT_MINUTES
+    const timeRoundNumber = Math.floor(startOffset / GAME_SLOT_MINUTES) + 1
+    const pacing = { roundNumber: timeRoundNumber, targetRoundCount: pacingRoundCount }
 
-    const courtLimit = Math.min(settings.courtCount, Math.floor(activePlayers.length / 4))
-
-    const addSpecialMatches = (startCourt: number) => {
-      for (let court = startCourt; court <= courtLimit; court += 1) {
+    const addSpecialMatches = (courts: number[]) => {
+      for (const court of courts) {
+        if (startOffset + GAME_SLOT_MINUTES > schedulingMinutes) continue
         const group = pickSpecialGroup(
           activePlayers,
           usedIds,
@@ -2944,14 +3066,18 @@ export const generateSchedule = (
           pacing,
           true,
         )
+        match.startOffsetMinutes = startOffset
+        match.durationMinutes = GAME_SLOT_MINUTES
         matches.push(match)
         for (const player of group) usedIds.add(player.id)
         updateHistoryForMatch(history, match)
       }
     }
 
-    const addGeneralMatches = (startCourt: number) => {
-      for (let court = startCourt; court <= courtLimit; court += 1) {
+    const addGeneralMatches = (courts: number[]) => {
+      for (const court of courts) {
+        if (matches.some((match) => match.court === court)) continue
+        if (startOffset + normalGameMinutes > schedulingMinutes) continue
         const group = pickGeneralGroup(
           activePlayers,
           usedIds,
@@ -2973,6 +3099,8 @@ export const generateSchedule = (
           pacing,
           hasGuest(group),
         )
+        match.startOffsetMinutes = startOffset
+        match.durationMinutes = normalGameMinutes
         matches.push(match)
         for (const player of group) usedIds.add(player.id)
         updateHistoryForMatch(history, match)
@@ -2980,14 +3108,30 @@ export const generateSchedule = (
     }
 
     if (conditions.specialPriority) {
-      addSpecialMatches(1)
-      addGeneralMatches(matches.length + 1)
+      addSpecialMatches(openCourts.map(({ court }) => court))
+      addGeneralMatches(openCourts.map(({ court }) => court))
     } else {
-      addGeneralMatches(1)
-      addSpecialMatches(matches.length + 1)
+      addGeneralMatches(openCourts.map(({ court }) => court))
+      addSpecialMatches(openCourts.map(({ court }) => court))
     }
 
-    if (matches.length === 0) break
+    if (matches.length === 0) {
+      for (const { court } of openCourts) courtAvailableAt[court - 1] = schedulingMinutes
+      continue
+    }
+
+    for (const match of matches) {
+      const endsAt = startOffset + (match.durationMinutes ?? normalGameMinutes)
+      courtAvailableAt[match.court - 1] = endsAt
+      for (const player of [...match.teamA, ...match.teamB]) {
+        playerAvailableAt[player.id] = endsAt
+      }
+    }
+    for (const { court } of openCourts) {
+      if (!matches.some((match) => match.court === court)) {
+        courtAvailableAt[court - 1] = Math.min(schedulingMinutes, startOffset + 1)
+      }
+    }
 
     updateHistoryForRests(history, activePlayers, usedIds)
     rounds.push({
@@ -3006,13 +3150,12 @@ export const generateSchedule = (
     const allGuestsPlayed = activeGuests.every(
       (guest) => (history.guestGameCounts[guest.id] ?? 0) > 0,
     )
-    const reachedTargetRounds = roundNumber >= targetRoundCount
+    const reachedTargetRounds = startOffset + normalGameMinutes >= schedulingMinutes
     const completedMinimumSpecial = settings.specialLimitEnabled
       ? true
       : activeGuests.length === 0 || (allRegularsCompleted && allGuestsPlayed)
     if (
-      reachedTargetRounds &&
-      (settings.roundCountLocked || completedMinimumSpecial)
+      reachedTargetRounds && completedMinimumSpecial
     ) break
 
     if (

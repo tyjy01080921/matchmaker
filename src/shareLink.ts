@@ -1,6 +1,7 @@
 import type {
   AppMode,
   MatchNameOverrides,
+  MeetingLineupsByMatch,
   MatchSettings,
   Player,
   PrizeDrawState,
@@ -22,6 +23,7 @@ export type SharePayload = {
   results: ResultsByMatch
   pairMixes: Record<string, number>
   matchNameOverrides?: MatchNameOverrides
+  meetingLineups?: MeetingLineupsByMatch
   appMode?: AppMode
   tournamentTeams?: TournamentTeam[]
   tournamentSettings?: TournamentSettings

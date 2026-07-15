@@ -60,6 +60,7 @@ export type MatchSettings = {
   courtCount: number
   startTime: string
   endTime: string
+  normalGameMinutes: 10 | 12 | 15
   seed: number
   singleGuestPerMatch: boolean
   specialLimitEnabled: boolean
@@ -111,6 +112,8 @@ export type Match = {
   teamA: Team
   teamB: Team
   isSpecial: boolean
+  startOffsetMinutes?: number
+  durationMinutes?: number
 }
 
 export type Round = {
@@ -253,6 +256,13 @@ export type TournamentSchedule = {
 }
 
 export type MatchNameOverrides = Record<string, Record<string, string>>
+
+export type MeetingLineup = {
+  teamAPlayerIds: string[]
+  teamBPlayerIds: string[]
+}
+
+export type MeetingLineupsByMatch = Record<string, MeetingLineup>
 
 export type PlayerStat = {
   player: Player
