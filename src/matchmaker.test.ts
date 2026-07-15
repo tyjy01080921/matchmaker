@@ -13,6 +13,7 @@ import {
   generateSchedule,
   generateTournamentLineups,
   generateTournamentSchedule,
+  getPlayerMatchTier,
   getPlayerMatchScore,
   makeNumberedTournamentPlayers,
 } from './matchmaker'
@@ -254,6 +255,12 @@ describe('generateSchedule', () => {
     const male30A = makeTestPlayer('male-30-a', 'A', 'male', false, false, '30대')
     const female20A = makeTestPlayer('female-20-a', 'A', 'female', false, false, '20대')
     const male40B = makeTestPlayer('male-40-b', 'B', 'male', false, false, '40대')
+    const male20B = makeTestPlayer('male-20-b', 'B', 'male', false, false, '20대')
+    const male30B = makeTestPlayer('male-30-b', 'B', 'male', false, false, '30대')
+    const male40A = makeTestPlayer('male-40-a', 'A', 'male', false, false, '40대')
+    const male20C = makeTestPlayer('male-20-c', 'C', 'male', false, false, '20대')
+    const male30C = makeTestPlayer('male-30-c', 'C', 'male', false, false, '30대')
+    const male40C = makeTestPlayer('male-40-c', 'C', 'male', false, false, '40대')
     const female55C = makeTestPlayer(
       'female-55-c',
       'C',
@@ -268,12 +275,50 @@ describe('generateSchedule', () => {
     const oa55 = makeTestPlayer('oa-55', 'OA', 'male', false, false, '55대이상')
     const o20 = makeTestPlayer('o-20', 'O', 'female', false, false, '20대')
 
-    expect(getPlayerMatchScore(male20A)).toBeGreaterThan(getPlayerMatchScore(male30A))
+    expect(getPlayerMatchScore(male20A)).toBe(getPlayerMatchScore(male30A))
+    expect(getPlayerMatchScore(male20B)).toBe(getPlayerMatchScore(male30B))
+    expect(getPlayerMatchScore(male20B)).toBe(getPlayerMatchScore(male40A))
+    expect(getPlayerMatchScore(male20C)).toBe(getPlayerMatchScore(male30C))
+    expect(getPlayerMatchScore(male20C)).toBe(getPlayerMatchScore(male40C))
     expect(getPlayerMatchScore(female20A)).toBe(getPlayerMatchScore(male40B))
-    expect(getPlayerMatchScore(d20)).toBeLessThan(getPlayerMatchScore(female55C))
+    expect(getPlayerMatchScore(female20A)).toBeGreaterThan(getPlayerMatchScore(male30C))
+    expect(getPlayerMatchScore(d20)).toBeGreaterThan(getPlayerMatchScore(female55C))
     expect(getPlayerMatchScore(d20)).toBeGreaterThan(getPlayerMatchScore(d55))
     expect(getPlayerMatchScore(oa20)).toBe(getPlayerMatchScore(oa55))
     expect(getPlayerMatchScore(o20)).toBe(getPlayerMatchScore(oa20))
+  })
+
+  it('uses a customized level tier table', () => {
+    const customLevelTiers = structuredClone(defaultSettings.levelTiers)
+    customLevelTiers['20대'].female.A = 4
+    const female20A = makeTestPlayer('female-20-a', 'A', 'female', false, false, '20대')
+    const male30C = makeTestPlayer('male-30-c', 'C', 'male', false, false, '30대')
+
+    expect(getPlayerMatchTier(female20A, customLevelTiers)).toBe(
+      getPlayerMatchTier(male30C, customLevelTiers),
+    )
+
+    const schedule = generateSchedule(
+      [
+        makeTestPlayer('guest', '스페셜', 'none', false, true),
+        female20A,
+        male30C,
+        makeTestPlayer('male-30-b', 'B', 'male', false, false, '30대'),
+      ],
+      {
+        ...defaultSettings,
+        courtCount: 1,
+        targetRoundCount: 1,
+        pacingRoundCount: 1,
+        roundCountLocked: true,
+        levelTiers: customLevelTiers,
+      },
+    )
+    const scheduledFemale = schedule.rounds[0].matches[0].teamA
+      .concat(schedule.rounds[0].matches[0].teamB)
+      .find((player) => player.id === female20A.id)
+
+    expect(scheduledFemale?.matchLevelTier).toBe(4)
   })
 
   it('auto-generates enough order slots for every regular participant to play with a guest', () => {
@@ -402,6 +447,52 @@ describe('generateSchedule', () => {
 
     expect(schedule.rounds).toHaveLength(defaultSettings.targetRoundCount + 2)
     expect(schedule.warnings).toHaveLength(0)
+  })
+
+  it('keeps existing round IDs stable when rounds are added or removed', () => {
+    const baseSettings = {
+      ...defaultSettings,
+      courtCount: 3,
+      seed: 33,
+      targetRoundCount: 8,
+      pacingRoundCount: 8,
+      roundCountLocked: true,
+    }
+    const baseSchedule = generateSchedule(samplePlayers, baseSettings)
+    const extendedSchedule = generateSchedule(samplePlayers, {
+      ...baseSettings,
+      targetRoundCount: 9,
+    })
+    const trimmedSchedule = generateSchedule(samplePlayers, {
+      ...baseSettings,
+      targetRoundCount: 7,
+    })
+    const roundMatchIds = (round: (typeof baseSchedule.rounds)[number]) =>
+      round.matches.map((match) => match.id)
+
+    expect(extendedSchedule.rounds.slice(0, 8).map(roundMatchIds)).toEqual(
+      baseSchedule.rounds.map(roundMatchIds),
+    )
+    expect(trimmedSchedule.rounds.map(roundMatchIds)).toEqual(
+      baseSchedule.rounds.slice(0, 7).map(roundMatchIds),
+    )
+  })
+
+  it('honors a locked round count even when special meetings remain', () => {
+    const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 24 }, (_, index) =>
+      makeTestPlayer(`regular-${index + 1}`, index < 12 ? 'B' : 'C'),
+    )
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 2,
+      targetRoundCount: 3,
+      pacingRoundCount: 8,
+      roundCountLocked: true,
+    })
+
+    expect(schedule.rounds).toHaveLength(3)
+    expect(schedule.warnings.some((warning) => warning.includes('미완료'))).toBe(true)
   })
 
   it('allows participants to play multiple guest matches within the target window', () => {

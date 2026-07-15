@@ -11,6 +11,7 @@ import './App.css'
 import amaLogo from './assets/ama-logo.png'
 import {
   defaultMatchConditionOptions,
+  defaultLevelTiers,
   defaultPlayers,
   defaultSettings,
   defaultTournamentSettings,
@@ -59,6 +60,8 @@ import type {
   AppMode,
   Gender,
   Level,
+  LevelTierTable,
+  MatchAgeGroup,
   Match,
   MatchConditionKey,
   MatchConditionOptions,
@@ -145,6 +148,9 @@ const levelLabels: Record<Level, string> = {
 const levelOptions: Level[] = ['OA', 'A', 'B', 'C', 'D', 'O', '스페셜']
 
 const ageGroups: AgeGroup[] = ['무관', '20대', '30대', '40대', '45대', '50대', '55대이상']
+const matchAgeGroups: MatchAgeGroup[] = ['20대', '30대', '40대', '45대', '50대', '55대이상']
+const matchLevels = ['A', 'B', 'C', 'D'] as const
+const matchGenders = ['male', 'female'] as const
 
 const genderLabels: Record<Gender, string> = {
   male: '남',
@@ -378,6 +384,34 @@ const normalizeMatchConditionOptions = (
   ) as MatchConditionOptions
 }
 
+const normalizeLevelTiers = (value: unknown): LevelTierTable => {
+  const raw = value && typeof value === 'object'
+    ? value as Partial<LevelTierTable>
+    : {}
+
+  return Object.fromEntries(
+    matchAgeGroups.map((ageGroup) => [
+      ageGroup,
+      Object.fromEntries(
+        matchGenders.map((gender) => [
+          gender,
+          Object.fromEntries(
+            matchLevels.map((level) => [
+              level,
+              normalizePositiveInteger(
+                raw[ageGroup]?.[gender]?.[level],
+                defaultLevelTiers[ageGroup][gender][level],
+                1,
+                20,
+              ),
+            ]),
+          ),
+        ]),
+      ),
+    ]),
+  ) as LevelTierTable
+}
+
 const normalizeMatchSettings = (
   settings: Partial<MatchSettings> | undefined,
 ): MatchSettings => ({
@@ -406,12 +440,20 @@ const normalizeMatchSettings = (
     GAME_SLOT_MINUTES,
     24 * 60,
   ),
+  levelTiers: normalizeLevelTiers(settings?.levelTiers),
   targetRoundCount: normalizePositiveInteger(
     settings?.targetRoundCount,
     defaultSettings.targetRoundCount,
     1,
     99,
   ),
+  pacingRoundCount: normalizePositiveInteger(
+    settings?.pacingRoundCount,
+    settings?.targetRoundCount ?? defaultSettings.pacingRoundCount,
+    1,
+    99,
+  ),
+  roundCountLocked: settings?.roundCountLocked ?? false,
   conditionOptions: normalizeMatchConditionOptions(settings?.conditionOptions),
 })
 
@@ -806,6 +848,11 @@ const formatDuration = (minutes: number) => {
   return `${minutes}분`
 }
 
+const omitRecordKeys = <T,>(record: Record<string, T>, keys: Set<string>) =>
+  Object.fromEntries(
+    Object.entries(record).filter(([key]) => !keys.has(key)),
+  ) as Record<string, T>
+
 const copyToClipboard = async (value: string) => {
   if (navigator.clipboard?.writeText) {
     try {
@@ -1122,6 +1169,10 @@ function App() {
   const [tournamentTeamsOpen, setTournamentTeamsOpen] = useState(true)
   const [conditionsOpen, setConditionsOpen] = useState(false)
   const [levelHelpOpen, setLevelHelpOpen] = useState(false)
+  const [levelTierEditorOpen, setLevelTierEditorOpen] = useState(false)
+  const [levelTierDraft, setLevelTierDraft] = useState<LevelTierTable>(
+    () => normalizeLevelTiers(initialState.settings.levelTiers),
+  )
   const [contactOpen, setContactOpen] = useState(false)
   const [contactCopied, setContactCopied] = useState(false)
   const [playerDetailsOpen, setPlayerDetailsOpen] = useState(
@@ -1574,13 +1625,24 @@ function App() {
     setResults({})
     setPairMixes({})
     setMatchNameOverrides({})
+    setMatchNameDrafts({})
+    setEditingMatchIds({})
+    setPrizeDraw((current) => ({ ...current, matchMissions: {} }))
+    setPrintImageUrls([])
   }
 
   const resetMeetingTargetRounds = () => {
     setSettings((current) =>
-      getTargetRoundCount(current) === EVENT_LIMIT_ROUNDS
+      getTargetRoundCount(current) === EVENT_LIMIT_ROUNDS &&
+      current.pacingRoundCount === EVENT_LIMIT_ROUNDS &&
+      !current.roundCountLocked
         ? current
-        : { ...current, targetRoundCount: EVENT_LIMIT_ROUNDS },
+        : {
+            ...current,
+            targetRoundCount: EVENT_LIMIT_ROUNDS,
+            pacingRoundCount: EVENT_LIMIT_ROUNDS,
+            roundCountLocked: false,
+          },
     )
     clearMeetingScheduleState()
   }
@@ -1612,6 +1674,61 @@ function App() {
     setPairMixes({})
     setMatchNameOverrides({})
     setNotice('조건 변경됨')
+  }
+
+  const openLevelTierEditor = () => {
+    setLevelTierDraft(normalizeLevelTiers(settings.levelTiers))
+    setLevelHelpOpen(false)
+    setLevelTierEditorOpen(true)
+  }
+
+  const updateLevelTierDraft = (
+    ageGroup: MatchAgeGroup,
+    gender: 'male' | 'female',
+    level: (typeof matchLevels)[number],
+    value: unknown,
+  ) => {
+    const tier = normalizePositiveInteger(
+      value,
+      levelTierDraft[ageGroup][gender][level],
+      1,
+      20,
+    )
+    setLevelTierDraft((current) => ({
+      ...current,
+      [ageGroup]: {
+        ...current[ageGroup],
+        [gender]: {
+          ...current[ageGroup][gender],
+          [level]: tier,
+        },
+      },
+    }))
+  }
+
+  const applyLevelTierDraft = () => {
+    const hasRecordedMatches = Object.values(results).some(
+      (result) =>
+        result.completed ||
+        result.teamAScore?.trim() ||
+        result.teamBScore?.trim() ||
+        result.note?.trim(),
+    )
+    if (
+      hasRecordedMatches &&
+      !window.confirm(
+        '레벨 기준을 변경하면 대진이 다시 생성되고 기존 경기 기록이 삭제됩니다. 적용할까요?',
+      )
+    ) {
+      return
+    }
+    setSettings((current) => ({
+      ...current,
+      levelTiers: normalizeLevelTiers(levelTierDraft),
+    }))
+    clearMeetingScheduleState()
+    setLevelTierEditorOpen(false)
+    setNotice('레벨 기준 적용됨')
   }
 
   const isMeetingRoundOpen = (roundNumber: number) =>
@@ -1995,6 +2112,8 @@ function App() {
       ...current,
       seed: current.seed + 1,
       targetRoundCount: EVENT_LIMIT_ROUNDS,
+      pacingRoundCount: EVENT_LIMIT_ROUNDS,
+      roundCountLocked: false,
     }))
     setResults({})
     setPairMixes({})
@@ -2007,8 +2126,55 @@ function App() {
       ...current,
       targetRoundCount:
         Math.max(getTargetRoundCount(current), schedule.rounds.length) + 1,
+      roundCountLocked: true,
     }))
     setNotice('추가 대진 생성됨')
+  }
+
+  const removeLastScheduleRound = () => {
+    const lastRound = schedule.rounds.at(-1)
+    if (!lastRound || schedule.rounds.length <= 1) return
+
+    const matchIds = new Set(lastRound.matches.map((match) => match.id))
+    const hasRecordedData = lastRound.matches.some((match) => {
+      const result = results[match.id]
+      return Boolean(
+        result?.completed ||
+        result?.teamAScore?.trim() ||
+        result?.teamBScore?.trim() ||
+        result?.note?.trim() ||
+        result?.winnerSide ||
+        pairMixes[match.id] ||
+        Object.keys(matchNameOverrides[match.id] ?? {}).length > 0 ||
+        prizeDraw.matchMissions[match.id],
+      )
+    })
+    const message = hasRecordedData
+      ? `${lastRound.number}라운드의 점수, 메모, 수정, 미션도 함께 삭제됩니다. 계속할까요?`
+      : `${lastRound.number}라운드를 삭제할까요?`
+    if (!window.confirm(message)) return
+
+    setSettings((current) => ({
+      ...current,
+      targetRoundCount: Math.max(1, schedule.rounds.length - 1),
+      roundCountLocked: true,
+    }))
+    setResults((current) => omitRecordKeys(current, matchIds))
+    setPairMixes((current) => omitRecordKeys(current, matchIds))
+    setMatchNameOverrides((current) => omitRecordKeys(current, matchIds))
+    setMatchNameDrafts((current) => omitRecordKeys(current, matchIds))
+    setEditingMatchIds((current) => omitRecordKeys(current, matchIds))
+    setPrizeDraw((current) => ({
+      ...current,
+      matchMissions: omitRecordKeys(current.matchMissions, matchIds),
+    }))
+    setMeetingRoundOpen((current) => {
+      const next = { ...current }
+      delete next[lastRound.number]
+      return next
+    })
+    setPrintImageUrls([])
+    setNotice('마지막 라운드 삭제됨')
   }
 
   const updateResult = (
@@ -2746,11 +2912,91 @@ function App() {
             </div>
             <div className="level-help-list">
               <p>A가 가장 높고 D가 가장 낮습니다.</p>
-              <p>여자 20대 A는 남자 40대 B와 비슷한 기준으로 배정합니다.</p>
+              <p>같은 단계의 참가자는 비슷한 경기 수준으로 배정합니다.</p>
               <p>대진 카드에서 수동으로 수정 가능합니다.</p>
               <p>OA는 연령 상관없이 A레벨 우선 조합을 원하는 참가자입니다.</p>
               <p>O는 연령, 성별, 레벨 상관없이 경기해도 되는 참가자 입니다.</p>
               <p>스페셜은 초청/게스트 경기 배정용입니다.</p>
+            </div>
+            <button type="button" onClick={openLevelTierEditor}>
+              레벨 기준 수정
+            </button>
+          </section>
+        </div>
+      ) : null}
+
+      {levelTierEditorOpen ? (
+        <div className="dialog-backdrop" onClick={() => setLevelTierEditorOpen(false)}>
+          <section
+            className="info-dialog level-tier-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="level-tier-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="dialog-heading">
+              <div>
+                <h2 id="level-tier-title">레벨 기준 수정</h2>
+                <span>숫자가 작을수록 높은 수준 · 같은 숫자는 동급</span>
+              </div>
+              <button type="button" onClick={() => setLevelTierEditorOpen(false)}>
+                닫기
+              </button>
+            </div>
+            <div className="level-tier-table-wrap">
+              <table className="level-tier-table">
+                <thead>
+                  <tr>
+                    <th>연령</th>
+                    {matchGenders.flatMap((gender) =>
+                      matchLevels.map((level) => (
+                        <th key={`${gender}-${level}`}>
+                          {genderLabels[gender]} {level}
+                        </th>
+                      )),
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {matchAgeGroups.map((ageGroup) => (
+                    <tr key={ageGroup}>
+                      <th>{ageGroup}</th>
+                      {matchGenders.flatMap((gender) =>
+                        matchLevels.map((level) => (
+                          <td key={`${ageGroup}-${gender}-${level}`}>
+                            <input
+                              type="number"
+                              min="1"
+                              max="20"
+                              aria-label={`${ageGroup} ${genderLabels[gender]} ${level} 단계`}
+                              value={levelTierDraft[ageGroup][gender][level]}
+                              onChange={(event) =>
+                                updateLevelTierDraft(
+                                  ageGroup,
+                                  gender,
+                                  level,
+                                  event.target.value,
+                                )
+                              }
+                            />
+                          </td>
+                        )),
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="level-tier-actions">
+              <button
+                type="button"
+                onClick={() => setLevelTierDraft(normalizeLevelTiers(defaultLevelTiers))}
+              >
+                기본값
+              </button>
+              <button type="button" className="primary-action" onClick={applyLevelTierDraft}>
+                적용
+              </button>
             </div>
           </section>
         </div>
@@ -3009,6 +3255,8 @@ function App() {
                         ...current,
                         courtCount,
                         targetRoundCount: EVENT_LIMIT_ROUNDS,
+                        pacingRoundCount: EVENT_LIMIT_ROUNDS,
+                        roundCountLocked: false,
                       }))
                       clearMeetingScheduleState()
                     }}
@@ -3029,6 +3277,8 @@ function App() {
                                 ...current,
                                 singleGuestPerMatch: event.target.checked,
                                 targetRoundCount: EVENT_LIMIT_ROUNDS,
+                                pacingRoundCount: EVENT_LIMIT_ROUNDS,
+                                roundCountLocked: false,
                               }))
                               clearMeetingScheduleState()
                             }}
@@ -4120,9 +4370,19 @@ function App() {
               })}
               {!isSharedMode && schedule.rounds.length > 0 ? (
                 <div className="add-round-panel">
-                  <button type="button" onClick={addScheduleRound}>
-                    추가 생성
-                  </button>
+                  <div className="round-count-actions">
+                    <button
+                      type="button"
+                      className="round-delete-button"
+                      disabled={schedule.rounds.length <= 1}
+                      onClick={removeLastScheduleRound}
+                    >
+                      마지막 삭제
+                    </button>
+                    <button type="button" onClick={addScheduleRound}>
+                      추가 생성
+                    </button>
+                  </div>
                   <span>
                     생성 {totalGameSlots}R / 목표 {targetRoundCount}R · 다음 R{' '}
                     {formatDuration(totalGameSlots * GAME_SLOT_MINUTES)}

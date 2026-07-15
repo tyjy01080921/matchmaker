@@ -1,6 +1,9 @@
 import type {
   Gender,
   Level,
+  LevelTierTable,
+  MatchAgeGroup,
+  MatchLevel,
   Match,
   MatchConditionOptions,
   MatchNameOverrides,
@@ -24,7 +27,7 @@ import type {
   TournamentTeamBattleStanding,
   TournamentTeamBattleTie,
 } from './types'
-import { defaultMatchConditionOptions } from './defaultData'
+import { defaultLevelTiers, defaultMatchConditionOptions } from './defaultData'
 
 type HistoryState = {
   games: Record<string, number>
@@ -62,6 +65,7 @@ type RoundPacing = {
 const DEFAULT_TARGET_ROUND_COUNT = 8
 const GUEST_REPEAT_PARTNER_PENALTY = 50000
 const SPECIAL_TIMING_WEIGHT = 110
+const SPECIAL_TIMING_LARGE_ROSTER_MULTIPLIER = 100000
 const FAIR_GAME_MAX_WEIGHT = 10000000
 const FAIR_GAME_TOTAL_WEIGHT = 100000
 const SPECIAL_LIMIT_LEVEL_WEIGHT = 100000000
@@ -145,15 +149,6 @@ const guestWithinSpecialLimit = (
   return true
 }
 
-const specialLevelRank: Record<Exclude<Level, '스페셜'>, number> = {
-  O: 1,
-  D: 2,
-  C: 3,
-  B: 4,
-  A: 5,
-  OA: 6,
-}
-
 const limitedSpecialLevelPenalty = (
   regulars: Player[],
   guests: Player[],
@@ -164,19 +159,19 @@ const limitedSpecialLevelPenalty = (
   const targetGames = specialLimitGameTarget(settings)
   if (!Number.isFinite(targetGames)) return 0
   const earlyGameCount = Math.ceil(targetGames * 0.3)
-  const rankSum = regulars.reduce(
-    (sum, player) => sum + specialLevelRank[player.level as Exclude<Level, '스페셜'>],
+  const tierSum = regulars.reduce(
+    (sum, player) => sum + getPlayerMatchTier(player, settings.levelTiers),
     0,
   )
   const earlyGuestCount = guests.filter(
     (guest) => (history.guestGameCounts[guest.id] ?? 0) < earlyGameCount,
   ).length
   const highGuestCount = guests.length - earlyGuestCount
-  const maximumRankSum = regulars.length * specialLevelRank.OA
+  const maximumTierSum = regulars.length * 20
 
   return (
-    earlyGuestCount * rankSum * SPECIAL_LIMIT_LEVEL_WEIGHT +
-    highGuestCount * (maximumRankSum - rankSum) * SPECIAL_LIMIT_LEVEL_WEIGHT
+    earlyGuestCount * (maximumTierSum - tierSum) * SPECIAL_LIMIT_LEVEL_WEIGHT +
+    highGuestCount * tierSum * SPECIAL_LIMIT_LEVEL_WEIGHT
   )
 }
 
@@ -185,38 +180,29 @@ const specialGameCount = (player: Player, history: HistoryState) =>
 
 const hasGuest = (players: Player[]) => players.some((player) => player.isGuest)
 
-const ageGroups = ['20대', '30대', '40대', '45대', '50대', '55대이상'] as const
-
-const maleMatchScores = {
-  A: [100, 96, 88, 84, 78, 72],
-  B: [90, 86, 82, 78, 72, 68],
-  C: [70, 66, 60, 56, 50, 46],
-} as const
-
-const femaleMatchScores = {
-  A: [82, 78, 72, 68, 62, 58],
-  B: [72, 68, 62, 58, 52, 48],
-  C: [54, 50, 44, 40, 36, 32],
-} as const
-
-const dMatchScores = [26, 23, 20, 18, 15, 12] as const
-
-const ageIndex = (player: Player) =>
-  player.ageGroup === '무관'
-    ? 1
-    : Math.max(0, ageGroups.indexOf(player.ageGroup))
+export const getPlayerMatchTier = (
+  player: Player,
+  levelTiers: LevelTierTable = defaultLevelTiers,
+) => {
+  if (player.level === '스페셜' || player.level === 'OA' || player.level === 'O') {
+    return 1
+  }
+  const ageGroup: MatchAgeGroup =
+    player.ageGroup === '무관' ? '30대' : player.ageGroup
+  const level = player.level as MatchLevel
+  if (player.gender === 'male' || player.gender === 'female') {
+    return levelTiers[ageGroup][player.gender][level]
+  }
+  return (
+    levelTiers[ageGroup].male[level] + levelTiers[ageGroup].female[level]
+  ) / 2
+}
 
 export const getPlayerMatchScore = (player: Player) => {
-  const index = ageIndex(player)
   if (player.level === '스페셜') return 108
   if (player.level === 'OA' || player.level === 'O') return 94
-  if (player.level === 'D') return dMatchScores[index]
-
-  const maleScore = maleMatchScores[player.level][index]
-  const femaleScore = femaleMatchScores[player.level][index]
-  if (player.gender === 'male') return maleScore
-  if (player.gender === 'female') return femaleScore
-  return Math.round((maleScore + femaleScore) / 2)
+  const tier = player.matchLevelTier ?? getPlayerMatchTier(player)
+  return 110 - tier * 10
 }
 
 const tournamentParticipantAsPlayer = (
@@ -897,6 +883,7 @@ const scoreSpecialRegulars = (
   conditions: MatchConditionOptions,
   pacing: RoundPacing,
   settings: MatchSettings,
+  preferTimedLevel: boolean,
 ) => {
   const targetLevel = matchLevelValue(guest)
   const pendingCount = regulars.filter((player) => pendingIds.has(player.id)).length
@@ -935,7 +922,8 @@ const scoreSpecialRegulars = (
     limitedSpecialLevelPenalty(regulars, [guest], history, settings) +
     pendingPenalty +
     repeatGuestPenalty +
-    specialTimingPenalty([guest, ...regulars], pacing, conditions) +
+    specialTimingPenalty([guest, ...regulars], pacing, conditions) *
+      (preferTimedLevel ? SPECIAL_TIMING_LARGE_ROSTER_MULTIPLIER : 1) +
     groupConsecutivePlayPenalty(regulars, history, conditions) +
     random()
   )
@@ -963,6 +951,8 @@ const pickSpecialRegulars = (
   const pendingIds = new Set(pending.map((player) => player.id))
   const hasPending = pending.length > 0
   const expectedPendingCount = hasPending ? Math.min(3, pendingIds.size) : 0
+  const preferTimedLevel =
+    !settings.specialLimitEnabled && hasPending && availableRegulars.length >= 12
   const targetLevel = matchLevelValue(guest)
   const levelFit = [...availableRegulars]
     .sort((a, b) => {
@@ -1031,6 +1021,7 @@ const pickSpecialRegulars = (
           conditions,
           pacing,
           settings,
+          preferTimedLevel,
         )
         if (score < bestScore) {
           bestScore = score
@@ -2476,7 +2467,12 @@ export const generateSchedule = (
   players: Player[],
   settings: MatchSettings,
 ): Schedule => {
-  const activePlayers = players.filter((player) => player.active)
+  const activePlayers = players
+    .filter((player) => player.active)
+    .map((player) => ({
+      ...player,
+      matchLevelTier: getPlayerMatchTier(player, settings.levelTiers),
+    }))
   const activeRegulars = activePlayers.filter((player) => !player.isGuest)
   const activeGuests = activePlayers.filter((player) => player.isGuest)
   const history = makeHistory(activePlayers)
@@ -2503,16 +2499,22 @@ export const generateSchedule = (
   }
 
   const targetRoundCount = normalizeTargetRoundCount(settings.targetRoundCount)
+  const pacingRoundCount = normalizeTargetRoundCount(
+    settings.pacingRoundCount ?? targetRoundCount,
+  )
   const requiredCompletionRoundLimit = activePlayers.length * 2 + activeGuests.length + 4
-  const maxAutoRounds = Math.max(targetRoundCount, requiredCompletionRoundLimit)
+  const maxAutoRounds = settings.roundCountLocked
+    ? targetRoundCount
+    : Math.max(targetRoundCount, requiredCompletionRoundLimit)
   let stalledRounds = 0
 
   for (let roundNumber = 1; roundNumber <= maxAutoRounds; roundNumber += 1) {
     const usedIds = new Set<string>()
     const matches: Match[] = []
     const completedBeforeRound = history.specialCompleted.size
-    const allowExtraSpecial = roundNumber <= targetRoundCount
-    const pacing = { roundNumber, targetRoundCount }
+    const allowExtraSpecial =
+      settings.specialLimitEnabled || roundNumber <= pacingRoundCount
+    const pacing = { roundNumber, targetRoundCount: pacingRoundCount }
 
     const courtLimit = Math.min(settings.courtCount, Math.floor(activePlayers.length / 4))
 
@@ -2606,7 +2608,10 @@ export const generateSchedule = (
     const completedMinimumSpecial = settings.specialLimitEnabled
       ? true
       : activeGuests.length === 0 || (allRegularsCompleted && allGuestsPlayed)
-    if (reachedTargetRounds && completedMinimumSpecial) break
+    if (
+      reachedTargetRounds &&
+      (settings.roundCountLocked || completedMinimumSpecial)
+    ) break
 
     if (
       !completedMinimumSpecial &&

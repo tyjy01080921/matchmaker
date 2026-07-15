@@ -1,10 +1,38 @@
 import type {
   MatchConditionOptions,
+  LevelTierTable,
   MatchSettings,
   Player,
   TournamentSettings,
   TournamentTeam,
 } from './types'
+
+export const defaultLevelTiers: LevelTierTable = {
+  '20대': {
+    male: { A: 1, B: 2, C: 4, D: 7 },
+    female: { A: 3, B: 4, C: 6, D: 7 },
+  },
+  '30대': {
+    male: { A: 1, B: 2, C: 4, D: 7 },
+    female: { A: 3, B: 4, C: 6, D: 7 },
+  },
+  '40대': {
+    male: { A: 2, B: 3, C: 4, D: 7 },
+    female: { A: 4, B: 5, C: 6, D: 7 },
+  },
+  '45대': {
+    male: { A: 3, B: 4, C: 5, D: 8 },
+    female: { A: 5, B: 6, C: 7, D: 8 },
+  },
+  '50대': {
+    male: { A: 4, B: 5, C: 6, D: 9 },
+    female: { A: 6, B: 7, C: 8, D: 9 },
+  },
+  '55대이상': {
+    male: { A: 5, B: 6, C: 7, D: 10 },
+    female: { A: 7, B: 8, C: 9, D: 10 },
+  },
+}
 
 export const defaultMatchConditionOptions: MatchConditionOptions = {
   fairGames: true,
@@ -29,7 +57,10 @@ export const defaultSettings: MatchSettings = {
   specialGameLimit: 8,
   specialTimeLimitEnabled: true,
   specialTimeLimitMinutes: 120,
+  levelTiers: defaultLevelTiers,
   targetRoundCount: 8,
+  pacingRoundCount: 8,
+  roundCountLocked: false,
   conditionOptions: defaultMatchConditionOptions,
 }
 

@@ -303,6 +303,81 @@ h2 {
   line-height: 1.45;
 }
 
+.level-tier-dialog {
+  width: min(100%, 980px);
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+}
+
+.level-tier-dialog .dialog-heading span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.level-tier-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.level-tier-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.level-tier-table th,
+.level-tier-table td {
+  padding: 6px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  text-align: center;
+}
+
+.level-tier-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--paper);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.level-tier-table tbody th {
+  left: 0;
+  z-index: 1;
+  color: var(--ink);
+}
+
+.level-tier-table tr:last-child > * {
+  border-bottom: 0;
+}
+
+.level-tier-table tr > *:last-child {
+  border-right: 0;
+}
+
+.level-tier-table input {
+  width: 58px;
+  min-height: 34px;
+  margin: 0;
+  padding: 4px;
+  text-align: center;
+  font-weight: 900;
+}
+
+.level-tier-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .contact-copy-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 38px;
@@ -1569,6 +1644,23 @@ textarea {
   color: #fff;
 }
 
+.round-count-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.add-round-panel .round-delete-button {
+  border-color: var(--line);
+  background: #fff;
+  color: var(--red);
+}
+
+.add-round-panel button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .add-round-panel span {
   color: var(--muted);
   font-size: 13px;
@@ -2713,6 +2805,14 @@ textarea {
     overflow-x: visible;
     padding: 10px;
     white-space: normal;
+  }
+
+  .round-count-actions {
+    width: 100%;
+  }
+
+  .round-count-actions button {
+    flex: 1 1 0;
   }
 }
 

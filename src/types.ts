@@ -11,6 +11,14 @@ export type AgeGroup =
   | '50대'
   | '55대이상'
 
+export type MatchAgeGroup = Exclude<AgeGroup, '무관'>
+export type MatchLevel = Extract<Level, 'A' | 'B' | 'C' | 'D'>
+export type MatchGender = Extract<Gender, 'male' | 'female'>
+export type LevelTierTable = Record<
+  MatchAgeGroup,
+  Record<MatchGender, Record<MatchLevel, number>>
+>
+
 export type AppMode = 'meeting' | 'tournament'
 
 export type TournamentFormat =
@@ -42,6 +50,7 @@ export type Player = {
   active: boolean
   specialRequired: boolean
   specialMatchEligible?: boolean
+  matchLevelTier?: number
   isGuest: boolean
   guestGameLimit: number
 }
@@ -56,7 +65,10 @@ export type MatchSettings = {
   specialGameLimit: number
   specialTimeLimitEnabled: boolean
   specialTimeLimitMinutes: number
+  levelTiers: LevelTierTable
   targetRoundCount: number
+  pacingRoundCount: number
+  roundCountLocked: boolean
   conditionOptions: MatchConditionOptions
 }
 
