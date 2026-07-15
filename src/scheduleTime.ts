@@ -40,8 +40,7 @@ export const formatClockTime = (minutes: number) => {
 export const normalizeClockTime = (value: unknown, fallback: string) => {
   const parsed = parseClockTime(value)
   if (parsed === null) return fallback
-  const rounded = Math.round(parsed / GAME_SLOT_MINUTES) * GAME_SLOT_MINUTES
-  return formatClockTime(rounded)
+  return formatClockTime(parsed)
 }
 
 export const rawBookingDurationMinutes = (startTime: string, endTime: string) => {
@@ -59,8 +58,7 @@ export const getBookingDurationMinutes = (
   const duration = rawBookingDurationMinutes(startTime, endTime)
   if (
     duration < GAME_SLOT_MINUTES ||
-    duration > MAX_BOOKING_MINUTES ||
-    duration % GAME_SLOT_MINUTES !== 0
+    duration > MAX_BOOKING_MINUTES
   ) {
     return fallback
   }

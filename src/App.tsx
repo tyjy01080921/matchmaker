@@ -1327,6 +1327,7 @@ function App() {
   const [tournamentView, setTournamentView] = useState<'progress' | 'board'>('progress')
   const [notice, setNotice] = useState(initialContext.isShared ? '공유본' : '저장됨')
   const [settingsOpen, setSettingsOpen] = useState(true)
+  const [customBookingTime, setCustomBookingTime] = useState(false)
   const [playersOpen, setPlayersOpen] = useState(true)
   const [prizeOpen, setPrizeOpen] = useState(true)
   const [tournamentSettingsOpen, setTournamentSettingsOpen] = useState(true)
@@ -1350,7 +1351,7 @@ function App() {
   const [tournamentPrintImageUrls, setTournamentPrintImageUrls] = useState<string[]>([])
   const [editingMatchIds, setEditingMatchIds] = useState<Record<string, boolean>>({})
   const [matchNameDrafts, setMatchNameDrafts] = useState<MatchNameOverrides>({})
-  const [meetingRoundOpen, setMeetingRoundOpen] = useState<Record<number, boolean>>({})
+  const [collapsedMatchIds, setCollapsedMatchIds] = useState<Record<string, boolean>>({})
   const [tournamentRoundOpen, setTournamentRoundOpen] = useState<Record<number, boolean>>({})
   const [rouletteRotation, setRouletteRotation] = useState(0)
   const [rouletteWinnerName, setRouletteWinnerName] = useState('')
@@ -1641,7 +1642,8 @@ function App() {
   const completedMatches = schedule.rounds
     .flatMap((round) => round.matches)
     .filter((match) => results[match.id]?.completed).length
-  const totalMatches = schedule.rounds.flatMap((round) => round.matches).length
+  const allScheduledMatches = schedule.rounds.flatMap((round) => round.matches)
+  const totalMatches = allScheduledMatches.length
   const courtSchedules: Round[] = Array.from(
     { length: generatedMeetingSettings.courtCount },
     (_, index) => {
@@ -1660,8 +1662,6 @@ function App() {
       }
     },
   ).filter((court) => court.matches.length > 0)
-  const totalGameSlots = schedule.rounds.length
-  const targetRoundCount = getTargetRoundCount(generatedMeetingSettings)
   const bookingMinutes = getBookingDurationMinutes(
     settings.startTime,
     settings.endTime,
@@ -1678,14 +1678,20 @@ function App() {
     generatedMeetingSettings.startTime,
     generatedMeetingSettings.endTime,
   )
-  const overtimeGameSlots = Math.max(
-    totalGameSlots - scheduledBookingRoundCount,
+  const matchStartOffset = (match: Match) =>
+    match.startOffsetMinutes ?? (match.round - 1) * GAME_SLOT_MINUTES
+  const matchEndOffset = (match: Match) =>
+    matchStartOffset(match) + (match.durationMinutes ?? GAME_SLOT_MINUTES)
+  const estimatedMinutes = allScheduledMatches.reduce(
+    (latest, match) => Math.max(latest, matchEndOffset(match)),
     0,
   )
-  const estimatedMinutes = totalGameSlots * GAME_SLOT_MINUTES
   const estimatedEndTime = clockTimeAtOffset(
     generatedMeetingSettings.startTime,
     estimatedMinutes,
+  )
+  const overtimeMatches = allScheduledMatches.filter(
+    (match) => matchEndOffset(match) > scheduledBookingMinutes,
   )
   const specialCutoffTime = clockTimeAtOffset(
     generatedMeetingSettings.startTime,
@@ -1694,27 +1700,22 @@ function App() {
       scheduledBookingMinutes,
     ),
   )
-  const specialLastRound = schedule.rounds.reduce(
-    (lastRound, round) =>
-      round.matches.some((match) => match.isSpecial)
-        ? Math.max(lastRound, round.number)
-        : lastRound,
-    0,
-  )
-  const actualSpecialEndTime = specialLastRound > 0
+  const actualSpecialEndOffset = allScheduledMatches
+    .filter((match) => match.isSpecial)
+    .reduce((latest, match) => Math.max(latest, matchEndOffset(match)), 0)
+  const actualSpecialEndTime = actualSpecialEndOffset > 0
     ? clockTimeAtOffset(
         generatedMeetingSettings.startTime,
-        specialLastRound * GAME_SLOT_MINUTES,
+        actualSpecialEndOffset,
       )
     : ''
-  const generalOnlyAfterLimitRounds =
+  const generalOnlyAfterLimitMatches =
     generatedMeetingSettings.specialLimitEnabled &&
     generatedMeetingSettings.specialTimeLimitEnabled
-    ? schedule.rounds.filter(
-        (round) =>
-          (round.number - 1) * GAME_SLOT_MINUTES >=
-            generatedMeetingSettings.specialTimeLimitMinutes &&
-          round.matches.every((match) => !match.isSpecial),
+    ? allScheduledMatches.filter(
+        (match) =>
+          matchStartOffset(match) >= generatedMeetingSettings.specialTimeLimitMinutes &&
+          !match.isSpecial,
       ).length
     : 0
   const specialMinimumMatchCount = hasScheduledActiveGuests
@@ -1770,13 +1771,10 @@ function App() {
   ).length
   const progressPercent =
     totalMatches > 0 ? Math.round((completedMatches / totalMatches) * 100) : 0
-  const completedRounds = schedule.rounds.filter(
-    (round) =>
-      round.matches.length > 0 &&
-      round.matches.every((match) => results[match.id]?.completed),
-  ).length
-  const remainingRounds = Math.max(totalGameSlots - completedRounds, 0)
-  const remainingMinutes = remainingRounds * GAME_SLOT_MINUTES
+  const remainingMatches = Math.max(totalMatches - completedMatches, 0)
+  const courtGameCounts = courtSchedules.map((court) => court.matches.length)
+  const minimumCourtGames = courtGameCounts.length ? Math.min(...courtGameCounts) : 0
+  const maximumCourtGames = courtGameCounts.length ? Math.max(...courtGameCounts) : 0
   const scheduleParticipantStats = stats.filter((stat) =>
     !stat.player.isGuest &&
     scheduledActivePlayers.some((player) => player.id === stat.player.id),
@@ -1805,6 +1803,12 @@ function App() {
     )
     .map((stat) => playerDisplayName(stat.player, scheduleDisplayNames))
     .join(', ')
+  const maximumParticipantCount = scheduleParticipantStats.filter(
+    (stat) => stat.games === maximumParticipantGames,
+  ).length
+  const minimumParticipantCount = scheduleParticipantStats.filter(
+    (stat) => stat.games === minimumParticipantGames,
+  ).length
   const activeTournamentTeams = tournamentTeams.filter(
     (team) => team.active && team.name.trim(),
   )
@@ -2053,6 +2057,7 @@ function App() {
     setMeetingLineups({})
     setMatchNameDrafts({})
     setEditingMatchIds({})
+    setCollapsedMatchIds({})
     setPrizeDraw((current) => ({ ...current, matchMissions: {} }))
     setPrintImageUrls([])
   }
@@ -2117,6 +2122,21 @@ function App() {
       roundCountLocked: true,
     }))
     setNotice('예약 종료 변경됨 · 생성 필요')
+  }
+
+  const updateMeetingDuration = (duration: number) => {
+    const safeDuration = Math.min(MAX_BOOKING_MINUTES, Math.max(GAME_SLOT_MINUTES, duration))
+    const targetRoundCount = Math.floor(safeDuration / GAME_SLOT_MINUTES)
+    setSettings((current) => ({
+      ...current,
+      endTime: clockTimeAtOffset(current.startTime, safeDuration),
+      specialTimeLimitMinutes: Math.min(current.specialTimeLimitMinutes, safeDuration),
+      targetRoundCount,
+      pacingRoundCount: targetRoundCount,
+      roundCountLocked: true,
+    }))
+    setCustomBookingTime(false)
+    setNotice(`대관 ${formatDuration(safeDuration)} · 생성 필요`)
   }
 
   const setAppModeAndNotice = (mode: AppMode) => {
@@ -2240,13 +2260,10 @@ function App() {
     setNotice('레벨 기준 변경됨 · 생성 필요')
   }
 
-  const isMeetingRoundOpen = (roundNumber: number) =>
-    meetingRoundOpen[roundNumber] ?? true
-
-  const toggleMeetingRound = (roundNumber: number) => {
-    setMeetingRoundOpen((current) => ({
+  const toggleMeetingMatch = (matchId: string) => {
+    setCollapsedMatchIds((current) => ({
       ...current,
-      [roundNumber]: !(current[roundNumber] ?? true),
+      [matchId]: !current[matchId],
     }))
   }
 
@@ -2768,11 +2785,7 @@ function App() {
       ...current,
       matchMissions: omitRecordKeys(current.matchMissions, matchIds),
     }))
-    setMeetingRoundOpen((current) => {
-      const next = { ...current }
-      delete next[lastRound.number]
-      return next
-    })
+    setCollapsedMatchIds((current) => omitRecordKeys(current, matchIds))
     setPrintImageUrls([])
     setNotice('마지막 라운드 삭제됨')
   }
@@ -3912,29 +3925,8 @@ function App() {
                       }))
                     }}
                   />
-                  <div className="booking-time-controls" aria-label="대관 시간">
-                    <label>
-                      시작
-                      <input
-                        type="time"
-                        step={GAME_SLOT_MINUTES * 60}
-                        value={settings.startTime}
-                        onChange={(event) => updateMeetingStartTime(event.target.value)}
-                      />
-                    </label>
-                    <label>
-                      종료
-                      <input
-                        type="time"
-                        step={GAME_SLOT_MINUTES * 60}
-                        value={settings.endTime}
-                        onChange={(event) => updateMeetingEndTime(event.target.value)}
-                      />
-                    </label>
-                    <span>{formatDuration(bookingMinutes)}</span>
-                  </div>
                   <label>
-                    일반 경기
+                    일반 경기 시간
                     <select
                       value={settings.normalGameMinutes}
                       onChange={(event) => {
@@ -3950,6 +3942,87 @@ function App() {
                       <option value={15}>15분</option>
                     </select>
                   </label>
+                  <div className="booking-time-controls" aria-label="대관 시간">
+                    <div className="booking-start-control">
+                      <span>시작</span>
+                      <button
+                        type="button"
+                        aria-label="시작 30분 당기기"
+                        onClick={() => updateMeetingStartTime(clockTimeAtOffset(settings.startTime, -30))}
+                      >
+                        −30
+                      </button>
+                      <select
+                        aria-label="시작 시각"
+                        value={settings.startTime}
+                        onChange={(event) => updateMeetingStartTime(event.target.value)}
+                      >
+                        {!Array.from({ length: 48 }, (_, index) =>
+                          clockTimeAtOffset('00:00', index * 30),
+                        ).includes(settings.startTime) ? (
+                          <option value={settings.startTime}>{settings.startTime}</option>
+                        ) : null}
+                        {Array.from({ length: 48 }, (_, index) => {
+                          const time = clockTimeAtOffset('00:00', index * 30)
+                          return <option value={time} key={time}>{time}</option>
+                        })}
+                      </select>
+                      <button
+                        type="button"
+                        aria-label="시작 30분 늦추기"
+                        onClick={() => updateMeetingStartTime(clockTimeAtOffset(settings.startTime, 30))}
+                      >
+                        +30
+                      </button>
+                    </div>
+                    <div className="booking-duration-control">
+                      <span>대관</span>
+                      {[120, 180, 240].map((minutes) => (
+                        <button
+                          type="button"
+                          className={!customBookingTime && bookingMinutes === minutes ? 'active' : ''}
+                          onClick={() => updateMeetingDuration(minutes)}
+                          key={minutes}
+                        >
+                          {minutes / 60}시간
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        className={customBookingTime ? 'active' : ''}
+                        onClick={() => setCustomBookingTime(true)}
+                      >
+                        직접
+                      </button>
+                    </div>
+                    <div className="booking-result">
+                      <strong>{settings.startTime}–{settings.endTime}</strong>
+                      <span>{formatDuration(bookingMinutes)}</span>
+                    </div>
+                    {customBookingTime ? (
+                      <div className="booking-custom-control">
+                        <span>종료 조정</span>
+                        <button
+                          type="button"
+                          onClick={() => updateMeetingEndTime(clockTimeAtOffset(settings.endTime, -10))}
+                        >
+                          −10분
+                        </button>
+                        <input
+                          type="time"
+                          step={10 * 60}
+                          value={settings.endTime}
+                          onChange={(event) => updateMeetingEndTime(event.target.value)}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => updateMeetingEndTime(clockTimeAtOffset(settings.endTime, 10))}
+                        >
+                          +10분
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                   {guestPlayers.length > 0 ? (
                     <div className="special-settings-card expanded">
                       <div className="special-settings-toggles">
@@ -4190,8 +4263,8 @@ function App() {
                     <span>스페셜</span>
                   </div>
                   <div>
-                    <strong>{totalGameSlots}R</strong>
-                    <span>총 {totalMatches}경기</span>
+                    <strong>{totalMatches}</strong>
+                    <span>총 경기</span>
                   </div>
                 </div>
               </>
@@ -4224,7 +4297,7 @@ function App() {
                   </button>
                 </div>
                 <span>
-                  참가 {activeMembers.length}명 · 스페셜 {activeGuests.length}명 · 생성 {totalGameSlots}R
+                  참가 {activeMembers.length}명 · 스페셜 {activeGuests.length}명 · 생성 {totalMatches}경기
                 </span>
               </div>
               <div className="compact-actions">
@@ -4772,8 +4845,11 @@ function App() {
                 {actualSpecialEndTime ? <span>마지막 배정 {actualSpecialEndTime}</span> : null}
                 <span>
                   {generatedMeetingSettings.specialLimitEnabled
-                    ? `제한 기준 ${specialLimitRoundCount}R`
-                    : `최소 ${specialMinimumRoundCount}R`}
+                    ? `스페셜 운영 ${formatDuration(Math.min(
+                        generatedMeetingSettings.specialTimeLimitMinutes,
+                        scheduledBookingMinutes,
+                      ))}`
+                    : `최소 필요 ${specialMinimumMatchCount}경기`}
                 </span>
                 {scheduledActiveGuests.map((guest) => (
                   <span key={guest.id}>
@@ -4793,62 +4869,52 @@ function App() {
             </div>
           ) : null}
 
-          <section className={`time-bar ${overtimeGameSlots > 0 ? 'time-overrun' : ''}`}>
+          <section className={`time-bar ${overtimeMatches.length > 0 ? 'time-overrun' : ''}`}>
             <div className="schedule-overview-heading">
               <span className="eyebrow">대진표 요약</span>
               <h2>{scheduledActivePlayers.length}명 참가</h2>
               <span>스페셜 {scheduledActiveGuests.length}명 포함</span>
-              <div className={overtimeGameSlots > 0 ? 'time-alert' : 'time-ok'}>
-                {overtimeGameSlots > 0
-                  ? `${scheduledBookingRoundCount + 1}R부터 초과 · ${overtimeGameSlots}R`
+              <div className={overtimeMatches.length > 0 ? 'time-alert' : 'time-ok'}>
+                {overtimeMatches.length > 0
+                  ? `${overtimeMatches.length}경기 예약 종료 초과`
                   : `${generatedMeetingSettings.endTime} 내 완료`}
               </div>
             </div>
             <div className="schedule-summary-grid">
               <div>
-                <span>경기 시작 시간대</span>
-                <strong>{totalGameSlots}개 · 기준 {targetRoundCount}개</strong>
+                <span>운영 시간</span>
+                <strong>
+                  {generatedMeetingSettings.startTime}–{generatedMeetingSettings.endTime}
+                </strong>
+                <small>{formatDuration(scheduledBookingMinutes)} · 실제 종료 {estimatedEndTime}</small>
               </div>
               <div>
                 <span>총 경기</span>
                 <strong>{totalMatches}경기</strong>
               </div>
               <div>
-                <span>예약·예상 종료</span>
-                <strong>
-                  {generatedMeetingSettings.startTime}–
-                  {generatedMeetingSettings.endTime}
-                </strong>
-                <small>
-                  {formatDuration(scheduledBookingMinutes)} · 예상 {estimatedEndTime}
-                </small>
+                <span>코트별 경기</span>
+                <strong>{minimumCourtGames}–{maximumCourtGames}경기</strong>
+                <small>{courtSchedules.length}개 코트 사용</small>
               </div>
               <div>
-                <span>평균 경기</span>
+                <span>참가자 평균</span>
                 <strong>{averageGames.toFixed(1)}경기</strong>
               </div>
               <div className="schedule-summary-wide">
-                <span>최다 경기 · 평균 초과</span>
-                <strong>
-                  {maximumParticipants
-                    ? `${maximumParticipants} · ${maximumParticipantGames}경기`
-                    : '없음'}
-                </strong>
+                <span>최다 배정</span>
+                <strong>{maximumParticipantGames}경기 · {maximumParticipantCount}명</strong>
               </div>
               <div className="schedule-summary-wide">
-                <span>최소 경기 · 평균 미만</span>
-                <strong>
-                  {minimumParticipants
-                    ? `${minimumParticipants} · ${minimumParticipantGames}경기`
-                    : '없음'}
-                </strong>
+                <span>최소 배정</span>
+                <strong>{minimumParticipantGames}경기 · {minimumParticipantCount}명</strong>
               </div>
               {generatedMeetingSettings.specialLimitEnabled &&
               generatedMeetingSettings.specialTimeLimitEnabled ? (
                 <div className="schedule-summary-wide">
-                  <span>스페셜 종료 후 일반 대진</span>
+                  <span>스페셜 운영 종료 후</span>
                   <strong>
-                    {specialCutoffTime}부터 · {generalOnlyAfterLimitRounds}R
+                    {specialCutoffTime}부터 · 일반 {generalOnlyAfterLimitMatches}경기
                   </strong>
                 </div>
               ) : null}
@@ -4865,16 +4931,16 @@ function App() {
             </div>
             <div className="progress-grid">
               <div>
-                <span>남은 시간</span>
-                <strong>{formatDuration(remainingMinutes)}</strong>
+                <span>남은 경기</span>
+                <strong>{remainingMatches}경기</strong>
               </div>
               <div>
                 <span>완료 경기</span>
                 <strong>{completedMatches}/{totalMatches}경기</strong>
               </div>
               <div>
-                <span>완료 시간대</span>
-                <strong>{completedRounds}/{totalGameSlots}개</strong>
+                <span>전체 경기</span>
+                <strong>{totalMatches}경기</strong>
               </div>
             </div>
           </section>
@@ -4950,8 +5016,6 @@ function App() {
                       (match.durationMinutes ?? GAME_SLOT_MINUTES) >
                     scheduledBookingMinutes,
                 )
-                const roundOpen = isMeetingRoundOpen(round.number)
-
                 return (
                   <section
                     className={`round-section ${
@@ -4962,13 +5026,6 @@ function App() {
                     <div className="round-heading">
                       <div className="round-title">
                         <h2>{round.number}코트</h2>
-                        <button
-                          type="button"
-                          className="section-toggle-button"
-                          onClick={() => toggleMeetingRound(round.number)}
-                        >
-                          {roundOpen ? '접기' : '펼치기'}
-                        </button>
                         <span className={`time-chip ${isOvertimeRound ? 'over' : ''}`}>
                           {isOvertimeRound ? '예약 초과' : '예약 내'}
                         </span>
@@ -4979,9 +5036,24 @@ function App() {
                         </span>
                       </div>
                     </div>
-                    {roundOpen ? (
                     <div className="match-grid">
                       {round.matches.map((match, matchIndex) => {
+                        if (collapsedMatchIds[match.id]) {
+                          return (
+                            <article
+                              className="match-card collapsed-match-card"
+                              key={match.id}
+                            >
+                              <strong>{matchIndex + 1}번</strong>
+                              <button
+                                type="button"
+                                onClick={() => toggleMeetingMatch(match.id)}
+                              >
+                                펼치기
+                              </button>
+                            </article>
+                          )
+                        }
                         const result = results[match.id] ?? {
                           teamAScore: '',
                           teamBScore: '',
@@ -5180,22 +5252,31 @@ function App() {
                                 : null}
                             </div>
                             <div className="match-footer">
-                              {isSharedMode ? (
-                                <span>{result.completed ? '완료' : '대기'}</span>
-                              ) : (
-                                <label className="checkbox-label">
-                                  <input
-                                    type="checkbox"
-                                    checked={result.completed}
-                                    onChange={(event) =>
-                                      updateResult(match.id, {
-                                        completed: event.target.checked,
-                                      })
-                                    }
-                                  />
-                                  완료
-                                </label>
-                              )}
+                              <div className="match-footer-actions">
+                                {isSharedMode ? (
+                                  <span>{result.completed ? '완료' : '대기'}</span>
+                                ) : (
+                                  <label className="checkbox-label">
+                                    <input
+                                      type="checkbox"
+                                      checked={result.completed}
+                                      onChange={(event) =>
+                                        updateResult(match.id, {
+                                          completed: event.target.checked,
+                                        })
+                                      }
+                                    />
+                                    완료
+                                  </label>
+                                )}
+                                <button
+                                  type="button"
+                                  className="match-collapse-button"
+                                  onClick={() => toggleMeetingMatch(match.id)}
+                                >
+                                  접기
+                                </button>
+                              </div>
                               <span>
                                 {winnerLabel(
                                   match,
@@ -5223,11 +5304,6 @@ function App() {
                         )
                       })}
                     </div>
-                    ) : (
-                      <div className="collapsed-summary">
-                        {round.matches.length}경기
-                      </div>
-                    )}
                   </section>
                 )
               })}
@@ -5240,15 +5316,14 @@ function App() {
                       disabled={schedule.rounds.length <= 1}
                       onClick={removeLastScheduleRound}
                     >
-                      마지막 삭제
+                      마지막 시간대 삭제
                     </button>
                     <button type="button" onClick={addScheduleRound}>
-                      추가 생성
+                      시간대 추가
                     </button>
                   </div>
                   <span>
-                    생성 {totalGameSlots}R / 목표 {targetRoundCount}R · 다음 R{' '}
-                    {formatDuration(totalGameSlots * GAME_SLOT_MINUTES)}
+                    현재 {totalMatches}경기 · 예약 종료 {generatedMeetingSettings.endTime}
                   </span>
                 </div>
               ) : null}

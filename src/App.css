@@ -522,14 +522,79 @@ h2 {
 
 .booking-time-controls {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  grid-template-columns: 1fr;
   grid-column: 1 / -1;
-  align-items: end;
-  gap: 8px;
+  gap: 7px;
   padding: 8px 9px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fff;
+}
+
+.booking-start-control,
+.booking-duration-control,
+.booking-custom-control,
+.booking-result {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+}
+
+.booking-start-control {
+  grid-template-columns: 42px 48px minmax(0, 1fr) 48px;
+}
+
+.booking-duration-control {
+  grid-template-columns: 42px repeat(4, minmax(0, 1fr));
+}
+
+.booking-custom-control {
+  grid-template-columns: 62px 54px minmax(0, 1fr) 54px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.booking-start-control > span,
+.booking-duration-control > span,
+.booking-custom-control > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.booking-time-controls button,
+.booking-time-controls select,
+.booking-time-controls input {
+  min-width: 0;
+  min-height: 31px;
+  margin: 0;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.booking-time-controls button.active {
+  border-color: var(--green);
+  color: var(--green);
+  background: var(--soft-green);
+}
+
+.booking-result {
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: var(--soft-green);
+}
+
+.booking-result strong {
+  color: var(--navy);
+  font-size: 13px;
+}
+
+.booking-result span {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 900;
 }
 
 .booking-time-controls label {
@@ -1869,6 +1934,37 @@ textarea {
   scroll-snap-align: start;
 }
 
+.court-schedule-list .collapsed-match-card {
+  display: flex;
+  flex: 0 0 86px;
+  min-height: 72px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+}
+
+.collapsed-match-card strong {
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.collapsed-match-card button,
+.match-collapse-button {
+  min-height: 24px;
+  padding: 3px 6px;
+  font-size: 10px;
+}
+
+.match-footer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 @media (min-width: 1100px) {
   .app-header {
     display: flex;
@@ -1977,10 +2073,7 @@ textarea {
     font-size: 14px;
   }
 
-  .booking-time-controls {
-    gap: 5px;
-    padding: 6px;
-  }
+  .booking-time-controls { gap: 5px; padding: 6px; }
 
   .booking-time-controls input,
   .settings-grid > label select {
@@ -2133,6 +2226,12 @@ textarea {
     flex-basis: 318px;
     gap: 5px;
     padding: 7px;
+  }
+
+  .court-schedule-list .collapsed-match-card {
+    flex-basis: 78px;
+    gap: 4px;
+    padding: 6px;
   }
 
   .court-schedule-list .match-card header {
@@ -2870,6 +2969,30 @@ textarea {
     font-size: 16px;
   }
 
+  .booking-start-control {
+    grid-template-columns: 36px 45px minmax(0, 1fr) 45px;
+  }
+
+  .booking-duration-control {
+    grid-template-columns: 36px repeat(4, minmax(0, 1fr));
+  }
+
+  .booking-custom-control {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+
+  .booking-custom-control > span {
+    grid-column: 1 / -1;
+  }
+
+  .booking-time-controls button,
+  .booking-time-controls select,
+  .booking-time-controls input {
+    min-height: 34px;
+    padding-inline: 4px;
+    font-size: 12px;
+  }
+
   .header-actions,
   .compact-actions,
   .bulk-actions {
@@ -3409,6 +3532,10 @@ textarea {
 
   .court-schedule-list .match-card {
     flex-basis: min(86vw, 292px);
+  }
+
+  .court-schedule-list .collapsed-match-card {
+    flex-basis: 78px;
   }
 
   .match-card {

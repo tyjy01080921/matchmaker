@@ -19,8 +19,12 @@ describe('schedule time', () => {
     expect(clockTimeAtOffset('22:00', 180)).toBe('01:00')
   })
 
-  it('normalizes clock inputs to the nearest slot', () => {
-    expect(normalizeClockTime('18:08', '18:00')).toBe('18:15')
+  it('keeps valid minute precision for direct booking adjustments', () => {
+    expect(normalizeClockTime('18:08', '18:00')).toBe('18:08')
     expect(normalizeClockTime('invalid', '18:00')).toBe('18:00')
+  })
+
+  it('accepts booking windows adjusted in ten-minute increments', () => {
+    expect(getBookingDurationMinutes('08:30', '11:40')).toBe(190)
   })
 })
