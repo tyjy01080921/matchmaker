@@ -4179,54 +4179,83 @@ function App() {
                       </div>
                       {settings.specialLimitEnabled ? (
                         <div className="special-limit-options">
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={settings.specialGameLimitEnabled}
-                              disabled={!settings.specialTimeLimitEnabled}
-                              onChange={(event) => {
-                                setSettings((current) => ({
+                          <div className="special-limit-row">
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={settings.specialGameLimitEnabled}
+                                disabled={!settings.specialTimeLimitEnabled}
+                                onChange={(event) => {
+                                  setSettings((current) => ({
+                                    ...current,
+                                    specialGameLimitEnabled: event.target.checked,
+                                  }))
+                                }}
+                              />
+                              경기 수
+                            </label>
+                            <div className="limit-stepper">
+                              <button
+                                type="button"
+                                aria-label="스페셜 경기 수 줄이기"
+                                disabled={!settings.specialGameLimitEnabled || settings.specialGameLimit <= 1}
+                                onClick={() => setSettings((current) => ({
                                   ...current,
-                                  specialGameLimitEnabled: event.target.checked,
-                                }))
-                              }}
-                            />
-                            경기 수
-                            <input
-                              type="number"
-                              min="1"
-                              max="99"
-                              aria-label="스페셜 최대 경기 수"
-                              disabled={!settings.specialGameLimitEnabled}
-                              value={settings.specialGameLimit}
-                              onChange={(event) => {
-                                const specialGameLimit = normalizePositiveInteger(
-                                  event.target.value,
-                                  settings.specialGameLimit,
-                                  1,
-                                  99,
-                                )
-                                setSettings((current) => ({
+                                  specialGameLimit: Math.max(1, current.specialGameLimit - 1),
+                                }))}
+                              >
+                                −
+                              </button>
+                              <input
+                                type="number"
+                                inputMode="numeric"
+                                min="1"
+                                max="99"
+                                aria-label="스페셜 최대 경기 수"
+                                disabled={!settings.specialGameLimitEnabled}
+                                value={settings.specialGameLimit}
+                                onChange={(event) => {
+                                  const specialGameLimit = normalizePositiveInteger(
+                                    event.target.value,
+                                    settings.specialGameLimit,
+                                    1,
+                                    99,
+                                  )
+                                  setSettings((current) => ({
+                                    ...current,
+                                    specialGameLimit,
+                                  }))
+                                }}
+                              />
+                              <button
+                                type="button"
+                                aria-label="스페셜 경기 수 늘리기"
+                                disabled={!settings.specialGameLimitEnabled || settings.specialGameLimit >= 99}
+                                onClick={() => setSettings((current) => ({
                                   ...current,
-                                  specialGameLimit,
-                                }))
-                              }}
-                            />
-                            경기
-                          </label>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={settings.specialTimeLimitEnabled}
-                              disabled={!settings.specialGameLimitEnabled}
-                              onChange={(event) => {
-                                setSettings((current) => ({
-                                  ...current,
-                                  specialTimeLimitEnabled: event.target.checked,
-                                }))
-                              }}
-                            />
-                            시간
+                                  specialGameLimit: Math.min(99, current.specialGameLimit + 1),
+                                }))}
+                              >
+                                +
+                              </button>
+                              <span>경기</span>
+                            </div>
+                          </div>
+                          <div className="special-limit-row">
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={settings.specialTimeLimitEnabled}
+                                disabled={!settings.specialGameLimitEnabled}
+                                onChange={(event) => {
+                                  setSettings((current) => ({
+                                    ...current,
+                                    specialTimeLimitEnabled: event.target.checked,
+                                  }))
+                                }}
+                              />
+                              시간
+                            </label>
                             <select
                               aria-label="스페셜 최대 시간"
                               disabled={!settings.specialTimeLimitEnabled}
@@ -4247,7 +4276,7 @@ function App() {
                                 </option>
                               ))}
                             </select>
-                          </label>
+                          </div>
                         </div>
                       ) : null}
                     </div>

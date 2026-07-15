@@ -696,15 +696,45 @@ h2 {
   padding: 0 9px;
 }
 
-.special-limit-options label {
+.special-limit-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
   padding: 7px 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fff;
 }
 
+.special-limit-row label {
+  flex: 0 0 auto;
+}
+
+.limit-stepper {
+  display: grid;
+  grid-template-columns: 30px 48px 30px auto;
+  align-items: center;
+  gap: 3px;
+}
+
+.limit-stepper button {
+  width: 30px;
+  min-height: 30px;
+  padding: 0;
+  color: var(--green);
+  background: var(--soft-green);
+}
+
+.limit-stepper span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
 .special-limit-options input[type='number'] {
-  width: 52px;
+  width: 48px;
   min-height: 30px;
   margin: 0 0 0 auto;
   padding: 4px 6px;
@@ -2102,7 +2132,7 @@ textarea {
     padding: 0 6px;
   }
 
-  .special-limit-options label,
+  .special-limit-row,
   .special-allocation-options label {
     min-width: 0;
     gap: 4px;
@@ -3362,7 +3392,7 @@ textarea {
     padding: 0 6px;
   }
 
-  .special-limit-options label {
+  .special-limit-row {
     min-width: 0;
     gap: 4px;
     padding: 6px;
@@ -3376,10 +3406,31 @@ textarea {
   }
 
   .special-limit-options input[type='number'] {
+    width: 54px;
+    min-width: 54px;
+    min-height: 36px;
+    margin: 0;
+    padding: 4px;
+    text-align: center;
+  }
+
+  .special-limit-row {
+    align-items: center;
+  }
+
+  .special-limit-row {
+    grid-column: 1 / -1;
+  }
+
+  .limit-stepper {
+    grid-template-columns: 38px 54px 38px auto;
+    gap: 5px;
+  }
+
+  .limit-stepper button {
     width: 38px;
-    min-width: 0;
-    min-height: 28px;
-    padding: 3px;
+    min-height: 36px;
+    font-size: 16px;
   }
 
   .special-limit-options select {
