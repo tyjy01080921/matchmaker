@@ -3213,6 +3213,7 @@ export const calculateStats = (
   matchNameOverrides: MatchNameOverrides = {},
 ): PlayerStat[] => {
   const stats = new Map<string, PlayerStat>()
+  const matchWindowsByPlayer = new Map<string, Array<{ start: number; end: number }>>()
 
   const makeManualPlayer = (match: Match, player: Player): Player => {
     const overrideName = matchNameOverrides[match.id]?.[player.id]?.trim()
@@ -3228,13 +3229,6 @@ export const calculateStats = (
   const matchStatPlayers = (match: Match) =>
     matchPlayers(match).map((player) => makeManualPlayer(match, player))
 
-  const replacedPlayersForRound = (round: Round) =>
-    round.matches.flatMap((match) =>
-      matchPlayers(match).filter((player) =>
-        Boolean(matchNameOverrides[match.id]?.[player.id]?.trim()),
-      ),
-    )
-
   const ensureStat = (player: Player) => {
     const existing = stats.get(player.id)
     if (existing) return existing
@@ -3242,7 +3236,8 @@ export const calculateStats = (
     const next: PlayerStat = {
       player,
       games: 0,
-      rests: 0,
+      averageWaitMinutes: null,
+      maxWaitMinutes: null,
       wins: 0,
       losses: 0,
       pointsFor: 0,
@@ -3259,16 +3254,6 @@ export const calculateStats = (
   }
 
   for (const round of schedule.rounds) {
-    const restingPlayers = uniquePlayers([
-      ...round.resting,
-      ...replacedPlayersForRound(round),
-    ])
-
-    for (const player of restingPlayers) {
-      const stat = stats.get(player.id)
-      if (stat) stat.rests += 1
-    }
-
     for (const match of round.matches) {
       const result = results[match.id]
       const teamAScore = result ? numericScore(result.teamAScore) : null
@@ -3284,6 +3269,9 @@ export const calculateStats = (
       for (const player of playersInMatch) {
         const stat = ensureStat(player)
         stat.games += 1
+        const windows = matchWindowsByPlayer.get(player.id) ?? []
+        windows.push(matchTimeWindow(match))
+        matchWindowsByPlayer.set(player.id, windows)
         if (!player.isGuest && guestMatch) stat.guestGames += 1
       }
 
@@ -3309,6 +3297,21 @@ export const calculateStats = (
         else stat.wins += 1
       }
     }
+  }
+
+  for (const [playerId, windows] of matchWindowsByPlayer) {
+    if (windows.length < 2) continue
+    const ordered = [...windows].sort((a, b) => a.start - b.start || a.end - b.end)
+    const waits: number[] = []
+    let previousEnd = ordered[0].end
+    for (const window of ordered.slice(1)) {
+      waits.push(Math.max(0, window.start - previousEnd))
+      previousEnd = Math.max(previousEnd, window.end)
+    }
+    const stat = stats.get(playerId)
+    if (!stat) continue
+    stat.averageWaitMinutes = waits.reduce((sum, wait) => sum + wait, 0) / waits.length
+    stat.maxWaitMinutes = Math.max(...waits)
   }
 
   return Array.from(stats.values()).sort((a, b) => {

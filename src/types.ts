@@ -267,7 +267,8 @@ export type MeetingLineupsByMatch = Record<string, MeetingLineup>
 export type PlayerStat = {
   player: Player
   games: number
-  rests: number
+  averageWaitMinutes: number | null
+  maxWaitMinutes: number | null
   wins: number
   losses: number
   pointsFor: number

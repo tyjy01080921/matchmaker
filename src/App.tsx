@@ -5369,7 +5369,7 @@ function App() {
                       <th>연령대</th>
                       <th>성별</th>
                       <th>경기</th>
-                      <th>휴식</th>
+                      <th>평균 대기</th>
                       <th>승</th>
                       <th>패</th>
                       <th>승률</th>
@@ -5397,7 +5397,11 @@ function App() {
                               : genderLabels[stat.player.gender]}
                           </td>
                           <td>{stat.games}</td>
-                          <td>{stat.rests}</td>
+                          <td>
+                            {stat.averageWaitMinutes === null || stat.maxWaitMinutes === null
+                              ? '-'
+                              : `${Math.round(stat.averageWaitMinutes)}분 · 최장 ${stat.maxWaitMinutes}분`}
+                          </td>
                           <td>{stat.wins}</td>
                           <td>{stat.losses}</td>
                           <td>{winRate}%</td>

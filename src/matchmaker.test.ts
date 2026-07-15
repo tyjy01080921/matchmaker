@@ -1323,9 +1323,30 @@ describe('generateSchedule', () => {
     const manualStat = stats.find((item) => item.player.name === '현장참가자')
 
     expect(originalStat?.games).toBe(0)
-    expect(originalStat?.rests).toBeGreaterThan(0)
+    expect(originalStat?.averageWaitMinutes).toBeNull()
     expect(manualStat?.games).toBe(1)
-    expect(manualStat?.rests).toBe(0)
+    expect(manualStat?.averageWaitMinutes).toBeNull()
+  })
+
+  it('calculates average and maximum waits between matches', () => {
+    const players = Array.from({ length: 4 }, (_, index) =>
+      makeTestPlayer(`wait-${index + 1}`, 'B'),
+    )
+    const schedule = generateSchedule(players, {
+      ...defaultSettings,
+      courtCount: 1,
+      targetRoundCount: 3,
+    })
+    const starts = [0, 15, 45]
+    schedule.rounds.forEach((round, index) => {
+      round.matches[0].startOffsetMinutes = starts[index]
+      round.matches[0].durationMinutes = 15
+    })
+
+    const stats = calculateStats(players, schedule, {})
+
+    expect(stats.every((stat) => stat.averageWaitMinutes === 7.5)).toBe(true)
+    expect(stats.every((stat) => stat.maxWaitMinutes === 15)).toBe(true)
   })
 })
 
