@@ -62,6 +62,8 @@ type RoundPacing = {
 const DEFAULT_TARGET_ROUND_COUNT = 8
 const GUEST_REPEAT_PARTNER_PENALTY = 50000
 const SPECIAL_TIMING_WEIGHT = 110
+const FAIR_GAME_MAX_WEIGHT = 10000000
+const FAIR_GAME_TOTAL_WEIGHT = 100000
 
 const matchConditions = (settings: MatchSettings): MatchConditionOptions => ({
   ...defaultMatchConditionOptions,
@@ -761,13 +763,28 @@ const groupConsecutivePlayPenalty = (
       )
     : 0
 
+const fairGamePenalty = (
+  players: Player[],
+  history: HistoryState,
+  conditions: MatchConditionOptions,
+) => {
+  if (!conditions.fairGames || players.length === 0) return 0
+  const counts = players.map((player) => history.games[player.id] ?? 0)
+  return (
+    Math.max(...counts) * FAIR_GAME_MAX_WEIGHT +
+    counts.reduce((sum, count) => sum + count, 0) * FAIR_GAME_TOTAL_WEIGHT
+  )
+}
+
 const playerPriority = (
   player: Player,
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
 ) =>
-  (conditions.fairGames ? (history.games[player.id] ?? 0) * 24 : 0) -
+  (conditions.fairGames
+    ? (history.games[player.id] ?? 0) * FAIR_GAME_MAX_WEIGHT
+    : 0) -
   (conditions.restBalance ? (history.restStreaks[player.id] ?? 0) * 18 : 0) -
   (conditions.restBalance ? (history.rests[player.id] ?? 0) * 4 : 0) +
   (conditions.restBalance ? consecutivePlayPenalty(player, history) : 0) +
@@ -821,8 +838,7 @@ const scoreSpecialRegulars = (
   const specialCounts = regulars.map((player) => specialGameCount(player, history))
   const historyPenalty = regulars.reduce(
     (sum, player) =>
-      sum +
-      (conditions.fairGames ? (history.games[player.id] ?? 0) * 8 : 0) -
+      sum -
       (conditions.restBalance ? (history.restStreaks[player.id] ?? 0) * 9 : 0) -
       (conditions.restBalance ? (history.rests[player.id] ?? 0) * 3 : 0),
     0,
@@ -842,6 +858,7 @@ const scoreSpecialRegulars = (
     (conditions.femaleLevelFit ? mixedGenderLevelPenalty(regulars) * 4 : 0) +
     (conditions.genderBalance ? groupGenderMixPenalty(regulars) : 0) +
     historyPenalty +
+    fairGamePenalty(regulars, history, conditions) +
     pendingPenalty +
     repeatGuestPenalty +
     specialTimingPenalty([guest, ...regulars], pacing, conditions) +
@@ -1041,8 +1058,7 @@ const scoreAdaptiveSpecialGroup = (
   const specialCounts = regulars.map((player) => specialGameCount(player, history))
   const historyPenalty = group.reduce(
     (sum, player) =>
-      sum +
-      (conditions.fairGames ? (history.games[player.id] ?? 0) * 7 : 0) -
+      sum -
       (conditions.restBalance ? (history.restStreaks[player.id] ?? 0) * 8 : 0) -
       (conditions.restBalance ? (history.rests[player.id] ?? 0) * 2 : 0),
     0,
@@ -1064,6 +1080,7 @@ const scoreAdaptiveSpecialGroup = (
     (conditions.femaleLevelFit ? mixedGenderLevelPenalty(regulars) * 4 : 0) +
     (conditions.genderBalance ? groupGenderMixPenalty(regulars) : 0) +
     historyPenalty +
+    fairGamePenalty(group, history, conditions) +
     pendingPriorityPenalty -
     (conditions.specialPriority ? firstGuestCount * 40 : 0) +
     repeatGuestPenalty +
@@ -1256,7 +1273,6 @@ const scoreGroup = (
   pacing: RoundPacing,
 ) => {
   const pairing = bestPairing(group, history, random, conditions, pacing)
-  const gameCounts = group.map((player) => history.games[player.id] ?? 0)
   const restStreaks = group.map((player) => history.restStreaks[player.id] ?? 0)
   const levelSpread = playerScoreSpread(group)
   const guestCount = group.filter((player) => player.isGuest).length
@@ -1264,7 +1280,7 @@ const scoreGroup = (
 
   return (
     pairing.score +
-    (conditions.fairGames ? Math.max(...gameCounts) * 3 : 0) +
+    fairGamePenalty(group, history, conditions) +
     (conditions.levelBalance ? levelSpread * 150 * balanceMultiplier : 0) -
     (conditions.levelBalance
       ? pairingTeamLevelGap(pairing) * 64 * roundProgress(pacing) ** 2

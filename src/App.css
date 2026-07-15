@@ -461,6 +461,57 @@ h2 {
   font-weight: 800;
 }
 
+.number-control .label-with-help {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 5px;
+}
+
+.number-control .help-tooltip {
+  position: relative;
+  display: inline-grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border: 1px solid var(--muted);
+  border-radius: 50%;
+  color: var(--muted);
+  background: #fff;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  cursor: help;
+}
+
+.number-control .help-tooltip::after {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  width: max-content;
+  max-width: min(240px, 75vw);
+  padding: 7px 9px;
+  border-radius: 6px;
+  color: #fff;
+  background: var(--ink);
+  box-shadow: 0 4px 12px rgba(7, 31, 61, 0.18);
+  content: attr(data-tooltip);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.4;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.number-control .help-tooltip:hover::after,
+.number-control .help-tooltip:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
 .stepper-control {
   display: grid;
   grid-template-columns: 40px minmax(0, 1fr) 40px;

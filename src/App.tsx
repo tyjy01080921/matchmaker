@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
   type RefObject,
 } from 'react'
 import './App.css'
@@ -1003,14 +1004,23 @@ const parseBulkTournamentTeams = (text: string): TournamentTeam[] =>
     })
 
 type NumberStepperProps = {
-  label: string
+  ariaLabel?: string
+  label: ReactNode
   max: number
   min: number
   onChange: (value: number) => void
   value: number
 }
 
-function NumberStepper({ label, max, min, onChange, value }: NumberStepperProps) {
+function NumberStepper({
+  ariaLabel,
+  label,
+  max,
+  min,
+  onChange,
+  value,
+}: NumberStepperProps) {
+  const accessibleLabel = ariaLabel ?? (typeof label === 'string' ? label : '수량')
   const commitValue = (rawValue: string) => {
     const next = Number(rawValue)
     if (!Number.isFinite(next)) return
@@ -1023,14 +1033,14 @@ function NumberStepper({ label, max, min, onChange, value }: NumberStepperProps)
       <div className="stepper-control">
         <button
           type="button"
-          aria-label={`${label} 줄이기`}
+          aria-label={`${accessibleLabel} 줄이기`}
           disabled={value <= min}
           onClick={() => onChange(Math.max(min, value - 1))}
         >
           −
         </button>
         <input
-          aria-label={label}
+          aria-label={accessibleLabel}
           inputMode="numeric"
           pattern="[0-9]*"
           value={value}
@@ -1038,7 +1048,7 @@ function NumberStepper({ label, max, min, onChange, value }: NumberStepperProps)
         />
         <button
           type="button"
-          aria-label={`${label} 늘리기`}
+          aria-label={`${accessibleLabel} 늘리기`}
           disabled={value >= max}
           onClick={() => onChange(Math.min(max, value + 1))}
         >
@@ -2911,7 +2921,21 @@ function App() {
                     onChange={setRegularPlayerCount}
                   />
                   <NumberStepper
-                    label="스페셜"
+                    ariaLabel="스페셜"
+                    label={(
+                      <span className="label-with-help">
+                        스페셜
+                        <span
+                          className="help-tooltip"
+                          role="img"
+                          tabIndex={0}
+                          aria-label="스페셜은 선수, 코치 등 특별히 초청한 게스트입니다."
+                          data-tooltip="선수, 코치 등 특별히 초청한 게스트"
+                        >
+                          ?
+                        </span>
+                      </span>
+                    )}
                     min={0}
                     max={12}
                     value={guestPlayers.length}

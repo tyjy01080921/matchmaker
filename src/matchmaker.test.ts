@@ -151,6 +151,34 @@ describe('generateSchedule', () => {
     ).toBe(true)
   })
 
+  it('keeps participant game counts equal before optimizing other conditions', () => {
+    const players = Array.from({ length: 10 }, (_, index) =>
+      makeTestPlayer(
+        `regular-${index + 1}`,
+        index < 5 ? 'A' : 'D',
+        index % 3 === 0 ? 'female' : 'male',
+      ),
+    )
+    const schedule = generateSchedule(players, {
+      ...defaultSettings,
+      courtCount: 2,
+      targetRoundCount: 7,
+      seed: 91,
+    })
+    const gameCounts = Object.fromEntries(players.map((player) => [player.id, 0]))
+
+    for (const round of schedule.rounds) {
+      for (const match of round.matches) {
+        for (const player of [...match.teamA, ...match.teamB]) {
+          gameCounts[player.id] += 1
+        }
+      }
+
+      const counts = Object.values(gameCounts)
+      expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1)
+    }
+  })
+
   it('creates matches from count-only unnamed participants', () => {
     const players = Array.from({ length: 8 }, (_, index) => ({
       ...makeTestPlayer(`regular-${index + 1}`, 'B', index % 2 === 0 ? 'male' : 'female'),
