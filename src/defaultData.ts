@@ -44,9 +44,11 @@ export const defaultMatchConditionOptions: MatchConditionOptions = {
   partnerRepeat: true,
   opponentRepeat: true,
   groupRepeat: true,
+  specialMatchCreation: true,
   specialPriority: true,
   guestPartnerRepeat: true,
   femaleLevelFit: true,
+  strictSkillLimit: false,
 }
 
 export const defaultSettings: MatchSettings = {

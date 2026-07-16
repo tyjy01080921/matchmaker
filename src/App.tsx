@@ -31,6 +31,7 @@ import {
   generateTournamentLineups,
   generateTournamentSchedule,
   makeNumberedTournamentPlayers,
+  rankMeetingSwapCandidates,
   swapMeetingPlayers,
   tournamentParticipantsFromTeams,
   validateMeetingSchedule,
@@ -126,6 +127,8 @@ const MEETING_GENERATION_MESSAGES = [
 const MEETING_GENERATION_ATTEMPTS = 5
 const MIN_MEETING_PHASE_PERCENT = 15
 const MEETING_PHASE_STEP = 5
+const meetingSwapRecommendationKey = (matchId: string, playerId: string) =>
+  `${matchId}::${playerId}`
 
 const getTargetRoundCount = (settings: MatchSettings) => {
   const numeric = Number(settings.targetRoundCount)
@@ -201,34 +204,46 @@ const genderLabels: Record<Gender, string> = {
   none: '무관',
 }
 
-const matchConditionKeys: MatchConditionKey[] = [
+const fixedMatchConditionKeys: MatchConditionKey[] = [
+  'fairGames',
+  'waitPriority',
+]
+
+const optionalMatchConditionKeys: MatchConditionKey[] = [
   'levelBalance',
   'genderBalance',
-  'fairGames',
   'restBalance',
-  'waitPriority',
   'partnerRepeat',
   'opponentRepeat',
   'groupRepeat',
+  'specialMatchCreation',
   'specialPriority',
   'guestPartnerRepeat',
   'ageBalance',
   'femaleLevelFit',
+  'strictSkillLimit',
+]
+
+const matchConditionKeys: MatchConditionKey[] = [
+  ...fixedMatchConditionKeys,
+  ...optionalMatchConditionKeys,
 ]
 
 const matchConditionLabels: Record<MatchConditionKey, string> = {
   levelBalance: '팀 레벨 균형',
   genderBalance: '동일 성별 우선',
   fairGames: '경기 수 1경기 이내 (필수)',
-  restBalance: '휴식 균형',
+  restBalance: '연속 경기 방지',
   waitPriority: '최장 대기 25분 제한 (필수)',
   partnerRepeat: '파트너 반복 최소',
   opponentRepeat: '상대 반복 최소',
   groupRepeat: '같은 4인 최대 2경기',
-  specialPriority: '스페셜 우선',
+  specialMatchCreation: '스페셜 경기 생성',
+  specialPriority: '스페셜 먼저 배치',
   guestPartnerRepeat: '스페셜 파트너 반복 최소',
   ageBalance: '연령대 균형',
-  femaleLevelFit: '여성 레벨 조합',
+  femaleLevelFit: '혼합 성별 여성 레벨 보정',
+  strictSkillLimit: '큰 실력 차 금지 · 경고 최대 5경기',
 }
 
 const tournamentFormatLabels: Record<TournamentFormat, string> = {
@@ -465,7 +480,7 @@ const normalizeMatchConditionOptions = (
       ? (value as Partial<Record<MatchConditionKey, unknown>>)
       : {}
 
-  return Object.fromEntries(
+  const normalized = Object.fromEntries(
     matchConditionKeys.map((key) => [
       key,
       key === 'waitPriority' || key === 'fairGames'
@@ -475,6 +490,9 @@ const normalizeMatchConditionOptions = (
           : defaultMatchConditionOptions[key],
     ]),
   ) as MatchConditionOptions
+
+  if (normalized.strictSkillLimit) normalized.levelBalance = true
+  return normalized
 }
 
 const normalizeLevelTiers = (value: unknown): LevelTierTable => {
@@ -1472,6 +1490,36 @@ function App() {
     () => analyzeScheduleQuality(schedule, generatedMeetingPlayers),
     [generatedMeetingPlayers, schedule],
   )
+  const meetingSwapRecommendations = useMemo(() => {
+    const recommendations = new Map<
+      string,
+      ReturnType<typeof rankMeetingSwapCandidates>
+    >()
+    const editingMatches = schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) => editingMatchIds[match.id])
+
+    for (const match of editingMatches) {
+      for (const player of [...match.teamA, ...match.teamB]) {
+        recommendations.set(
+          meetingSwapRecommendationKey(match.id, player.id),
+          rankMeetingSwapCandidates(
+            schedule,
+            generatedMeetingPlayers,
+            generatedMeetingSettings,
+            match.id,
+            player.id,
+          ),
+        )
+      }
+    }
+    return recommendations
+  }, [
+    editingMatchIds,
+    generatedMeetingPlayers,
+    generatedMeetingSettings,
+    schedule,
+  ])
   const skillBalanceWarning = scheduleQualityAnalysis.teamSkillWarningMatches > 0
     ? `실력 차 주의 ${scheduleQualityAnalysis.teamSkillWarningMatches}경기 · 대진 카드 확인`
     : null
@@ -1684,6 +1732,9 @@ function App() {
   }, [players])
 
   const activePlayers = players.filter((player) => player.active)
+  const hasComparableAgeData = activePlayers.some(
+    (player) => !player.isGuest && player.ageGroup !== '무관',
+  )
   const prizeCandidates = activePlayers.map((player) => ({
     id: player.id,
     name: playerDisplayName(player, displayNames),
@@ -2417,13 +2468,20 @@ function App() {
         ...defaultMatchConditionOptions,
         ...current.conditionOptions,
         [key]: checked,
+        ...(key === 'strictSkillLimit' && checked
+          ? { levelBalance: true }
+          : {}),
       },
     }))
     setResults({})
     setPairMixes({})
     setMatchNameOverrides({})
     setMeetingLineups({})
-    setNotice('조건 변경됨')
+    setNotice(
+      key === 'strictSkillLimit' && checked
+        ? '큰 실력 차 금지 · 팀 레벨 균형 함께 적용'
+        : '조건 변경됨',
+    )
   }
 
   const updateMeetingPhaseBoundary = (
@@ -2774,8 +2832,16 @@ function App() {
       change.outgoingId,
       change.incomingId,
     )
-    if (!swapped || findScheduleOverlap(swapped.schedule)) {
-      setNotice('교체 불가 · 동일 시간 중복 확인')
+    if (
+      !swapped ||
+      findScheduleOverlap(swapped.schedule) ||
+      validateMeetingSchedule(
+        swapped.schedule,
+        generatedMeetingPlayers,
+        generatedMeetingSettings,
+      ).length > 0
+    ) {
+      setNotice('교체 불가 · 중복 또는 대진 조건 확인')
       return
     }
 
@@ -3010,30 +3076,65 @@ function App() {
     )
   }
 
-  const addScheduleRound = () => {
+  const addCourtGames = () => {
+    const extensionMinutes = generatedMeetingSettings.normalGameMinutes
+    const currentDuration = getBookingDurationMinutes(
+      generatedMeetingSettings.startTime,
+      generatedMeetingSettings.endTime,
+      0,
+    )
+    if (
+      currentDuration <= 0 ||
+      currentDuration + extensionMinutes > MAX_BOOKING_MINUTES
+    ) {
+      setNotice('경기 추가 불가 · 대관 시간은 최대 12시간입니다.')
+      return
+    }
+
+    const endTime = clockTimeAtOffset(
+      generatedMeetingSettings.startTime,
+      currentDuration + extensionMinutes,
+    )
     const targetRoundCount = Math.max(
       getTargetRoundCount(generatedMeetingSettings),
       schedule.rounds.length,
     ) + 1
     setGeneratedMeetingSettings((current) => ({
       ...current,
+      endTime,
       targetRoundCount,
       roundCountLocked: true,
     }))
     setSettings((current) => ({
       ...current,
+      endTime,
       targetRoundCount,
       roundCountLocked: true,
     }))
-    setNotice('추가 대진 생성됨')
+    setPrintImageUrls([])
+    setNotice(`코트별 경기 추가됨 · 종료 ${endTime}`)
   }
 
-  const removeLastScheduleRound = () => {
-    const lastRound = schedule.rounds.at(-1)
-    if (!lastRound || schedule.rounds.length <= 1) return
+  const removeLastCourtGames = () => {
+    const reductionMinutes = generatedMeetingSettings.normalGameMinutes
+    const currentDuration = getBookingDurationMinutes(
+      generatedMeetingSettings.startTime,
+      generatedMeetingSettings.endTime,
+      0,
+    )
+    const nextDuration = currentDuration - reductionMinutes
+    if (nextDuration < GAME_SLOT_MINUTES) return
 
-    const matchIds = new Set(lastRound.matches.map((match) => match.id))
-    const hasRecordedData = lastRound.matches.some((match) => {
+    const removedMatches = allScheduledMatches.filter(
+      (match) => matchEndOffset(match) > nextDuration,
+    )
+    if (removedMatches.length === 0) {
+      setNotice('삭제할 마지막 경기가 없습니다.')
+      return
+    }
+
+    const matchIds = new Set(removedMatches.map((match) => match.id))
+    const hasRecordedData = removedMatches.some((match) => {
       const result = results[match.id]
       return Boolean(
         result?.completed ||
@@ -3047,18 +3148,28 @@ function App() {
       )
     })
     const message = hasRecordedData
-      ? `${lastRound.number}라운드의 점수, 메모, 수정, 미션도 함께 삭제됩니다. 계속할까요?`
-      : `${lastRound.number}라운드를 삭제할까요?`
+      ? `마지막 ${removedMatches.length}경기의 점수, 메모, 수정, 미션도 함께 삭제됩니다. 계속할까요?`
+      : `코트별 마지막 경기 ${removedMatches.length}개를 삭제할까요?`
     if (!window.confirm(message)) return
 
+    const endTime = clockTimeAtOffset(
+      generatedMeetingSettings.startTime,
+      nextDuration,
+    )
+    const targetRoundCount = Math.max(
+      1,
+      getTargetRoundCount(generatedMeetingSettings) - 1,
+    )
     setSettings((current) => ({
       ...current,
-      targetRoundCount: Math.max(1, schedule.rounds.length - 1),
+      endTime,
+      targetRoundCount,
       roundCountLocked: true,
     }))
     setGeneratedMeetingSettings((current) => ({
       ...current,
-      targetRoundCount: Math.max(1, schedule.rounds.length - 1),
+      endTime,
+      targetRoundCount,
       roundCountLocked: true,
     }))
     setResults((current) => omitRecordKeys(current, matchIds))
@@ -3072,7 +3183,7 @@ function App() {
     }))
     setCollapsedMatchIds((current) => omitRecordKeys(current, matchIds))
     setPrintImageUrls([])
-    setNotice('마지막 라운드 삭제됨')
+    setNotice(`마지막 경기 ${removedMatches.length}개 삭제됨 · 종료 ${endTime}`)
   }
 
   const updateResult = (
@@ -4785,18 +4896,41 @@ function App() {
                     <span>종반 {100 - settings.middlePhaseEndPercent}%</span>
                   </div>
                 </div>
-                {matchConditionKeys.map((key) => (
+                <div className="fixed-condition-summary">
+                  <strong>고정 품질 기준</strong>
+                  <span>
+                    {fixedMatchConditionKeys
+                      .map((key) => matchConditionLabels[key])
+                      .join(' · ')}
+                  </span>
+                </div>
+                {optionalMatchConditionKeys.map((key) => (
                   <label className="condition-row" key={key}>
                     <input
                       type="checkbox"
-                      disabled={key === 'waitPriority' || key === 'fairGames'}
+                      disabled={
+                        (key === 'levelBalance' && Boolean(
+                          settings.conditionOptions?.strictSkillLimit,
+                        )) ||
+                        (key === 'ageBalance' && !hasComparableAgeData) ||
+                        (key === 'specialPriority' && !(
+                          settings.conditionOptions?.specialMatchCreation ??
+                          defaultMatchConditionOptions.specialMatchCreation
+                        )) ||
+                        (key === 'guestPartnerRepeat' && !(
+                          settings.conditionOptions?.specialMatchCreation ??
+                          defaultMatchConditionOptions.specialMatchCreation
+                        ))
+                      }
                       checked={
                         settings.conditionOptions?.[key] ??
                         defaultMatchConditionOptions[key]
                       }
                       onChange={(event) => updateMatchCondition(key, event.target.checked)}
                     />
-                    {matchConditionLabels[key]}
+                    {key === 'ageBalance' && !hasComparableAgeData
+                      ? '연령대 균형 (연령 정보 없음)'
+                      : matchConditionLabels[key]}
                   </label>
                 ))}
               </div>
@@ -5591,34 +5725,56 @@ function App() {
                         const renderTeamName = (team: Team, teamLabel: string) =>
                           isEditingMatch && !isSharedMode ? (
                             <div className="team-name-edit">
-                              {team.map((player, playerIndex) => (
-                                <select
-                                  key={player.id}
-                                  aria-label={`${teamLabel} ${playerIndex + 1} 참가자 교체`}
-                                  value={
-                                    matchNameDrafts[match.id]?.[player.id] ??
-                                    player.id
-                                  }
-                                  onChange={(event) =>
-                                    updateMatchNameDraft(
-                                      match.id,
-                                      player.id,
-                                      event.target.value,
-                                    )
-                                  }
-                                  onKeyDown={(event) => {
-                                    if (event.key === 'Enter') saveMatchEditor(match)
-                                  }}
-                                >
-                                  {generatedMeetingPlayers
-                                    .filter((candidate) => candidate.active)
-                                    .map((candidate) => (
-                                      <option value={candidate.id} key={candidate.id}>
-                                        {playerDisplayName(candidate, scheduleDisplayNames)}
-                                      </option>
-                                    ))}
-                                </select>
-                              ))}
+                              {team.map((player, playerIndex) => {
+                                const recommendations =
+                                  meetingSwapRecommendations.get(
+                                    meetingSwapRecommendationKey(match.id, player.id),
+                                  ) ?? []
+                                return (
+                                  <select
+                                    key={player.id}
+                                    aria-label={`${teamLabel} ${playerIndex + 1} 참가자 교체`}
+                                    value={
+                                      matchNameDrafts[match.id]?.[player.id] ??
+                                      player.id
+                                    }
+                                    onChange={(event) =>
+                                      updateMatchNameDraft(
+                                        match.id,
+                                        player.id,
+                                        event.target.value,
+                                      )
+                                    }
+                                    onKeyDown={(event) => {
+                                      if (event.key === 'Enter') saveMatchEditor(match)
+                                    }}
+                                  >
+                                    <option value={player.id}>
+                                      {playerDisplayName(player, scheduleDisplayNames)} · 현재
+                                    </option>
+                                    {recommendations.length > 0 ? (
+                                      <optgroup label="교체 추천 순">
+                                        {recommendations.map((recommendation, index) => (
+                                          <option
+                                            value={recommendation.player.id}
+                                            key={recommendation.player.id}
+                                          >
+                                            {index < 3 ? `추천 ${index + 1} · ` : ''}
+                                            {playerDisplayName(
+                                              recommendation.player,
+                                              scheduleDisplayNames,
+                                            )}
+                                            {' · '}
+                                            {recommendation.reasons.join(' · ')}
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                    ) : (
+                                      <option disabled>교체 가능한 참가자 없음</option>
+                                    )}
+                                  </select>
+                                )
+                              })}
                             </div>
                           ) : (
                             <div className="team-name">
@@ -5844,13 +6000,17 @@ function App() {
                     <button
                       type="button"
                       className="round-delete-button"
-                      disabled={schedule.rounds.length <= 1}
-                      onClick={removeLastScheduleRound}
+                      disabled={
+                        scheduledBookingMinutes -
+                          generatedMeetingSettings.normalGameMinutes <
+                        GAME_SLOT_MINUTES
+                      }
+                      onClick={removeLastCourtGames}
                     >
-                      마지막 시간대 삭제
+                      마지막 경기 삭제
                     </button>
-                    <button type="button" onClick={addScheduleRound}>
-                      시간대 추가
+                    <button type="button" onClick={addCourtGames}>
+                      경기 추가
                     </button>
                   </div>
                   <span>

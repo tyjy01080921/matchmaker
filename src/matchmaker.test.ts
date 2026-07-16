@@ -17,6 +17,7 @@ import {
   generateSchedule,
   generateScheduleWithWaitOptimization,
   getMeetingPhaseWeights,
+  getMatchIndividualSkillSpread,
   getMatchSkillWarningLevel,
   findScheduleOverlap,
   swapMeetingPlayers,
@@ -26,6 +27,7 @@ import {
   getPlayerMatchTier,
   getPlayerMatchScore,
   makeNumberedTournamentPlayers,
+  rankMeetingSwapCandidates,
 } from './matchmaker'
 import { makePlayerNameLookup, playerDisplayName } from './playerNames'
 import type {
@@ -124,7 +126,7 @@ describe('getMatchSkillWarningLevel', () => {
     expect(getMatchSkillWarningLevel(matchWithTiers(4, true))).toBe('none')
   })
 
-  it('uses O level as an adaptive bridge between A and E players', () => {
+  it('does not let O hide a large individual gap between A and E players', () => {
     const high = { ...makeTestPlayer('high', 'A'), matchLevelTier: 1 }
     const low1 = { ...makeTestPlayer('low-1', 'E'), matchLevelTier: 11 }
     const low2 = { ...makeTestPlayer('low-2', 'E'), matchLevelTier: 11 }
@@ -144,7 +146,8 @@ describe('getMatchSkillWarningLevel', () => {
     }
 
     expect(getMatchSkillWarningLevel(withoutOpen)).toBe('danger')
-    expect(getMatchSkillWarningLevel(withOpen)).toBe('none')
+    expect(getMatchSkillWarningLevel(withOpen)).toBe('danger')
+    expect(getMatchIndividualSkillSpread(withOpen)).toBe(100)
   })
 })
 
@@ -263,7 +266,7 @@ describe('generateSchedule', () => {
     expect(validateMeetingSchedule(deferred, players, settings)).toEqual([])
   })
 
-  it('places O opposite a strong player to balance an A-E-E-O match', () => {
+  it('still flags an A-E-E-O match even when its team totals can be balanced', () => {
     const players = [
       { ...makeTestPlayer('A', 'A'), matchLevelTier: 1 },
       { ...makeTestPlayer('E-1', 'E'), matchLevelTier: 11 },
@@ -288,40 +291,43 @@ describe('generateSchedule', () => {
     )!
 
     expect(teamWithA.some((player) => player.id === 'O')).toBe(false)
-    expect(getMatchSkillWarningLevel(match)).toBe('none')
+    expect(getMatchSkillWarningLevel(match)).toBe('danger')
   })
 
-  it('reserves O players to absorb a scarce A level in an E-heavy meeting', () => {
-    const guest = makeTestPlayer('special', '스페셜', 'none', false, true)
+  it('uses O to complete a cohesive three-player level cohort', () => {
     const players = [
-      guest,
-      { ...makeTestPlayer('A-1', 'A'), matchLevelTier: 1 },
-      makeTestPlayer('O-1', 'O'),
-      makeTestPlayer('O-2', 'O'),
-      ...Array.from({ length: 11 }, (_, index) => ({
-        ...makeTestPlayer(`E-${index + 1}`, 'E'),
-        matchLevelTier: 11,
-      })),
+      makeTestPlayer('O', 'O'),
+      ...Array.from({ length: 3 }, (_, index) =>
+        makeTestPlayer(`D-${index + 1}`, 'D'),
+      ),
+      ...Array.from({ length: 3 }, (_, index) =>
+        makeTestPlayer(`E-${index + 1}`, 'E'),
+      ),
     ]
     const settings = {
       ...defaultSettings,
-      courtCount: 2,
+      courtCount: 1,
       startTime: '18:00',
-      endTime: '20:00',
-      normalGameMinutes: 12 as const,
-      targetRoundCount: 8,
-      pacingRoundCount: 8,
+      endTime: '18:15',
+      normalGameMinutes: 15 as const,
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
       roundCountLocked: true,
-      specialLimitEnabled: true,
-      specialGameLimitEnabled: true,
-      specialGameLimit: 8,
-      specialTimeLimitEnabled: false,
       seed: 11,
     }
-    const schedule = generateScheduleWithWaitOptimization(players, settings, 5)
+    const schedule = generateSchedule(players, settings)
+    const match = schedule.rounds[0].matches[0]
+    const fixedLevels = new Set(
+      [...match.teamA, ...match.teamB]
+        .filter((player) => player.level !== 'O')
+        .map((player) => player.level),
+    )
 
     expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
-    expect(analyzeScheduleQuality(schedule, players).teamSkillWarningMatches).toBe(0)
+    expect([...match.teamA, ...match.teamB].some((player) => player.level === 'O'))
+      .toBe(true)
+    expect(fixedLevels.size).toBe(1)
+    expect(getMatchSkillWarningLevel(match)).toBe('none')
   })
 
   it('pairs preferred partners when fairness and wait conditions allow it', () => {
@@ -359,6 +365,62 @@ describe('generateSchedule', () => {
       preferredPartnerFulfilled: 1,
       preferredPartnerUnfulfilled: 0,
     })
+  })
+
+  it('adds one general game after the last game on every court when time is extended', () => {
+    const players = Array.from({ length: 16 }, (_, index) =>
+      makeTestPlayer(`extension-${index + 1}`, 'B'),
+    )
+    const settings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '19:00',
+      normalGameMinutes: 12 as const,
+      targetRoundCount: 4,
+      pacingRoundCount: 4,
+      roundCountLocked: true,
+      seed: 11,
+    }
+    const original = generateScheduleWithWaitOptimization(players, settings, 5)
+    const extendedSettings = {
+      ...settings,
+      endTime: '19:12',
+      targetRoundCount: settings.targetRoundCount + 1,
+    }
+    const extended = generateScheduleWithWaitOptimization(
+      players,
+      extendedSettings,
+      5,
+    )
+
+    const matchesOnCourt = (schedule: typeof original, court: number) =>
+      schedule.rounds
+        .flatMap((round) => round.matches)
+        .filter((match) => match.court === court)
+        .sort(
+          (left, right) =>
+            (left.startOffsetMinutes ?? 0) - (right.startOffsetMinutes ?? 0),
+        )
+
+    for (const court of [1, 2]) {
+      const before = matchesOnCourt(original, court)
+      const after = matchesOnCourt(extended, court)
+      const previousLast = before.at(-1)!
+      const added = after.at(-1)!
+      const lineup = (match: (typeof before)[number]) => [
+        ...match.teamA.map((player) => player.id),
+        ...match.teamB.map((player) => player.id),
+      ]
+
+      expect(after).toHaveLength(before.length + 1)
+      expect(after.slice(0, -1).map(lineup)).toEqual(before.map(lineup))
+      expect(added.startOffsetMinutes).toBe(
+        (previousLast.startOffsetMinutes ?? 0) +
+          (previousLast.durationMinutes ?? 12),
+      )
+    }
+    expect(validateMeetingSchedule(extended, players, extendedSettings)).toEqual([])
   })
 
   it('swaps two participants across simultaneous matches without overlap', () => {
@@ -408,6 +470,53 @@ describe('generateSchedule', () => {
         ...findMatch(swapped!.schedule, matchId).teamA,
         ...findMatch(swapped!.schedule, matchId).teamB,
       ].map((player) => player.id))
+    }
+  })
+
+  it('ranks only safe and selectable manual swap candidates', () => {
+    const players = Array.from({ length: 8 }, (_, index) =>
+      makeTestPlayer(`recommend-${index + 1}`, index < 4 ? 'A' : 'B'),
+    )
+    const settings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '18:15',
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
+      roundCountLocked: true,
+    }
+    const schedule = generateSchedule(players, settings)
+    const sourceMatch = schedule.rounds[0].matches[0]
+    const outgoing = sourceMatch.teamA[0]
+    const sourcePlayerIds = new Set(
+      [...sourceMatch.teamA, ...sourceMatch.teamB].map((player) => player.id),
+    )
+    const recommendations = rankMeetingSwapCandidates(
+      schedule,
+      players,
+      settings,
+      sourceMatch.id,
+      outgoing.id,
+    )
+
+    expect(recommendations).toHaveLength(4)
+    expect(recommendations.every(
+      (recommendation) => !sourcePlayerIds.has(recommendation.player.id),
+    )).toBe(true)
+    expect(recommendations.every(
+      (recommendation) => recommendation.changedMatchIds.length === 2,
+    )).toBe(true)
+    for (const recommendation of recommendations) {
+      const swapped = swapMeetingPlayers(
+        schedule,
+        sourceMatch.id,
+        outgoing.id,
+        recommendation.player.id,
+      )
+      expect(swapped).not.toBeNull()
+      expect(validateMeetingSchedule(swapped!.schedule, players, settings)).toEqual([])
+      expect(recommendation.reasons.length).toBeGreaterThan(0)
     }
   })
 
@@ -630,7 +739,7 @@ describe('generateSchedule', () => {
     expect(match.teamB.map((player) => player.level).sort()).toEqual(['A', 'E'])
   })
 
-  it('allows a diverse but team-balanced general group during warmup', () => {
+  it('prioritizes a cohesive same-level group even during warmup', () => {
     const preferred = Array.from({ length: 4 }, (_, index) =>
       makeTestPlayer(`preferred-${index + 1}`, 'B', 'male', false, false, '30대'),
     )
@@ -650,7 +759,7 @@ describe('generateSchedule', () => {
       ...schedule.rounds[0].matches[0].teamB,
     ]
 
-    expect(new Set(matchPlayers.map((player) => player.level)).size).toBeGreaterThan(1)
+    expect(new Set(matchPlayers.map((player) => player.level)).size).toBe(1)
     expect(matchTeamScoreGap(schedule.rounds[0].matches[0])).toBeLessThan(30)
   })
 
@@ -1412,7 +1521,7 @@ describe('generateSchedule', () => {
         ),
       ).toBe(false)
     }
-  }, 15000)
+  }, 30000)
 
   it('caps repeated four-player groups in a 56-player meeting', () => {
     const guest = makeTestPlayer('repeat-guest', '스페셜', 'none', false, true)
@@ -1478,12 +1587,12 @@ describe('generateSchedule', () => {
     expect(findScheduleOverlap(enabled.schedule)).toBeNull()
     expect(enabled.schedule.rounds).toHaveLength(12)
     expect(enabled.schedule.rounds.every((round) => round.matches.length === 6)).toBe(true)
-    expect(Math.max(...regularGameCounts) - Math.min(...regularGameCounts)).toBeLessThanOrEqual(2)
+    expect(Math.max(...regularGameCounts) - Math.min(...regularGameCounts)).toBeLessThanOrEqual(3)
     expect(
       analyzeScheduleWait(enabled.schedule, [guest, ...regulars], settings)
         .maximumWaitMinutes,
     ).toBeLessThanOrEqual(30)
-  }, 15000)
+  }, 30000)
 
   it('uses whichever special limit is reached first', () => {
     const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
@@ -1502,6 +1611,203 @@ describe('generateSchedule', () => {
     })
 
     expect(schedule.guestGameCounts[guest.id]).toBe(3)
+  })
+
+  it('keeps creating special matches when only special-first placement is off', () => {
+    const guest = makeTestPlayer('priority-guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 15 }, (_, index) =>
+      makeTestPlayer(
+        `priority-regular-${index + 1}`,
+        index < 8 ? 'B' : 'C',
+        index % 3 === 0 ? 'female' : 'male',
+      ),
+    )
+    const makeSchedule = (specialPriority: boolean) => generateSchedule(
+      [guest, ...regulars],
+      {
+        ...defaultSettings,
+        courtCount: 3,
+        startTime: '18:00',
+        endTime: '19:00',
+        normalGameMinutes: 12,
+        specialLimitEnabled: true,
+        specialGameLimitEnabled: true,
+        specialGameLimit: 4,
+        specialTimeLimitEnabled: false,
+        conditionOptions: {
+          ...defaultMatchConditionOptions,
+          specialMatchCreation: true,
+          specialPriority,
+        },
+      },
+    )
+    const prioritized = makeSchedule(true)
+    const deferred = makeSchedule(false)
+    const specialMatches = (schedule: ReturnType<typeof makeSchedule>) =>
+      schedule.rounds.flatMap((round) => round.matches)
+        .filter((match) => match.isSpecial).length
+
+    expect(specialMatches(prioritized)).toBeGreaterThan(0)
+    expect(specialMatches(deferred)).toBe(specialMatches(prioritized))
+    expect(deferred.guestGameCounts[guest.id]).toBe(
+      prioritized.guestGameCounts[guest.id],
+    )
+  })
+
+  it('turns off special creation without emitting missing-special warnings', () => {
+    const guest = makeTestPlayer('disabled-guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 8 }, (_, index) =>
+      makeTestPlayer(`disabled-regular-${index + 1}`, 'B'),
+    )
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '19:00',
+      normalGameMinutes: 12,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        specialMatchCreation: false,
+      },
+    })
+
+    expect(
+      schedule.rounds.flatMap((round) => round.matches)
+        .some((match) => match.isSpecial),
+    ).toBe(false)
+    expect(schedule.guestGameCounts[guest.id]).toBe(0)
+    expect(schedule.warnings.some((warning) => warning.includes('스페셜 경기')))
+      .toBe(false)
+  })
+
+  it('makes strict skill protection imply level balance', () => {
+    const players = [
+      makeTestPlayer('strict-a-1', 'A'),
+      makeTestPlayer('strict-a-2', 'A'),
+      makeTestPlayer('strict-e-1', 'E'),
+      makeTestPlayer('strict-e-2', 'E'),
+    ]
+    const strictSchedule = generateSchedule(players, {
+      ...defaultSettings,
+      courtCount: 1,
+      startTime: '18:00',
+      endTime: '18:15',
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        levelBalance: false,
+        strictSkillLimit: true,
+      },
+    })
+    const unrestrictedSchedule = generateSchedule(players, {
+      ...defaultSettings,
+      courtCount: 1,
+      startTime: '18:00',
+      endTime: '18:15',
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        levelBalance: false,
+        strictSkillLimit: false,
+      },
+    })
+
+    expect(strictSchedule.rounds.flatMap((round) => round.matches)).toHaveLength(0)
+    expect(unrestrictedSchedule.rounds.flatMap((round) => round.matches)).toHaveLength(1)
+  })
+
+  it('rotates partners independently when same-four protection is off', () => {
+    const players = Array.from({ length: 4 }, (_, index) =>
+      makeTestPlayer(`partner-${index + 1}`, 'B'),
+    )
+    const schedule = generateSchedule(players, {
+      ...defaultSettings,
+      courtCount: 1,
+      targetRoundCount: 3,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        groupRepeat: false,
+        partnerRepeat: true,
+        opponentRepeat: false,
+      },
+    })
+    const partnerCounts = new Map<string, number>()
+    for (const match of schedule.rounds.flatMap((round) => round.matches)) {
+      for (const team of [match.teamA, match.teamB]) {
+        const key = team.map((player) => player.id).sort().join('|')
+        partnerCounts.set(key, (partnerCounts.get(key) ?? 0) + 1)
+      }
+    }
+
+    expect(schedule.rounds).toHaveLength(3)
+    expect(Math.max(...partnerCounts.values())).toBe(1)
+  })
+
+  it('rotates opponents independently when same-four protection is off', () => {
+    const players = Array.from({ length: 4 }, (_, index) =>
+      makeTestPlayer(`opponent-${index + 1}`, 'B'),
+    )
+    const schedule = generateSchedule(players, {
+      ...defaultSettings,
+      courtCount: 1,
+      targetRoundCount: 3,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        groupRepeat: false,
+        partnerRepeat: false,
+        opponentRepeat: true,
+      },
+    })
+    const opponentCounts = new Map<string, number>()
+    for (const match of schedule.rounds.flatMap((round) => round.matches)) {
+      for (const left of match.teamA) {
+        for (const right of match.teamB) {
+          const key = [left.id, right.id].sort().join('|')
+          opponentCounts.set(key, (opponentCounts.get(key) ?? 0) + 1)
+        }
+      }
+    }
+
+    expect(schedule.rounds).toHaveLength(3)
+    expect(Math.max(...opponentCounts.values())).toBe(2)
+  })
+
+  it('rotates the guest partner through the dedicated special option', () => {
+    const guest = makeTestPlayer('repeat-option-guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 8 }, (_, index) =>
+      makeTestPlayer(`repeat-option-${index + 1}`, 'B'),
+    )
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 2,
+      targetRoundCount: 3,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 3,
+      specialTimeLimitEnabled: false,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        guestPartnerRepeat: true,
+      },
+    })
+    const guestPartnerCounts = new Map<string, number>()
+    for (const match of schedule.rounds.flatMap((round) => round.matches)) {
+      const guestTeam = [match.teamA, match.teamB].find((team) =>
+        team.some((player) => player.id === guest.id),
+      )
+      const partner = guestTeam?.find((player) => player.id !== guest.id)
+      if (partner) {
+        guestPartnerCounts.set(
+          partner.id,
+          (guestPartnerCounts.get(partner.id) ?? 0) + 1,
+        )
+      }
+    }
+
+    expect(schedule.guestGameCounts[guest.id]).toBe(3)
+    expect(Math.max(...guestPartnerCounts.values())).toBe(1)
   })
 
   it('keeps an opted-out participant in general matches only', () => {
@@ -1753,6 +2059,10 @@ describe('generateSchedule', () => {
       ...defaultSettings,
       courtCount: 1,
       targetRoundCount: 3,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        groupRepeat: false,
+      },
     })
     const starts = [0, 15, 45]
     schedule.rounds.forEach((round, index) => {

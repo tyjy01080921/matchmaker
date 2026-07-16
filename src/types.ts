@@ -37,9 +37,11 @@ export type MatchConditionKey =
   | 'partnerRepeat'
   | 'opponentRepeat'
   | 'groupRepeat'
+  | 'specialMatchCreation'
   | 'specialPriority'
   | 'guestPartnerRepeat'
   | 'femaleLevelFit'
+  | 'strictSkillLimit'
 
 export type MatchConditionOptions = Record<MatchConditionKey, boolean>
 

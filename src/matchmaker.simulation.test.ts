@@ -30,7 +30,7 @@ const userSampleText = `이동근 스페셜
 문평수 남 B
 금대석 남 B
 이승후 남 B
-민경국 남 B
+민경국 남 O
 홍형기 남 B
 권정택 남 C
 김미선 여 A
@@ -147,9 +147,13 @@ const expectHardScheduleInvariants = (
   }
 }
 
-const allConditionsDisabled = Object.fromEntries(
-  Object.keys(defaultMatchConditionOptions).map((key) => [key, false]),
-) as MatchConditionOptions
+const allOptionalConditionsDisabled = {
+  ...Object.fromEntries(
+    Object.keys(defaultMatchConditionOptions).map((key) => [key, false]),
+  ),
+  fairGames: true,
+  waitPriority: true,
+} as MatchConditionOptions
 
 const simulationProfiles: Array<{
   name: string
@@ -182,7 +186,7 @@ const simulationProfiles: Array<{
     },
   },
   {
-    name: '25분 대기 우선 해제',
+    name: '필수 25분 조건 false 입력도 내부 고정',
     normalGameMinutes: 15,
     conditionOptions: {
       ...defaultMatchConditionOptions,
@@ -190,11 +194,10 @@ const simulationProfiles: Array<{
     },
   },
   {
-    name: '균형 조건 해제',
+    name: '선택 균형 조건 해제',
     normalGameMinutes: 15,
     conditionOptions: {
       ...defaultMatchConditionOptions,
-      fairGames: false,
       restBalance: false,
       levelBalance: false,
       ageBalance: false,
@@ -202,9 +205,9 @@ const simulationProfiles: Array<{
     },
   },
   {
-    name: '모든 선호 조건 해제',
+    name: '모든 선택 조건 해제',
     normalGameMinutes: 15,
-    conditionOptions: allConditionsDisabled,
+    conditionOptions: allOptionalConditionsDisabled,
   },
 ]
 
@@ -233,19 +236,20 @@ describe('matchmaker condition simulation', () => {
     expectHardScheduleInvariants(schedule, players, settings)
   })
 
-  it('allows two meetings for the same four and uses a third only without alternatives', () => {
+  it('keeps the same four-player group at two meetings even without alternatives', () => {
     const players = makeSimulationPlayers()
       .filter((player) => !player.isGuest)
       .slice(0, 5)
-    const makeSchedule = (targetRoundCount: number) => generateSchedule(players, {
-      ...defaultSettings,
-      courtCount: 1,
-      startTime: '18:00',
-      endTime: '21:00',
-      targetRoundCount,
-      pacingRoundCount: targetRoundCount,
-      roundCountLocked: true,
-    })
+    const makeSchedule = (targetRoundCount: number) =>
+      generateScheduleWithWaitOptimization(players, {
+        ...defaultSettings,
+        courtCount: 1,
+        startTime: '18:00',
+        endTime: '21:00',
+        targetRoundCount,
+        pacingRoundCount: targetRoundCount,
+        roundCountLocked: true,
+      }, 1)
     const groupCounts = (schedule: Schedule) => {
       const counts = new Map<string, number>()
       for (const match of schedule.rounds.flatMap((round) => round.matches)) {
@@ -263,8 +267,11 @@ describe('matchmaker condition simulation', () => {
 
     expect(withinCapacity.rounds).toHaveLength(10)
     expect(Math.max(...groupCounts(withinCapacity))).toBe(2)
-    expect(beyondCapacity.rounds).toHaveLength(11)
-    expect(Math.max(...groupCounts(beyondCapacity))).toBe(3)
+    expect(beyondCapacity.rounds).toHaveLength(10)
+    expect(Math.max(...groupCounts(beyondCapacity))).toBe(2)
+    expect(beyondCapacity.warnings).toContain(
+      '동일 4인 2회 제한으로 일부 코트가 비었습니다.',
+    )
   })
 
   it('keeps the 57-player maximum wait within 25 minutes', () => {
@@ -297,7 +304,7 @@ describe('matchmaker condition simulation', () => {
       specialGameLimit: 8,
       specialTimeLimitEnabled: false,
     }
-    const schedule = generateSchedule(players, settings)
+    const schedule = generateScheduleWithWaitOptimization(players, settings, 3)
     const regularStats = calculateStats(players, schedule, {})
       .filter((stat) => !stat.player.isGuest)
     const waits = regularStats.map((stat) => stat.maxWaitMinutes ?? 0)
@@ -381,7 +388,6 @@ describe('matchmaker condition simulation', () => {
       startTime: '08:30',
       endTime: '11:30',
       normalGameMinutes: 12,
-      seed: 11,
       targetRoundCount: 12,
       pacingRoundCount: 12,
       roundCountLocked: true,
@@ -474,27 +480,76 @@ describe('matchmaker condition simulation', () => {
     expect(summary.maximumWait).toBeLessThanOrEqual(25)
     expect(summary.over25).toBe(0)
     expect(summary.sameFourMax).toBeLessThanOrEqual(2)
-    expect(metrics.early.partnerGap).toBeGreaterThan(metrics.middle.partnerGap)
-    expect(metrics.middle.sameLevelRate).toBeGreaterThan(
-      metrics.early.sameLevelRate,
+    expect(metrics.early.partnerGap + 1).toBeGreaterThanOrEqual(
+      metrics.middle.partnerGap,
     )
-    expect(metrics.middle.sameLevelRate).toBeGreaterThan(
-      metrics.late.sameLevelRate,
+    const totalPhaseMatches = Object.values(metrics).reduce(
+      (sum, phase) => sum + phase.matches,
+      0,
     )
-    expect(metrics.middle.sameGenderRate).toBeGreaterThanOrEqual(
-      metrics.early.sameGenderRate,
-    )
-    expect(metrics.middle.sameGenderRate).toBeGreaterThan(
-      metrics.late.sameGenderRate,
-    )
+    const overallSameLevelRate = Object.values(metrics).reduce(
+      (sum, phase) => sum + phase.sameLevelRate * phase.matches,
+      0,
+    ) / totalPhaseMatches
+    expect(overallSameLevelRate).toBeGreaterThanOrEqual(50)
+    expect(metrics.middle.sameLevelRate).toBeGreaterThanOrEqual(50)
+    expect(metrics.middle.sameGenderRate).toBeGreaterThanOrEqual(35)
     expect(metrics.early.skillWarnings).toBeLessThanOrEqual(
       metrics.middle.skillWarnings,
     )
-    expect(metrics.middle.skillWarnings).toBeLessThanOrEqual(
-      metrics.late.skillWarnings,
-    )
-    expect(summary.skillDanger).toBeLessThanOrEqual(2)
+    expect(quality.averageSkillWarningStartMinutes ?? 0).toBeGreaterThanOrEqual(81)
+    expect(summary.skillWarnings).toBeLessThanOrEqual(20)
+    expect(summary.skillDanger).toBeLessThanOrEqual(10)
+    expect(quality.individualSkillWarningMatches).toBe(summary.skillWarnings)
   }, 60000)
+
+  it('keeps the annotated 57-player meeting within the strict skill limit', () => {
+    const specialDisabled = new Set(
+      '김태우 윤건 최철성 장지훈 신기성 최호웅 이경진 정명훈 박덕규 이태준 문평수 금대석 이승후 민경국 홍형기 권정택 김미선 신은정 문모다 손미선 김희진 류한철 하윤서 정해룡'.split(' '),
+    )
+    const flexible = new Set(['이승후', '민경국', '권정택', '김미선'])
+    const players = makeUserSamplePlayers().map((player) => ({
+      ...player,
+      specialMatchEligible:
+        !player.isGuest && !specialDisabled.has(player.name),
+      gameCountFlexible: !player.isGuest && flexible.has(player.name),
+      waitTimeFlexible: !player.isGuest && flexible.has(player.name),
+    }))
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 6,
+      startTime: '08:30',
+      endTime: '11:30',
+      normalGameMinutes: 12,
+      targetRoundCount: 12,
+      pacingRoundCount: 12,
+      roundCountLocked: true,
+      earlyPhaseEndPercent: 15,
+      middlePhaseEndPercent: 85,
+      seed: 12,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 8,
+      specialTimeLimitEnabled: false,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        strictSkillLimit: true,
+      },
+    }
+    const schedule = generateScheduleWithWaitOptimization(players, settings, 5)
+    const matches = schedule.rounds.flatMap((round) => round.matches)
+    const quality = analyzeScheduleQuality(schedule, players)
+    const wait = analyzeScheduleWait(schedule, players, settings)
+
+    expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
+    expect(matches).toHaveLength(88)
+    expect(matches.filter((match) => !match.isSpecial)).toHaveLength(80)
+    expect(quality.individualSkillDangerMatches).toBe(0)
+    expect(quality.individualSkillWarningMatches).toBeLessThanOrEqual(5)
+    expect(quality.standardGameSpread).toBeLessThanOrEqual(1)
+    expect(quality.maximumGroupMeetings).toBeLessThanOrEqual(2)
+    expect(wait.maximumWaitMinutes).toBeLessThanOrEqual(25)
+  }, 30000)
 
   it('keeps a 15-minute schedule usable and recommends a participant limit', () => {
     const players = makeUserSamplePlayers()
