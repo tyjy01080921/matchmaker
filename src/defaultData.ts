@@ -70,6 +70,8 @@ export const defaultSettings: MatchSettings = {
   targetRoundCount: 8,
   pacingRoundCount: 8,
   roundCountLocked: true,
+  earlyPhaseEndPercent: 30,
+  middlePhaseEndPercent: 70,
   conditionOptions: defaultMatchConditionOptions,
 }
 

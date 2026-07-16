@@ -7,6 +7,8 @@ import {
   findScheduleOverlap,
   generateSchedule,
   generateScheduleWithWaitOptimization,
+  getMatchSkillWarningLevel,
+  getPlayerMatchScore,
   validateMeetingSchedule,
 } from './matchmaker'
 import { getBookingDurationMinutes } from './scheduleTime'
@@ -371,6 +373,129 @@ describe('matchmaker condition simulation', () => {
     expect(maximumWaits.every((wait) => wait <= 25)).toBe(true)
   }, 15000)
 
+  it('creates a warmup, peak, and completion flow for the 57-player sample', () => {
+    const players = makeUserSamplePlayers()
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 6,
+      startTime: '08:30',
+      endTime: '11:30',
+      normalGameMinutes: 12,
+      seed: 11,
+      targetRoundCount: 12,
+      pacingRoundCount: 12,
+      roundCountLocked: true,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 8,
+      specialTimeLimitEnabled: false,
+    }
+    const schedule = generateScheduleWithWaitOptimization(players, settings, 5)
+    const matches = schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) => !match.isSpecial)
+    const phases = {
+      early: matches.filter((match) => (match.startOffsetMinutes ?? 0) < 54),
+      middle: matches.filter((match) => {
+        const start = match.startOffsetMinutes ?? 0
+        return start >= 54 && start < 126
+      }),
+      late: matches.filter((match) => (match.startOffsetMinutes ?? 0) >= 126),
+    }
+    const metrics = Object.fromEntries(
+      Object.entries(phases).map(([phase, phaseMatches]) => {
+        const average = (values: number[]) => values.length > 0
+          ? values.reduce((sum, value) => sum + value, 0) / values.length
+          : 0
+        const allPlayers = (match: (typeof phaseMatches)[number]) =>
+          [...match.teamA, ...match.teamB]
+        return [phase, {
+          matches: phaseMatches.length,
+          partnerGap: average(phaseMatches.flatMap((match) =>
+            [match.teamA, match.teamB].map((team) =>
+              Math.abs(
+                getPlayerMatchScore(team[0]) - getPlayerMatchScore(team[1]),
+              ),
+            ),
+          )),
+          sameLevelRate: average(phaseMatches.map((match) =>
+            new Set(allPlayers(match).map((player) => player.level)).size === 1
+              ? 100
+              : 0,
+          )),
+          sameGenderRate: average(phaseMatches.map((match) =>
+            new Set(allPlayers(match).map((player) => player.gender)).size === 1
+              ? 100
+              : 0,
+          )),
+          sameAgeRate: average(phaseMatches.map((match) =>
+            new Set(allPlayers(match).map((player) => player.ageGroup)).size === 1
+              ? 100
+              : 0,
+          )),
+          skillWarnings: phaseMatches.filter(
+            (match) => getMatchSkillWarningLevel(match) !== 'none',
+          ).length,
+        }]
+      }),
+    )
+    const regularStats = calculateStats(players, schedule, {})
+      .filter((stat) => !stat.player.isGuest)
+    const quality = analyzeScheduleQuality(schedule, players)
+    const wait = analyzeScheduleWait(schedule, players, settings)
+    const summary = {
+      totalMatches: schedule.rounds.flatMap((round) => round.matches).length,
+      games: [
+        Math.min(...regularStats.map((stat) => stat.games)),
+        Math.max(...regularStats.map((stat) => stat.games)),
+      ],
+      averageGames:
+        regularStats.reduce((sum, stat) => sum + stat.games, 0) /
+        regularStats.length,
+      averageWait:
+        regularStats.reduce(
+          (sum, stat) => sum + (stat.averageWaitMinutes ?? 0),
+          0,
+        ) / regularStats.length,
+      maximumWait: wait.maximumWaitMinutes,
+      over25: quality.participantsOverWaitLimit,
+      sameFourMax: quality.maximumGroupMeetings,
+      partnerMax: quality.maximumPartnerMeetings,
+      skillWarnings: quality.teamSkillWarningMatches,
+      skillDanger: quality.teamSkillDangerMatches,
+      fallback: schedule.warnings.some((warning) =>
+        warning.startsWith('동시 품질조건 후보 없음'),
+      ),
+    }
+    expect(players).toHaveLength(57)
+    expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
+    expect(summary.totalMatches).toBe(88)
+    expect(summary.games[1] - summary.games[0]).toBeLessThanOrEqual(1)
+    expect(summary.maximumWait).toBeLessThanOrEqual(25)
+    expect(summary.over25).toBe(0)
+    expect(summary.sameFourMax).toBeLessThanOrEqual(2)
+    expect(metrics.early.partnerGap).toBeGreaterThan(metrics.middle.partnerGap)
+    expect(metrics.middle.sameLevelRate).toBeGreaterThan(
+      metrics.early.sameLevelRate,
+    )
+    expect(metrics.middle.sameLevelRate).toBeGreaterThan(
+      metrics.late.sameLevelRate,
+    )
+    expect(metrics.middle.sameGenderRate).toBeGreaterThanOrEqual(
+      metrics.early.sameGenderRate,
+    )
+    expect(metrics.middle.sameGenderRate).toBeGreaterThan(
+      metrics.late.sameGenderRate,
+    )
+    expect(metrics.early.skillWarnings).toBeLessThanOrEqual(
+      metrics.middle.skillWarnings,
+    )
+    expect(metrics.middle.skillWarnings).toBeLessThanOrEqual(
+      metrics.late.skillWarnings,
+    )
+    expect(summary.skillDanger).toBeLessThanOrEqual(2)
+  }, 60000)
+
   it('keeps a 15-minute schedule usable and recommends a participant limit', () => {
     const players = makeUserSamplePlayers()
     const settings: MatchSettings = {
@@ -423,6 +548,9 @@ describe('matchmaker condition simulation', () => {
     expect(analysis.maximumWaitMinutes).toBe(30)
     expect(analysis.recommendedParticipantCount).toBe(39)
     expect(analysis.warning).toContain('권장 참가 39명 이하')
+    expect(schedule.warnings).toContain(
+      '동시 품질조건 후보 없음 · 가장 가까운 대진을 표시했습니다.',
+    )
   }, 20000)
 
   it('uses selected officials for one-game and within-25-minute flexibility', () => {

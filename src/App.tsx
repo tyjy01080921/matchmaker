@@ -50,6 +50,10 @@ import {
 } from './playerNames'
 import { parseBulkPlayerDrafts } from './playerInput'
 import {
+  preferredPartnerNames,
+  resolvePreferredPartnerNames,
+} from './preferredPartners'
+import {
   A4_IMAGE_HEIGHT,
   A4_IMAGE_WIDTH,
   createSchedulePrintImages,
@@ -107,7 +111,7 @@ import {
 const STORAGE_KEY = 'badminton-matchmaker-v1'
 const CONTACT_EMAIL = 'ama_official@naver.com'
 const APP_VERSION = '0.0.1'
-const LAST_UPDATED = '2026.07.15'
+const LAST_UPDATED = '2026.07.16'
 const SHARE_LINK_SAVED_MESSAGE = '현재 생성된 이벤트의 링크를 저장하였습니다.'
 const MEETING_GENERATION_MESSAGES = [
   '고성현이 만든 첫번째 라켓, 마티라',
@@ -119,7 +123,9 @@ const MEETING_GENERATION_MESSAGES = [
   '준비운동 중요한 거 아시죠?! 꼭 하세요!',
   '즐거운 배드민턴, 고성현&신백철의 A.M.A와 함께 하세요!',
 ] as const
-const MEETING_GENERATION_ATTEMPTS = 3
+const MEETING_GENERATION_ATTEMPTS = 5
+const MIN_MEETING_PHASE_PERCENT = 15
+const MEETING_PHASE_STEP = 5
 
 const getTargetRoundCount = (settings: MatchSettings) => {
   const numeric = Number(settings.targetRoundCount)
@@ -361,6 +367,13 @@ const normalizePlayer = (player: Partial<Player>): Player => {
     guestGameLimit: player.guestGameLimit ?? 0,
     gameCountFlexible: !isGuest && (player.gameCountFlexible ?? false),
     waitTimeFlexible: !isGuest && (player.waitTimeFlexible ?? false),
+    preferredPartnerIds: !isGuest && Array.isArray(player.preferredPartnerIds)
+      ? [...new Set(
+          player.preferredPartnerIds.filter(
+            (id): id is string => typeof id === 'string' && id.length > 0,
+          ),
+        )].slice(0, 3)
+      : [],
   }
 }
 
@@ -408,6 +421,40 @@ const normalizePositiveInteger = (
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return fallback
   return Math.min(max, Math.max(min, Math.floor(numeric)))
+}
+
+const normalizeMeetingPhasePercent = (value: unknown, fallback: number) => {
+  const numeric = Number(value)
+  const safeValue = Number.isFinite(numeric) ? numeric : fallback
+  return Math.round(safeValue / MEETING_PHASE_STEP) * MEETING_PHASE_STEP
+}
+
+const normalizeMeetingPhaseBoundaries = (
+  earlyValue: unknown,
+  middleValue: unknown,
+) => {
+  const earlyPhaseEndPercent = Math.min(
+    100 - MIN_MEETING_PHASE_PERCENT * 2,
+    Math.max(
+      MIN_MEETING_PHASE_PERCENT,
+      normalizeMeetingPhasePercent(
+        earlyValue,
+        defaultSettings.earlyPhaseEndPercent,
+      ),
+    ),
+  )
+  const middlePhaseEndPercent = Math.min(
+    100 - MIN_MEETING_PHASE_PERCENT,
+    Math.max(
+      earlyPhaseEndPercent + MIN_MEETING_PHASE_PERCENT,
+      normalizeMeetingPhasePercent(
+        middleValue,
+        defaultSettings.middlePhaseEndPercent,
+      ),
+    ),
+  )
+
+  return { earlyPhaseEndPercent, middlePhaseEndPercent }
 }
 
 const normalizeMatchConditionOptions = (
@@ -532,6 +579,10 @@ const normalizeMatchSettings = (
         ),
       )
     : 0
+  const phaseBoundaries = normalizeMeetingPhaseBoundaries(
+    settings?.earlyPhaseEndPercent,
+    settings?.middlePhaseEndPercent,
+  )
 
   return {
     ...defaultSettings,
@@ -590,6 +641,7 @@ const normalizeMatchSettings = (
       settings?.startTime && settings?.endTime
         ? (settings.roundCountLocked ?? true)
         : true,
+    ...phaseBoundaries,
     conditionOptions: normalizeMatchConditionOptions(settings?.conditionOptions),
   }
 }
@@ -1369,6 +1421,9 @@ function App() {
   const [tournamentPrintImageUrls, setTournamentPrintImageUrls] = useState<string[]>([])
   const [editingMatchIds, setEditingMatchIds] = useState<Record<string, boolean>>({})
   const [matchNameDrafts, setMatchNameDrafts] = useState<MatchNameOverrides>({})
+  const [preferredPartnerDrafts, setPreferredPartnerDrafts] = useState<
+    Record<string, string>
+  >({})
   const [collapsedMatchIds, setCollapsedMatchIds] = useState<Record<string, boolean>>({})
   const [tournamentRoundOpen, setTournamentRoundOpen] = useState<Record<number, boolean>>({})
   const [rouletteRotation, setRouletteRotation] = useState(0)
@@ -1430,14 +1485,28 @@ function App() {
   const gameSpreadWarning = scheduleQualityAnalysis.standardGameSpread > 1
     ? `일반 참가자 경기 수 차 ${scheduleQualityAnalysis.standardGameSpread}경기`
     : null
+  const groupRepeatWarning = scheduleQualityAnalysis.maximumGroupMeetings > 2
+    ? `동일 4인 최대 ${scheduleQualityAnalysis.maximumGroupMeetings}경기`
+    : null
+  const candidateQualityWarning = schedule.warnings.find((warning) =>
+    warning.startsWith('동시 품질조건 후보 없음'),
+  ) ?? null
+  const hasMeetingQualityWarning = Boolean(
+    scheduleWaitAnalysis.exceedsLimit ||
+    gameSpreadWarning ||
+    groupRepeatWarning ||
+    skillBalanceWarning ||
+    candidateQualityWarning,
+  )
   const meetingWarnings = useMemo(
     () => [
       ...schedule.warnings,
       ...(scheduleWaitAnalysis.warning ? [scheduleWaitAnalysis.warning] : []),
       ...(skillBalanceWarning ? [skillBalanceWarning] : []),
       ...(gameSpreadWarning ? [gameSpreadWarning] : []),
+      ...(groupRepeatWarning ? [groupRepeatWarning] : []),
     ],
-    [gameSpreadWarning, schedule.warnings, scheduleWaitAnalysis.warning, skillBalanceWarning],
+    [gameSpreadWarning, groupRepeatWarning, schedule.warnings, scheduleWaitAnalysis.warning, skillBalanceWarning],
   )
   useEffect(() => {
     if (!isMeetingGenerating || meetingOperationLabel !== '대진 검증 중') return
@@ -1461,13 +1530,19 @@ function App() {
 
       setMeetingOperationLabel('대진 완료')
       setMeetingGenerationMessage(
-        [scheduleWaitAnalysis.warning, gameSpreadWarning, skillBalanceWarning]
+        [
+          candidateQualityWarning,
+          scheduleWaitAnalysis.warning,
+          gameSpreadWarning,
+          groupRepeatWarning,
+          skillBalanceWarning,
+        ]
           .filter(Boolean)
           .join(' · ') ||
         '중복과 최장 대기 25분 검증을 마쳤습니다.',
       )
       setNotice(
-        scheduleWaitAnalysis.exceedsLimit || gameSpreadWarning || skillBalanceWarning
+        hasMeetingQualityWarning
           ? '대진 완료 · 품질 경고'
           : '대진 검증 완료',
       )
@@ -1480,6 +1555,9 @@ function App() {
     meetingOperationLabel,
     schedule,
     gameSpreadWarning,
+    groupRepeatWarning,
+    candidateQualityWarning,
+    hasMeetingQualityWarning,
     skillBalanceWarning,
     scheduleWaitAnalysis,
   ])
@@ -2174,6 +2252,35 @@ function App() {
     )
   }
 
+  const updatePreferredPartnerDraft = (player: Player, value: string) => {
+    setPreferredPartnerDrafts((current) => ({ ...current, [player.id]: value }))
+    const resolution = resolvePreferredPartnerNames(value, player, players)
+    if (!resolution.error) {
+      updatePlayer(player.id, { preferredPartnerIds: resolution.ids })
+    }
+  }
+
+  const commitPreferredPartnerDraft = (player: Player) => {
+    const value = preferredPartnerDrafts[player.id] ??
+      preferredPartnerNames(player, players)
+    const resolution = resolvePreferredPartnerNames(value, player, players)
+    if (resolution.error) {
+      setNotice(resolution.error)
+      return
+    }
+    updatePlayer(player.id, { preferredPartnerIds: resolution.ids })
+    setPreferredPartnerDrafts((current) => {
+      const next = { ...current }
+      delete next[player.id]
+      return next
+    })
+    setNotice(
+      resolution.ids.length > 0
+        ? `선호 파트너 ${resolution.ids.length}명 저장됨`
+        : '선호 파트너 해제됨',
+    )
+  }
+
   const clearMeetingScheduleState = () => {
     setResults({})
     setPairMixes({})
@@ -2324,6 +2431,24 @@ function App() {
     setMatchNameOverrides({})
     setMeetingLineups({})
     setNotice('조건 변경됨')
+  }
+
+  const updateMeetingPhaseBoundary = (
+    boundary: 'early' | 'middle',
+    value: number,
+  ) => {
+    setSettings((current) => {
+      const phaseBoundaries = normalizeMeetingPhaseBoundaries(
+        boundary === 'early' ? value : current.earlyPhaseEndPercent,
+        boundary === 'middle' ? value : current.middlePhaseEndPercent,
+      )
+      return { ...current, ...phaseBoundaries }
+    })
+    setResults({})
+    setPairMixes({})
+    setMatchNameOverrides({})
+    setMeetingLineups({})
+    setNotice('경기 흐름 변경됨 · 생성 필요')
   }
 
   const openLevelTierEditor = () => {
@@ -2761,7 +2886,19 @@ function App() {
   }
 
   const removePlayer = (id: string) => {
-    setPlayers((current) => current.filter((player) => player.id !== id))
+    setPlayers((current) => current
+      .filter((player) => player.id !== id)
+      .map((player) => ({
+        ...player,
+        preferredPartnerIds: (player.preferredPartnerIds ?? []).filter(
+          (preferredId) => preferredId !== id,
+        ),
+      })))
+    setPreferredPartnerDrafts((current) => {
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
     resetMeetingTargetRounds()
   }
 
@@ -2782,6 +2919,7 @@ function App() {
     setPlayerDetailsOpen(false)
     setBulkOpen(false)
     setBulkText('')
+    setPreferredPartnerDrafts({})
     setNotice('초기화됨')
   }
 
@@ -3691,7 +3829,7 @@ function App() {
               <span
                 className={`generation-result-icon ${
                   meetingOperationLabel === '대진 완료'
-                    ? scheduleWaitAnalysis.exceedsLimit
+                    ? hasMeetingQualityWarning
                       ? 'warning'
                       : 'success'
                     : 'failure'
@@ -3699,7 +3837,7 @@ function App() {
                 aria-hidden="true"
               >
                 {meetingOperationLabel === '대진 완료' &&
-                !scheduleWaitAnalysis.exceedsLimit
+                !hasMeetingQualityWarning
                   ? '✓'
                   : '!'}
               </span>
@@ -3791,7 +3929,7 @@ function App() {
               <p>같은 단계의 참가자는 비슷한 경기 수준으로 배정합니다.</p>
               <p>대진 카드에서 수동으로 수정 가능합니다.</p>
               <p>OA는 연령 상관없이 A레벨 우선 조합을 원하는 참가자입니다.</p>
-              <p>O는 연령, 성별, 레벨 상관없이 경기해도 되는 참가자 입니다.</p>
+              <p>O는 모든 레벨을 커버하며, 실력 불균형 완충에 우선 활용합니다.</p>
               <p>스페셜은 초청/게스트 경기 배정용입니다.</p>
             </div>
             <button type="button" onClick={openLevelTierEditor}>
@@ -4594,6 +4732,66 @@ function App() {
 
             {conditionsOpen ? (
               <div className="match-condition-panel">
+                <div className="meeting-phase-editor">
+                  <div className="meeting-phase-heading">
+                    <strong>경기 흐름</strong>
+                    <span>소프트 조건 · 안전·품질 기준 우선</span>
+                  </div>
+                  <div className="meeting-phase-labels" aria-hidden="true">
+                    <div>
+                      <strong>초반</strong>
+                      <span>레벨 혼합 워밍업</span>
+                    </div>
+                    <div>
+                      <strong>중반</strong>
+                      <span>실력·성별·연령 우선</span>
+                    </div>
+                    <div>
+                      <strong>종반</strong>
+                      <span>균등 기회 우선</span>
+                    </div>
+                  </div>
+                  <div
+                    className="meeting-phase-range"
+                    style={{
+                      '--early-phase-end': `${settings.earlyPhaseEndPercent}%`,
+                      '--middle-phase-end': `${settings.middlePhaseEndPercent}%`,
+                    } as CSSProperties}
+                  >
+                    <div className="meeting-phase-track" aria-hidden="true" />
+                    <input
+                      type="range"
+                      min={MIN_MEETING_PHASE_PERCENT}
+                      max={settings.middlePhaseEndPercent - MIN_MEETING_PHASE_PERCENT}
+                      step={MEETING_PHASE_STEP}
+                      value={settings.earlyPhaseEndPercent}
+                      aria-label="초반 종료 지점"
+                      aria-valuetext={`전체 시간의 ${settings.earlyPhaseEndPercent}%`}
+                      onChange={(event) =>
+                        updateMeetingPhaseBoundary('early', Number(event.target.value))
+                      }
+                    />
+                    <input
+                      type="range"
+                      min={settings.earlyPhaseEndPercent + MIN_MEETING_PHASE_PERCENT}
+                      max={100 - MIN_MEETING_PHASE_PERCENT}
+                      step={MEETING_PHASE_STEP}
+                      value={settings.middlePhaseEndPercent}
+                      aria-label="중반 종료 지점"
+                      aria-valuetext={`전체 시간의 ${settings.middlePhaseEndPercent}%`}
+                      onChange={(event) =>
+                        updateMeetingPhaseBoundary('middle', Number(event.target.value))
+                      }
+                    />
+                  </div>
+                  <div className="meeting-phase-values" aria-live="polite">
+                    <span>초반 {settings.earlyPhaseEndPercent}%</span>
+                    <span>
+                      중반 {settings.middlePhaseEndPercent - settings.earlyPhaseEndPercent}%
+                    </span>
+                    <span>종반 {100 - settings.middlePhaseEndPercent}%</span>
+                  </div>
+                </div>
                 {matchConditionKeys.map((key) => (
                   <label className="condition-row" key={key}>
                     <input
@@ -4723,20 +4921,40 @@ function App() {
                             ×
                           </button>
                         </div>
-                        <input
-                          className="name-input"
-                          aria-label={`${namePlaceholder} 이름`}
-                          placeholder={namePlaceholder}
-                          value={player.name}
-                          onFocus={() => {
-                            if (isAutoGeneratedPlayerName(player.name)) {
-                              updatePlayer(player.id, { name: '' })
+                        <div className={`player-name-fields ${isSpecialLevel ? 'single-field' : ''}`}>
+                          <input
+                            className="name-input"
+                            aria-label={`${namePlaceholder} 이름`}
+                            placeholder={namePlaceholder}
+                            value={player.name}
+                            onFocus={() => {
+                              if (isAutoGeneratedPlayerName(player.name)) {
+                                updatePlayer(player.id, { name: '' })
+                              }
+                            }}
+                            onChange={(event) =>
+                              updatePlayer(player.id, { name: event.target.value })
                             }
-                          }}
-                          onChange={(event) =>
-                            updatePlayer(player.id, { name: event.target.value })
-                          }
-                        />
+                          />
+                          {!isSpecialLevel ? (
+                            <input
+                              className="preferred-partner-input"
+                              aria-label={`${displayName} 선호 파트너`}
+                              placeholder="선호 파트너 최대 3명 · 쉼표 구분"
+                              value={
+                                preferredPartnerDrafts[player.id] ??
+                                preferredPartnerNames(player, players)
+                              }
+                              onChange={(event) =>
+                                updatePreferredPartnerDraft(player, event.target.value)
+                              }
+                              onBlur={() => commitPreferredPartnerDraft(player)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') event.currentTarget.blur()
+                              }}
+                            />
+                          ) : null}
+                        </div>
                         {rawName && displayName !== rawName ? (
                           <div className="name-display-hint">표시명 {displayName}</div>
                         ) : null}

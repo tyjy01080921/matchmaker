@@ -57,6 +57,7 @@ export type Player = {
   guestGameLimit: number
   gameCountFlexible?: boolean
   waitTimeFlexible?: boolean
+  preferredPartnerIds?: string[]
 }
 
 export type MatchSettings = {
@@ -80,6 +81,8 @@ export type MatchSettings = {
   targetRoundCount: number
   pacingRoundCount: number
   roundCountLocked: boolean
+  earlyPhaseEndPercent: number
+  middlePhaseEndPercent: number
   conditionOptions: MatchConditionOptions
 }
 
