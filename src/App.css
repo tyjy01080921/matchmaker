@@ -2124,6 +2124,12 @@ textarea {
   font-weight: 900;
 }
 
+.schedule-overview-heading .summary-refresh-button {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+}
+
 .progress-meter {
   height: 12px;
   overflow: hidden;

@@ -5919,6 +5919,16 @@ function App() {
                   ? `${overtimeMatches.length}경기 예약 종료 초과`
                   : `${generatedMeetingSettings.endTime} 내 완료`}
               </div>
+              {!isSharedMode ? (
+                <button
+                  type="button"
+                  className="status-refresh-button summary-refresh-button"
+                  disabled={isMeetingStatusRefreshing}
+                  onClick={refreshMeetingStatus}
+                >
+                  {isMeetingStatusRefreshing ? '대진 분석 중' : '현황 업데이트'}
+                </button>
+              ) : null}
             </div>
             <div className="schedule-summary-grid">
               <div>
