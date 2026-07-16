@@ -882,25 +882,18 @@ const readStoredState = (): StoredState => {
       : parsed.players?.length
         ? parsed.players.map((player) => normalizeStoredPlayer(player))
         : defaultPlayers
-    const generatedMeetingPlayers = storedPlayersAreLegacySample
-      ? defaultPlayers
-      : Array.isArray(parsed.generatedMeetingPlayers)
-        ? parsed.generatedMeetingPlayers.map((player) => normalizeStoredPlayer(player))
-        : players
     return {
       appMode: normalizeAppMode(parsed.appMode),
       players,
       settings,
-      generatedMeetingPlayers,
-      generatedMeetingSettings: normalizeMatchSettings(
-        parsed.generatedMeetingSettings ?? parsed.settings,
-      ),
-      results: storedPlayersAreLegacySample ? {} : (parsed.results ?? {}),
-      pairMixes: storedPlayersAreLegacySample ? {} : (parsed.pairMixes ?? {}),
-      matchNameOverrides: storedPlayersAreLegacySample
-        ? {}
-        : (parsed.matchNameOverrides ?? {}),
-      meetingLineups: storedPlayersAreLegacySample ? {} : (parsed.meetingLineups ?? {}),
+      // 일반 접속에서는 참가자와 설정만 복원한다. 이전 대진을 복원하면
+      // 첫 화면 렌더링 중 후보 생성·검증이 다시 실행되어 접속이 느려진다.
+      generatedMeetingPlayers: defaultPlayers,
+      generatedMeetingSettings: settings,
+      results: {},
+      pairMixes: {},
+      matchNameOverrides: {},
+      meetingLineups: {},
       prizeDraw: storedPlayersAreLegacySample
         ? defaultPrizeDrawState
         : normalizePrizeDrawState(parsed.prizeDraw),
