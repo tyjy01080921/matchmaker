@@ -38,6 +38,8 @@ type HistoryState = {
   playStreaks: Record<string, number>
   partners: Record<string, number>
   opponents: Record<string, number>
+  encounters: Record<string, number>
+  groups: Record<string, number>
   specialCompleted: Set<string>
   specialGameCounts: Record<string, number>
   guestGameCounts: Record<string, number>
@@ -69,6 +71,9 @@ const GUEST_REPEAT_PARTNER_PENALTY = 50000
 const SPECIAL_TIMING_WEIGHT = 110
 const FAIR_GAME_MAX_WEIGHT = 10000000
 const FAIR_GAME_TOTAL_WEIGHT = 100000
+const REPEATED_GROUP_WEIGHT = 2000000
+const MAX_ENCOUNTER_WEIGHT = 60000
+const TOTAL_ENCOUNTER_WEIGHT = 4000
 const GAME_SLOT_MINUTES = 15
 
 const replaceMatchPlayer = (match: Match, outgoingId: string, incoming: Player): Match => ({
@@ -180,6 +185,9 @@ const matchConditions = (settings: MatchSettings): MatchConditionOptions => ({
 
 const pairKey = (a: string, b: string) => [a, b].sort().join('__')
 
+const groupKey = (players: Player[]) =>
+  players.map((player) => player.id).sort().join('__')
+
 const makeRandom = (seed: number) => {
   let value = seed || 1
   return () => {
@@ -198,6 +206,8 @@ const makeHistory = (players: Player[]): HistoryState => ({
   playStreaks: emptyCounts(players),
   partners: {},
   opponents: {},
+  encounters: {},
+  groups: {},
   specialCompleted: new Set<string>(),
   specialGameCounts: emptyCounts(players),
   guestGameCounts: Object.fromEntries(
@@ -1073,6 +1083,15 @@ const updateHistoryForMatch = (history: HistoryState, match: Match) => {
         (history.opponents[pairKey(left.id, right.id)] ?? 0) + 1
     }
   }
+
+  history.groups[groupKey(players)] =
+    (history.groups[groupKey(players)] ?? 0) + 1
+  for (let left = 0; left < players.length - 1; left += 1) {
+    for (let right = left + 1; right < players.length; right += 1) {
+      const key = pairKey(players[left].id, players[right].id)
+      history.encounters[key] = (history.encounters[key] ?? 0) + 1
+    }
+  }
 }
 
 const updateHistoryForRests = (
@@ -1139,6 +1158,30 @@ const playerPriority = (
 const uniquePlayers = (players: Player[]) =>
   Array.from(new Map(players.map((player) => [player.id, player])).values())
 
+const groupRepeatPenalty = (
+  players: Player[],
+  history: HistoryState,
+  conditions: MatchConditionOptions,
+) => {
+  if (!conditions.groupRepeat) return 0
+
+  const encounterCounts: number[] = []
+  for (let left = 0; left < players.length - 1; left += 1) {
+    for (let right = left + 1; right < players.length; right += 1) {
+      encounterCounts.push(
+        history.encounters[pairKey(players[left].id, players[right].id)] ?? 0,
+      )
+    }
+  }
+
+  return (
+    (history.groups[groupKey(players)] ?? 0) * REPEATED_GROUP_WEIGHT +
+    Math.max(0, ...encounterCounts) * MAX_ENCOUNTER_WEIGHT +
+    encounterCounts.reduce((sum, count) => sum + count, 0) *
+      TOTAL_ENCOUNTER_WEIGHT
+  )
+}
+
 const guestPriority = (
   guest: Player,
   history: HistoryState,
@@ -1165,6 +1208,7 @@ type SpecialRegularScore = {
   levelSpread: number
   ageSpread: number
   levelDirection: number
+  groupRepeatPenalty: number
   pendingPenalty: number
   maximumSpecialGames: number
   totalSpecialGames: number
@@ -1212,6 +1256,11 @@ const scoreSpecialRegulars = (
         : segment === 'high'
           ? -regularScoreSum
           : 0,
+    groupRepeatPenalty: groupRepeatPenalty(
+      [guest, ...regulars],
+      history,
+      conditions,
+    ),
     pendingPenalty: 3 - pendingCount,
     maximumSpecialGames: Math.max(...specialCounts),
     totalSpecialGames: specialCounts.reduce((sum, count) => sum + count, 0),
@@ -1243,6 +1292,7 @@ const compareSpecialRegularScores = (
     left.levelSpread - right.levelSpread,
     left.ageSpread - right.ageSpread,
     segment === 'random' ? 0 : left.levelDirection - right.levelDirection,
+    left.groupRepeatPenalty - right.groupRepeatPenalty,
     left.maximumSpecialGames - right.maximumSpecialGames,
     left.totalSpecialGames - right.totalSpecialGames,
     left.pendingPenalty - right.pendingPenalty,
@@ -1472,6 +1522,7 @@ const scoreAdaptiveSpecialGroup = (
 
   return (
     pairing.score +
+    groupRepeatPenalty(group, history, conditions) +
     regularLevelPenalty +
     (conditions.levelBalance ? playerScoreSpread(group) * (hasPending ? 36 : 8) : 0) +
     (conditions.femaleLevelFit ? mixedGenderLevelPenalty(regulars) * 4 : 0) +
@@ -1689,6 +1740,7 @@ const scoreGroup = (
   return (
     pairing.score +
     fairGamePenalty(group, history, conditions) +
+    groupRepeatPenalty(group, history, conditions) +
     (conditions.levelBalance ? levelSpread * 500 * balanceMultiplier : 0) +
     (conditions.ageBalance ? ageSpread * 900 : 0) +
     (conditions.restBalance
@@ -1786,11 +1838,17 @@ const pickGeneralGroup = (
             Math.abs(ageValue(anchor) - ageValue(right.player))
           if (ageDiff !== 0) return ageDiff
         }
+        if (conditions.groupRepeat) {
+          const encounterDiff =
+            (history.encounters[pairKey(anchor.id, left.player.id)] ?? 0) -
+            (history.encounters[pairKey(anchor.id, right.player.id)] ?? 0)
+          if (encounterDiff !== 0) return encounterDiff
+        }
         const priorityDiff = left.priority - right.priority
         if (priorityDiff !== 0) return priorityDiff
         return left.randomValue - right.randomValue
       })
-      .slice(0, 9)
+      .slice(0, 16)
       .map(({ player }) => player)
 
     for (let a = 0; a < companionCandidates.length - 2; a += 1) {

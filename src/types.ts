@@ -35,6 +35,7 @@ export type MatchConditionKey =
   | 'genderBalance'
   | 'partnerRepeat'
   | 'opponentRepeat'
+  | 'groupRepeat'
   | 'specialPriority'
   | 'guestPartnerRepeat'
   | 'femaleLevelFit'

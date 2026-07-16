@@ -42,6 +42,7 @@ export const defaultMatchConditionOptions: MatchConditionOptions = {
   genderBalance: true,
   partnerRepeat: true,
   opponentRepeat: true,
+  groupRepeat: true,
   specialPriority: true,
   guestPartnerRepeat: true,
   femaleLevelFit: true,

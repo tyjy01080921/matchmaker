@@ -1068,6 +1068,71 @@ describe('generateSchedule', () => {
     }
   })
 
+  it('reduces repeated four-player groups in a 56-player meeting', () => {
+    const guest = makeTestPlayer('repeat-guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 55 }, (_, index) =>
+      makeTestPlayer(
+        `repeat-regular-${index + 1}`,
+        index < 18 ? 'B' : index < 37 ? 'C' : 'D',
+        index % 3 === 0 ? 'female' : 'male',
+      ),
+    )
+    const settings = {
+      ...defaultSettings,
+      courtCount: 6,
+      startTime: '18:00',
+      endTime: '21:00',
+      targetRoundCount: 12,
+      pacingRoundCount: 12,
+      roundCountLocked: true,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 8,
+      specialTimeLimitEnabled: false,
+    }
+    const repeatedGroupCount = (enabled: boolean) => {
+      const schedule = generateSchedule([guest, ...regulars], {
+        ...settings,
+        conditionOptions: {
+          ...defaultMatchConditionOptions,
+          groupRepeat: enabled,
+        },
+      })
+      const counts = new Map<string, number>()
+      for (const match of schedule.rounds.flatMap((round) => round.matches)) {
+        if (match.isSpecial) continue
+        const key = [...match.teamA, ...match.teamB]
+          .map((player) => player.id)
+          .sort()
+          .join('|')
+        counts.set(key, (counts.get(key) ?? 0) + 1)
+      }
+      return {
+        schedule,
+        duplicates: [...counts.values()].reduce(
+          (sum, count) => sum + Math.max(0, count - 1),
+          0,
+        ),
+      }
+    }
+
+    const enabled = repeatedGroupCount(true)
+    const disabled = repeatedGroupCount(false)
+    const regularGameCounts = regulars.map((player) =>
+      enabled.schedule.rounds
+        .flatMap((round) => round.matches)
+        .filter((match) =>
+          [...match.teamA, ...match.teamB].some((candidate) => candidate.id === player.id),
+        ).length,
+    )
+
+    expect(enabled.duplicates).toBe(0)
+    expect(enabled.duplicates).toBeLessThan(disabled.duplicates)
+    expect(enabled.schedule.rounds).toHaveLength(12)
+    expect(enabled.schedule.rounds.every((round) => round.matches.length === 6)).toBe(true)
+    expect(Math.max(...regularGameCounts) - Math.min(...regularGameCounts)).toBeLessThanOrEqual(1)
+  })
+
   it('uses whichever special limit is reached first', () => {
     const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)
     const regulars = Array.from({ length: 16 }, (_, index) =>
