@@ -3049,23 +3049,15 @@ function App() {
       match.id,
       change.incomingId,
     )
-    if (conflictMatch) {
-      const outgoingPlayer = generatedMeetingPlayers.find(
-        (player) => player.id === change.outgoingId,
-      )
-      const confirmed = window.confirm(
-        `${playerDisplayName(incomingPlayer, scheduleDisplayNames)}님은 ` +
-        `같은 시간 ${conflictMatch.court}코트 경기에 참가 중입니다.\n\n` +
-        '동시간 참가자가 포함된 조합으로 이동하겠습니까?\n' +
-        `확인하면 ${outgoingPlayer
-          ? playerDisplayName(outgoingPlayer, scheduleDisplayNames)
-          : '현재 참가자'}님과 서로 자리를 바꿉니다.`,
-      )
-      if (!confirmed) {
-        showEditorError('맞교환 취소 · 다른 참가자를 선택하거나 다시 완료해 주세요.')
-        return
-      }
-    }
+    const outgoingPlayer = generatedMeetingPlayers.find(
+      (player) => player.id === change.outgoingId,
+    )
+    const recommendedCandidates = meetingSwapRecommendations.get(
+      meetingSwapRecommendationKey(match.id, change.outgoingId),
+    ) ?? []
+    const isForcedSelection = !recommendedCandidates.some(
+      (recommendation) => recommendation.player.id === change.incomingId,
+    )
     const swapped = swapMeetingPlayers(
       schedule,
       match.id,
@@ -3095,9 +3087,82 @@ function App() {
       generatedMeetingPlayers,
       generatedMeetingSettings,
     )
-    if (validationIssues.length > 0) {
-      showEditorError(`교체 불가 · ${validationIssues.join(' · ')}`)
+    const baseValidationIssues = new Set(validateMeetingSchedule(
+      schedule,
+      generatedMeetingPlayers,
+      generatedMeetingSettings,
+    ))
+    const introducedValidationIssues = validationIssues.filter(
+      (issue) => !baseValidationIssues.has(issue),
+    )
+    const blockingIssueSet = new Set<string>([
+      '참가자 동시간 중복',
+      '경기 인원 구성 오류',
+      '비활성 참가자 배정',
+      '코트 번호 오류',
+      '코트 시간 중복',
+    ])
+    const blockingValidationIssues = introducedValidationIssues.filter((issue) =>
+      blockingIssueSet.has(issue),
+    )
+    if (blockingValidationIssues.length > 0) {
+      showEditorError(`교체 불가 · ${blockingValidationIssues.join(' · ')}`)
       return
+    }
+    const baseQuality = analyzeScheduleQuality(schedule, generatedMeetingPlayers)
+    const nextQuality = analyzeScheduleQuality(
+      swapped.schedule,
+      generatedMeetingPlayers,
+    )
+    const baseWait = analyzeScheduleWait(
+      schedule,
+      generatedMeetingPlayers,
+      generatedMeetingSettings,
+    )
+    const nextWait = analyzeScheduleWait(
+      swapped.schedule,
+      generatedMeetingPlayers,
+      generatedMeetingSettings,
+    )
+    const forcedWarnings = [
+      ...introducedValidationIssues.filter(
+        (issue) => !blockingIssueSet.has(issue),
+      ),
+      nextQuality.standardGameSpread > Math.max(1, baseQuality.standardGameSpread)
+        ? `일반 참가자 경기 수 차 ${nextQuality.standardGameSpread}경기`
+        : '',
+      nextQuality.participantsOverWaitLimit > baseQuality.participantsOverWaitLimit
+        ? `25분 초과 ${nextQuality.participantsOverWaitLimit}명`
+        : '',
+      nextQuality.teamSkillDangerMatches > baseQuality.teamSkillDangerMatches
+        ? `큰 실력 차 ${nextQuality.teamSkillDangerMatches}경기`
+        : '',
+      nextQuality.maximumGroupMeetings > Math.max(2, baseQuality.maximumGroupMeetings)
+        ? `동일 4인 최대 ${nextQuality.maximumGroupMeetings}경기`
+        : '',
+      nextWait.maximumWaitMinutes > baseWait.maximumWaitMinutes
+        ? `최장 대기 ${nextWait.maximumWaitMinutes}분`
+        : '',
+    ].filter(Boolean)
+    if (isForcedSelection || conflictMatch || forcedWarnings.length > 0) {
+      const confirmationLines = [
+        isForcedSelection ? '권장 조건 밖의 강제 교체입니다.' : '',
+        conflictMatch
+          ? `${playerDisplayName(incomingPlayer, scheduleDisplayNames)}님은 같은 시간 ` +
+            `${conflictMatch.court}코트에 참가 중이며, 확인하면 ` +
+            `${outgoingPlayer
+              ? playerDisplayName(outgoingPlayer, scheduleDisplayNames)
+              : '현재 참가자'}님과 서로 자리를 바꿉니다.`
+          : '',
+        forcedWarnings.length > 0
+          ? `예상 경고: ${forcedWarnings.join(' · ')}`
+          : '',
+        '이 변경을 적용하시겠습니까?',
+      ].filter(Boolean)
+      if (!window.confirm(confirmationLines.join('\n\n'))) {
+        showEditorError('변경 취소 · 다른 참가자를 선택하거나 다시 완료해 주세요.')
+        return
+      }
     }
 
     setMeetingOperationLabel('교체 확인 중')
@@ -6157,6 +6222,41 @@ function App() {
                                   (recommendation) =>
                                     recommendation.swapType === 'simultaneous-swap',
                                 )
+                                const sourcePlayerIds = new Set(
+                                  [...match.teamA, ...match.teamB].map(
+                                    (matchPlayer) => matchPlayer.id,
+                                  ),
+                                )
+                                const recommendationIds = new Set(
+                                  recommendations.map(
+                                    (recommendation) => recommendation.player.id,
+                                  ),
+                                )
+                                const forcedCandidates = generatedMeetingPlayers
+                                  .filter(
+                                    (candidate) =>
+                                      candidate.active &&
+                                      !sourcePlayerIds.has(candidate.id) &&
+                                      !recommendationIds.has(candidate.id),
+                                  )
+                                  .map((candidate) => ({
+                                    player: candidate,
+                                    conflictMatch: findMeetingPlayerTimeConflict(
+                                      schedule,
+                                      match.id,
+                                      candidate.id,
+                                    ),
+                                  }))
+                                  .sort((left, right) =>
+                                    Number(left.player.isGuest !== player.isGuest) -
+                                      Number(right.player.isGuest !== player.isGuest) ||
+                                    Number(Boolean(left.conflictMatch)) -
+                                      Number(Boolean(right.conflictMatch)) ||
+                                    left.player.name.localeCompare(
+                                      right.player.name,
+                                      'ko',
+                                    ),
+                                  )
                                 return (
                                   <select
                                     key={player.id}
@@ -6214,8 +6314,37 @@ function App() {
                                         ))}
                                       </optgroup>
                                     ) : null}
-                                    {recommendations.length === 0 ? (
-                                      <option disabled>교체 가능한 참가자 없음</option>
+                                    {recommendations.length === 0 &&
+                                    forcedCandidates.length > 0 ? (
+                                      <option disabled>
+                                        권장 후보 없음 · 강제 선택 가능
+                                      </option>
+                                    ) : null}
+                                    {forcedCandidates.length > 0 ? (
+                                      <optgroup label="강제 선택 · 완료 시 경고 확인">
+                                        {forcedCandidates.map((candidate) => (
+                                          <option
+                                            value={candidate.player.id}
+                                            key={candidate.player.id}
+                                          >
+                                            {playerDisplayName(
+                                              candidate.player,
+                                              scheduleDisplayNames,
+                                            )}
+                                            {' · '}
+                                            {candidate.player.isGuest !== player.isGuest
+                                              ? '스페셜 구분 변경 · '
+                                              : ''}
+                                            {candidate.conflictMatch
+                                              ? `${candidate.conflictMatch.court}코트 맞교환`
+                                              : '강제 교체'}
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                    ) : null}
+                                    {recommendations.length === 0 &&
+                                    forcedCandidates.length === 0 ? (
+                                      <option disabled>선택 가능한 참가자 없음</option>
                                     ) : null}
                                   </select>
                                 )

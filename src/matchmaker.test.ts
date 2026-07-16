@@ -37,6 +37,7 @@ import type {
   Level,
   Match,
   Player,
+  Schedule,
   TournamentParticipant,
   TournamentTeam,
 } from './types'
@@ -588,6 +589,83 @@ describe('generateSchedule', () => {
       }
       expect(recommendation.reasons.length).toBeGreaterThan(0)
     }
+  })
+
+  it('keeps recommendations when an existing validation warning is not worsened', () => {
+    const standardPlayers = Array.from({ length: 8 }, (_, index) =>
+      makeTestPlayer(`existing-warning-${index + 1}`, 'B'),
+    )
+    const flexiblePlayer = {
+      ...makeTestPlayer('existing-warning-flexible', 'B'),
+      gameCountFlexible: true,
+    }
+    const players = [...standardPlayers, flexiblePlayer]
+    const makeMatch = (
+      id: string,
+      round: number,
+      court: number,
+      startOffsetMinutes: number,
+      playerIndexes: [number, number, number, number],
+    ): Match => ({
+      id,
+      round,
+      court,
+      startOffsetMinutes,
+      durationMinutes: 15,
+      teamA: [standardPlayers[playerIndexes[0]], standardPlayers[playerIndexes[1]]],
+      teamB: [standardPlayers[playerIndexes[2]], standardPlayers[playerIndexes[3]]],
+      isSpecial: false,
+    })
+    const schedule: Schedule = {
+      rounds: [
+        {
+          id: 'existing-warning-round-1',
+          number: 1,
+          matches: [
+            makeMatch('existing-warning-1-1', 1, 1, 0, [0, 1, 2, 3]),
+            makeMatch('existing-warning-1-2', 1, 2, 0, [4, 5, 6, 7]),
+          ],
+          resting: [flexiblePlayer],
+        },
+        {
+          id: 'existing-warning-round-2',
+          number: 2,
+          matches: [
+            makeMatch('existing-warning-2-1', 2, 1, 15, [0, 1, 2, 3]),
+            makeMatch('existing-warning-2-2', 2, 2, 15, [4, 5, 6, 7]),
+          ],
+          resting: [flexiblePlayer],
+        },
+      ],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+    const settings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '18:30',
+      targetRoundCount: 2,
+      pacingRoundCount: 2,
+    }
+    expect(validateMeetingSchedule(schedule, players, settings)).toContain(
+      '경기 수 양보 1경기 초과',
+    )
+
+    const sourceMatch = schedule.rounds[0].matches[0]
+    const recommendations = rankMeetingSwapCandidates(
+      schedule,
+      players,
+      settings,
+      sourceMatch.id,
+      sourceMatch.teamA[0].id,
+    )
+
+    expect(recommendations.length).toBeGreaterThan(0)
+    expect(recommendations.some(
+      (recommendation) => recommendation.player.id === flexiblePlayer.id,
+    )).toBe(true)
   })
 
   it('ignores a stale manual lineup that creates a simultaneous overlap', () => {

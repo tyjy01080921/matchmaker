@@ -765,6 +765,9 @@ export const rankMeetingSwapCandidates = (
   )
   const baseQuality = analyzeScheduleQuality(schedule, players)
   const baseWait = analyzeScheduleWait(schedule, players, settings)
+  const baseValidationIssues = new Set(
+    validateMeetingSchedule(schedule, players, settings),
+  )
 
   const recommendations = players
     .filter(
@@ -786,17 +789,22 @@ export const rankMeetingSwapCandidates = (
         outgoing.id,
         candidate.id,
       )
-      if (
-        !swapped ||
-        validateMeetingSchedule(swapped.schedule, players, settings).length > 0
-      ) {
+      if (!swapped) {
+        return []
+      }
+      const introducedValidationIssues = validateMeetingSchedule(
+        swapped.schedule,
+        players,
+        settings,
+      ).filter((issue) => !baseValidationIssues.has(issue))
+      if (introducedValidationIssues.length > 0) {
         return []
       }
 
       const quality = analyzeScheduleQuality(swapped.schedule, players)
       const wait = analyzeScheduleWait(swapped.schedule, players, settings)
       if (
-        quality.standardGameSpread > 1 ||
+        quality.standardGameSpread > Math.max(1, baseQuality.standardGameSpread) ||
         quality.participantsOverWaitLimit > baseQuality.participantsOverWaitLimit ||
         quality.teamSkillDangerMatches > baseQuality.teamSkillDangerMatches ||
         quality.maximumGroupMeetings > Math.max(
