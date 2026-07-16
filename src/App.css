@@ -3117,6 +3117,18 @@ textarea {
   font-weight: 800;
 }
 
+.match-editor-error {
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid rgba(177, 61, 61, 0.25);
+  border-radius: 6px;
+  background: var(--soft-red);
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
 .score-input {
   margin-top: 0;
   text-align: center;
@@ -3987,6 +3999,10 @@ textarea {
   .tab-row button {
     min-height: 38px;
     padding-inline: 8px;
+  }
+
+  .tab-row .browser-save-button {
+    grid-column: 1 / -1;
   }
 
   .tab-row span {

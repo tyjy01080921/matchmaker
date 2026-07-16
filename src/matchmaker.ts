@@ -114,6 +114,31 @@ const replaceMatchPlayer = (match: Match, outgoingId: string, incoming: Player):
     player.id === outgoingId ? incoming : player) as Team,
 })
 
+const matchPairingKey = (match: Match) => [match.teamA, match.teamB]
+  .map((team) => team.map((player) => player.id).sort().join('__'))
+  .sort()
+  .join('::')
+
+export const cycleMeetingMatchPartners = (match: Match): Match => {
+  const players = [...match.teamA, ...match.teamB]
+    .sort((left, right) => left.id.localeCompare(right.id))
+  if (players.length !== 4 || new Set(players.map((player) => player.id)).size !== 4) {
+    return match
+  }
+
+  const options: Array<Pick<Match, 'teamA' | 'teamB'>> = [
+    { teamA: [players[0], players[1]], teamB: [players[2], players[3]] },
+    { teamA: [players[0], players[2]], teamB: [players[1], players[3]] },
+    { teamA: [players[0], players[3]], teamB: [players[1], players[2]] },
+  ]
+  const currentPairingKey = matchPairingKey(match)
+  const currentIndex = options.findIndex((option) =>
+    matchPairingKey({ ...match, ...option }) === currentPairingKey,
+  )
+  const nextOption = options[(Math.max(0, currentIndex) + 1) % options.length]
+  return { ...match, ...nextOption }
+}
+
 const matchTimeWindow = (match: Match) => {
   const start = match.startOffsetMinutes ?? (match.round - 1) * GAME_SLOT_MINUTES
   return { start, end: start + (match.durationMinutes ?? GAME_SLOT_MINUTES) }
@@ -123,6 +148,48 @@ const windowsOverlap = (left: Match, right: Match) => {
   const a = matchTimeWindow(left)
   const b = matchTimeWindow(right)
   return a.start < b.end && b.start < a.end
+}
+
+export const findMeetingPlayerTimeConflict = (
+  schedule: Schedule,
+  sourceMatchId: string,
+  playerId: string,
+): Match | null => {
+  const matches = schedule.rounds.flatMap((round) => round.matches)
+  const sourceMatch = matches.find((match) => match.id === sourceMatchId)
+  if (!sourceMatch) return null
+
+  return matches.find(
+    (match) =>
+      match.id !== sourceMatch.id &&
+      windowsOverlap(sourceMatch, match) &&
+      [...match.teamA, ...match.teamB].some((player) => player.id === playerId),
+  ) ?? null
+}
+
+const refreshScheduleRestingPlayers = (
+  schedule: Schedule,
+  players: Player[],
+): Schedule => {
+  const activePlayers = players.filter((player) => player.active)
+  const matches = schedule.rounds.flatMap((round) => round.matches)
+  return {
+    ...schedule,
+    rounds: schedule.rounds.map((round) => {
+      const overlappingMatches = matches.filter((match) =>
+        round.matches.some((roundMatch) => windowsOverlap(roundMatch, match)),
+      )
+      const playingIds = new Set(
+        overlappingMatches.flatMap((match) =>
+          [...match.teamA, ...match.teamB].map((player) => player.id),
+        ),
+      )
+      return {
+        ...round,
+        resting: activePlayers.filter((player) => !playingIds.has(player.id)),
+      }
+    }),
+  }
 }
 
 const playerWaitGaps = (matches: Match[], playerId: string) => {
@@ -465,7 +532,11 @@ export const applyMeetingLineups = (
   lineups: MeetingLineupsByMatch,
 ): Schedule => {
   const refreshMetadata = (currentSchedule: Schedule): Schedule => {
-    const matches = currentSchedule.rounds.flatMap((round) => round.matches)
+    const scheduleWithResting = refreshScheduleRestingPlayers(
+      currentSchedule,
+      players,
+    )
+    const matches = scheduleWithResting.rounds.flatMap((round) => round.matches)
     const activeGuestIds = players
       .filter((player) => player.active && player.isGuest)
       .map((player) => player.id)
@@ -487,7 +558,7 @@ export const applyMeetingLineups = (
         .map((player) => player.id),
     ))
     return {
-      ...currentSchedule,
+      ...scheduleWithResting,
       specialCompletedIds,
       guestGameCounts,
     }
@@ -619,16 +690,24 @@ export const swapMeetingPlayers = (
   const sourceMatch = matches.find((match) => match.id === matchId)
   const outgoing = sourceMatch && [...sourceMatch.teamA, ...sourceMatch.teamB]
     .find((player) => player.id === outgoingId)
-  const incoming = matches.flatMap((match) => [...match.teamA, ...match.teamB])
-    .find((player) => player.id === incomingId)
+  const schedulePlayers = Array.from(new Map(
+    schedule.rounds
+      .flatMap((round) => [
+        ...round.resting,
+        ...round.matches.flatMap((match) => [...match.teamA, ...match.teamB]),
+      ])
+      .map((player) => [player.id, player]),
+  ).values())
+  const incoming = schedulePlayers.find((player) => player.id === incomingId)
   if (!sourceMatch || !outgoing || !incoming) return null
 
-  const targetMatch = matches.find((match) =>
-    match.id !== sourceMatch.id &&
-    windowsOverlap(sourceMatch, match) &&
-    [...match.teamA, ...match.teamB].some((player) => player.id === incomingId))
+  const targetMatch = findMeetingPlayerTimeConflict(
+    schedule,
+    sourceMatch.id,
+    incomingId,
+  )
   const changedMatchIds = [sourceMatch.id]
-  const nextSchedule: Schedule = {
+  const nextSchedule = refreshScheduleRestingPlayers({
     ...schedule,
     rounds: schedule.rounds.map((round) => ({
       ...round,
@@ -643,7 +722,7 @@ export const swapMeetingPlayers = (
         return match
       }),
     })),
-  }
+  }, schedulePlayers)
   return findScheduleOverlap(nextSchedule) ? null : { schedule: nextSchedule, changedMatchIds }
 }
 
@@ -651,6 +730,9 @@ export type MeetingSwapRecommendation = {
   player: Player
   changedMatchIds: string[]
   reasons: string[]
+  swapType: 'waiting-replacement' | 'simultaneous-swap'
+  conflictMatchId?: string
+  conflictCourt?: number
 }
 
 type ScoredMeetingSwapRecommendation = MeetingSwapRecommendation & {
@@ -681,9 +763,6 @@ export const rankMeetingSwapCandidates = (
   const sourcePlayerIds = new Set(
     [...sourceMatch.teamA, ...sourceMatch.teamB].map((player) => player.id),
   )
-  const scheduledPlayerIds = new Set(
-    matches.flatMap((match) => [...match.teamA, ...match.teamB].map((player) => player.id)),
-  )
   const baseQuality = analyzeScheduleQuality(schedule, players)
   const baseWait = analyzeScheduleWait(schedule, players, settings)
 
@@ -693,10 +772,14 @@ export const rankMeetingSwapCandidates = (
         candidate.active &&
         candidate.id !== outgoing.id &&
         !sourcePlayerIds.has(candidate.id) &&
-        scheduledPlayerIds.has(candidate.id) &&
         candidate.isGuest === outgoing.isGuest,
     )
     .flatMap((candidate): ScoredMeetingSwapRecommendation[] => {
+      const conflictMatch = findMeetingPlayerTimeConflict(
+        schedule,
+        sourceMatch.id,
+        candidate.id,
+      )
       const swapped = swapMeetingPlayers(
         schedule,
         sourceMatch.id,
@@ -712,6 +795,17 @@ export const rankMeetingSwapCandidates = (
 
       const quality = analyzeScheduleQuality(swapped.schedule, players)
       const wait = analyzeScheduleWait(swapped.schedule, players, settings)
+      if (
+        quality.standardGameSpread > 1 ||
+        quality.participantsOverWaitLimit > baseQuality.participantsOverWaitLimit ||
+        quality.teamSkillDangerMatches > baseQuality.teamSkillDangerMatches ||
+        quality.maximumGroupMeetings > Math.max(
+          MAX_GROUP_MEETINGS,
+          baseQuality.maximumGroupMeetings,
+        )
+      ) {
+        return []
+      }
       const changedMatches = swapped.schedule.rounds
         .flatMap((round) => round.matches)
         .filter((match) => swapped.changedMatchIds.includes(match.id))
@@ -726,6 +820,8 @@ export const rankMeetingSwapCandidates = (
         ...changedMatches.map(matchTeamSkillGap),
       )
       const reasons: string[] = []
+
+      reasons.push(conflictMatch ? '동시간 맞교환' : '해당 시간 대기')
 
       if (
         quality.teamSkillDangerMatches < baseQuality.teamSkillDangerMatches ||
@@ -752,16 +848,15 @@ export const rankMeetingSwapCandidates = (
       if (wait.maximumWaitMinutes < baseWait.maximumWaitMinutes) {
         reasons.push('대기 균형 개선')
       }
-      if (reasons.length === 0) {
-        reasons.push(
-          swapped.changedMatchIds.length > 1 ? '같은 시간 맞교환' : '안전 교체 가능',
-        )
-      }
+      if (reasons.length === 1) reasons.push('필수 조건 유지')
 
       return [{
         player: candidate,
         changedMatchIds: swapped.changedMatchIds,
         reasons: reasons.slice(0, 2),
+        swapType: conflictMatch ? 'simultaneous-swap' : 'waiting-replacement',
+        conflictMatchId: conflictMatch?.id,
+        conflictCourt: conflictMatch?.court,
         score: [
           Number(wait.exceedsLimit),
           quality.participantsOverWaitLimit,
@@ -780,7 +875,6 @@ export const rankMeetingSwapCandidates = (
           quality.preferredPartnerUnfulfilled,
           wait.maximumWaitMinutes,
           quality.averageWaitMinutes,
-          swapped.changedMatchIds.length > 1 ? 0 : 1,
         ],
       }]
     })

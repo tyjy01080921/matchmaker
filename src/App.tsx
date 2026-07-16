@@ -24,7 +24,9 @@ import {
   calculateTournamentMvpCandidates,
   calculateStats,
   applyMeetingLineups,
+  cycleMeetingMatchPartners,
   findScheduleOverlap,
+  findMeetingPlayerTimeConflict,
   generateBalancedTournamentTeams,
   generateScheduleWithWaitOptimization,
   getMatchSkillWarningLevel,
@@ -110,6 +112,7 @@ import {
 } from './scheduleTime'
 
 const STORAGE_KEY = 'badminton-matchmaker-v1'
+const LAST_MEETING_SCHEDULE_KEY = 'badminton-matchmaker-last-meeting-v1'
 const CONTACT_EMAIL = 'ama_official@naver.com'
 const APP_VERSION = '0.0.1'
 const LAST_UPDATED = '2026.07.16'
@@ -174,6 +177,20 @@ type StoredState = {
   tournamentSettings: TournamentSettings
   tournamentResults: TournamentResultsByMatch
   tournamentLineups: TournamentLineupsByMatch
+  cachedMeetingSchedule: Schedule | null
+}
+
+type StoredMeetingSchedule = {
+  version: 1
+  savedAt: string
+  players: Player[]
+  settings: MatchSettings
+  schedule: Schedule
+  results: ResultsByMatch
+  pairMixes: Record<string, number>
+  matchNameOverrides: MatchNameOverrides
+  meetingLineups: MeetingLineupsByMatch
+  prizeDraw: PrizeDrawState
 }
 
 const levelLabels: Record<Level, string> = {
@@ -866,6 +883,55 @@ const legacyMeetingEventNames = new Set([
   legacyEnglishTitle,
 ])
 
+const readStoredMeetingSchedule = (): Partial<StoredMeetingSchedule> | null => {
+  if (typeof window === 'undefined') return null
+
+  try {
+    const raw = window.localStorage.getItem(LAST_MEETING_SCHEDULE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<StoredMeetingSchedule>
+    return parsed.version === 1 && Array.isArray(parsed.players)
+      ? parsed
+      : null
+  } catch {
+    return null
+  }
+}
+
+const normalizeStoredSchedule = (
+  value: Partial<Schedule> | undefined,
+  players: Player[],
+): Schedule | null => {
+  if (!value || !Array.isArray(value.rounds)) return null
+  const playersById = new Map(players.map((player) => [player.id, player]))
+  const restorePlayer = (player: Player) =>
+    playersById.get(player.id) ?? normalizeStoredPlayer(player)
+
+  try {
+    return {
+      rounds: value.rounds.map((round) => ({
+        ...round,
+        matches: round.matches.map((match) => ({
+          ...match,
+          teamA: match.teamA.map(restorePlayer) as Team,
+          teamB: match.teamB.map(restorePlayer) as Team,
+        })),
+        resting: round.resting.map(restorePlayer),
+      })),
+      warnings: Array.isArray(value.warnings) ? value.warnings : [],
+      specialCompletedIds: Array.isArray(value.specialCompletedIds)
+        ? value.specialCompletedIds
+        : [],
+      guestGameCounts:
+        value.guestGameCounts && typeof value.guestGameCounts === 'object'
+          ? value.guestGameCounts
+          : {},
+    }
+  } catch {
+    return null
+  }
+}
+
 const readStoredState = (): StoredState => {
   if (typeof window === 'undefined') {
     return {
@@ -883,13 +949,16 @@ const readStoredState = (): StoredState => {
       tournamentSettings: defaultTournamentSettings,
       tournamentResults: {},
       tournamentLineups: {},
+      cachedMeetingSchedule: null,
     }
   }
 
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (!raw) throw new Error('empty')
-    const parsed = JSON.parse(raw) as Partial<StoredState>
+    const parsed = raw
+      ? JSON.parse(raw) as Partial<StoredState>
+      : {}
+    const savedMeetingSchedule = readStoredMeetingSchedule()
     const settings = normalizeMatchSettings(parsed.settings)
     const storedPlayersAreLegacySample = isLegacySamplePlayerList(parsed.players)
     if (legacyMeetingEventNames.has(settings.eventName)) {
@@ -900,21 +969,36 @@ const readStoredState = (): StoredState => {
       : parsed.players?.length
         ? parsed.players.map((player) => normalizeStoredPlayer(player))
         : defaultPlayers
+    const savedMeetingPlayers = savedMeetingSchedule?.players?.length
+      ? savedMeetingSchedule.players.map((player) => normalizeStoredPlayer(player))
+      : null
+    const savedMeetingSettings = savedMeetingPlayers
+      ? normalizeMatchSettings(savedMeetingSchedule?.settings)
+      : null
+    const cachedMeetingSchedule = savedMeetingPlayers
+      ? normalizeStoredSchedule(savedMeetingSchedule?.schedule, savedMeetingPlayers)
+      : null
     return {
       appMode: normalizeAppMode(parsed.appMode),
-      players,
-      settings,
-      // 일반 접속에서는 참가자와 설정만 복원한다. 이전 대진을 복원하면
-      // 첫 화면 렌더링 중 후보 생성·검증이 다시 실행되어 접속이 느려진다.
-      generatedMeetingPlayers: defaultPlayers,
-      generatedMeetingSettings: settings,
-      results: {},
-      pairMixes: {},
-      matchNameOverrides: {},
-      meetingLineups: {},
-      prizeDraw: storedPlayersAreLegacySample
-        ? defaultPrizeDrawState
-        : normalizePrizeDrawState(parsed.prizeDraw),
+      players: savedMeetingPlayers ?? players,
+      settings: savedMeetingSettings ?? settings,
+      // 자동 저장 데이터는 참가자와 설정만 복원한다. 사용자가 명시적으로
+      // 브라우저에 저장한 대진표가 있을 때만 마지막 대진과 결과를 복원한다.
+      generatedMeetingPlayers: savedMeetingPlayers ?? defaultPlayers,
+      generatedMeetingSettings: savedMeetingSettings ?? settings,
+      results: savedMeetingPlayers ? (savedMeetingSchedule?.results ?? {}) : {},
+      pairMixes: savedMeetingPlayers ? (savedMeetingSchedule?.pairMixes ?? {}) : {},
+      matchNameOverrides: savedMeetingPlayers
+        ? (savedMeetingSchedule?.matchNameOverrides ?? {})
+        : {},
+      meetingLineups: savedMeetingPlayers
+        ? (savedMeetingSchedule?.meetingLineups ?? {})
+        : {},
+      prizeDraw: savedMeetingPlayers
+        ? normalizePrizeDrawState(savedMeetingSchedule?.prizeDraw)
+        : storedPlayersAreLegacySample
+          ? defaultPrizeDrawState
+          : normalizePrizeDrawState(parsed.prizeDraw),
       tournamentTeams: parsed.tournamentTeams?.length
         ? parsed.tournamentTeams.map((team, index) =>
             normalizeTournamentTeam(team, index),
@@ -923,6 +1007,7 @@ const readStoredState = (): StoredState => {
       tournamentSettings: normalizeTournamentSettings(parsed.tournamentSettings),
       tournamentResults: parsed.tournamentResults ?? {},
       tournamentLineups: normalizeTournamentLineups(parsed.tournamentLineups),
+      cachedMeetingSchedule,
     }
   } catch {
     return {
@@ -940,6 +1025,7 @@ const readStoredState = (): StoredState => {
       tournamentSettings: defaultTournamentSettings,
       tournamentResults: {},
       tournamentLineups: {},
+      cachedMeetingSchedule: null,
     }
   }
 }
@@ -967,6 +1053,7 @@ const storedStateFromSharePayload = (payload: SharePayload): StoredState => ({
   tournamentSettings: normalizeTournamentSettings(payload.tournamentSettings),
   tournamentResults: payload.tournamentResults ?? {},
   tournamentLineups: normalizeTournamentLineups(payload.tournamentLineups),
+  cachedMeetingSchedule: null,
 })
 
 const readSharedState = (): StoredState | null => {
@@ -1403,10 +1490,22 @@ function App() {
   const [tournamentLineups, setTournamentLineups] = useState<TournamentLineupsByMatch>(
     initialState.tournamentLineups,
   )
+  const cachedMeetingScheduleRef = useRef(initialState.cachedMeetingSchedule)
+  const cachedMeetingPlayersRef = useRef(initialState.generatedMeetingPlayers)
+  const cachedMeetingSettingsRef = useRef(initialState.generatedMeetingSettings)
+  const restoredMeetingNoticePendingRef = useRef(
+    Boolean(initialState.cachedMeetingSchedule),
+  )
   const [isSharedMode, setIsSharedMode] = useState(initialContext.isShared)
   const [view, setView] = useState<'schedule' | 'stats'>('schedule')
   const [tournamentView, setTournamentView] = useState<'progress' | 'board'>('progress')
-  const [notice, setNotice] = useState(initialContext.isShared ? '공유본' : '저장됨')
+  const [notice, setNotice] = useState(
+    initialContext.isShared
+      ? '공유본'
+      : initialState.cachedMeetingSchedule
+        ? '마지막 대진 복원됨'
+        : '저장됨',
+  )
   const [settingsOpen, setSettingsOpen] = useState(true)
   const [customBookingTime, setCustomBookingTime] = useState(false)
   const [playersOpen, setPlayersOpen] = useState(true)
@@ -1431,6 +1530,7 @@ function App() {
   const [printImageUrls, setPrintImageUrls] = useState<string[]>([])
   const [tournamentPrintImageUrls, setTournamentPrintImageUrls] = useState<string[]>([])
   const [editingMatchIds, setEditingMatchIds] = useState<Record<string, boolean>>({})
+  const [matchEditorErrors, setMatchEditorErrors] = useState<Record<string, string>>({})
   const [matchNameDrafts, setMatchNameDrafts] = useState<MatchNameOverrides>({})
   const [preferredPartnerDrafts, setPreferredPartnerDrafts] = useState<
     Record<string, string>
@@ -1467,7 +1567,11 @@ function App() {
 
   const rawSchedule = useMemo(
     () =>
-      generatedMeetingPlayers.length === 0
+      cachedMeetingScheduleRef.current &&
+      generatedMeetingPlayers === cachedMeetingPlayersRef.current &&
+      generatedMeetingSettings === cachedMeetingSettingsRef.current
+        ? cachedMeetingScheduleRef.current
+        : generatedMeetingPlayers.length === 0
         ? emptyMeetingSchedule
         : generateScheduleWithWaitOptimization(
             generatedMeetingPlayers,
@@ -2270,6 +2374,10 @@ function App() {
         tournamentLineups,
       }),
     )
+    if (restoredMeetingNoticePendingRef.current) {
+      restoredMeetingNoticePendingRef.current = false
+      return
+    }
     setNotice(
       appMode === 'meeting' && hasMeetingDraftChanges
         ? '변경 저장됨 · 생성 필요'
@@ -2406,6 +2514,7 @@ function App() {
     setMeetingLineups({})
     setMatchNameDrafts({})
     setEditingMatchIds({})
+    setMatchEditorErrors({})
     setCollapsedMatchIds({})
     setPrizeDraw((current) => ({ ...current, matchMissions: {} }))
     setPrintImageUrls([])
@@ -2872,6 +2981,12 @@ function App() {
         [playerId]: value,
       },
     }))
+    setMatchEditorErrors((current) => {
+      if (!current[matchId]) return current
+      const next = { ...current }
+      delete next[matchId]
+      return next
+    })
   }
 
   const openMatchEditor = (match: Match) => {
@@ -2884,47 +2999,120 @@ function App() {
       next[match.id] = matchDraft
       return next
     })
+    setMatchEditorErrors((current) => {
+      if (!current[match.id]) return current
+      const next = { ...current }
+      delete next[match.id]
+      return next
+    })
     setEditingMatchIds((current) => ({ ...current, [match.id]: true }))
   }
 
   const saveMatchEditor = (match: Match) => {
+    const showEditorError = (message: string) => {
+      setMatchEditorErrors((current) => ({ ...current, [match.id]: message }))
+      setNotice(message)
+    }
     const matchDraft = matchNameDrafts[match.id] ?? {}
     const changes = [...match.teamA, ...match.teamB]
       .map((player) => ({ outgoingId: player.id, incomingId: matchDraft[player.id] ?? player.id }))
       .filter(({ outgoingId, incomingId }) => outgoingId !== incomingId)
     if (changes.length === 0) {
       setEditingMatchIds((current) => ({ ...current, [match.id]: false }))
+      setMatchNameDrafts((current) => {
+        const next = { ...current }
+        delete next[match.id]
+        return next
+      })
+      setMatchEditorErrors((current) => {
+        const next = { ...current }
+        delete next[match.id]
+        return next
+      })
+      setNotice('수정 완료 · 변경 없음')
       return
     }
     if (changes.length > 1) {
-      setNotice('한 번에 1명만 교체해 주세요')
+      showEditorError('교체 불가 · 한 번에 참가자 1명만 선택해 주세요.')
       return
     }
     const change = changes[0]
+    const incomingPlayer = generatedMeetingPlayers.find(
+      (player) => player.id === change.incomingId,
+    )
+    if (!incomingPlayer?.active) {
+      showEditorError('교체 불가 · 선택한 참가자가 현재 참가 명단에 없습니다.')
+      return
+    }
+    const conflictMatch = findMeetingPlayerTimeConflict(
+      schedule,
+      match.id,
+      change.incomingId,
+    )
+    if (conflictMatch) {
+      const outgoingPlayer = generatedMeetingPlayers.find(
+        (player) => player.id === change.outgoingId,
+      )
+      const confirmed = window.confirm(
+        `${playerDisplayName(incomingPlayer, scheduleDisplayNames)}님은 ` +
+        `같은 시간 ${conflictMatch.court}코트 경기에 참가 중입니다.\n\n` +
+        '동시간 참가자가 포함된 조합으로 이동하겠습니까?\n' +
+        `확인하면 ${outgoingPlayer
+          ? playerDisplayName(outgoingPlayer, scheduleDisplayNames)
+          : '현재 참가자'}님과 서로 자리를 바꿉니다.`,
+      )
+      if (!confirmed) {
+        showEditorError('맞교환 취소 · 다른 참가자를 선택하거나 다시 완료해 주세요.')
+        return
+      }
+    }
     const swapped = swapMeetingPlayers(
       schedule,
       match.id,
       change.outgoingId,
       change.incomingId,
     )
-    if (
-      !swapped ||
-      findScheduleOverlap(swapped.schedule) ||
-      validateMeetingSchedule(
-        swapped.schedule,
-        generatedMeetingPlayers,
-        generatedMeetingSettings,
-      ).length > 0
-    ) {
-      setNotice('교체 불가 · 중복 또는 대진 조건 확인')
+    if (!swapped) {
+      showEditorError(
+        '교체 불가 · 대진표에서 참가자 위치를 확인할 수 없습니다. 현황 업데이트 후 다시 시도하세요.',
+      )
+      return
+    }
+    const overlapPlayerId = findScheduleOverlap(swapped.schedule)
+    if (overlapPlayerId) {
+      const overlapPlayer = generatedMeetingPlayers.find(
+        (player) => player.id === overlapPlayerId,
+      )
+      showEditorError(
+        `교체 불가 · ${overlapPlayer
+          ? playerDisplayName(overlapPlayer, scheduleDisplayNames)
+          : '참가자'}의 동시간 중복이 발생합니다.`,
+      )
+      return
+    }
+    const validationIssues = validateMeetingSchedule(
+      swapped.schedule,
+      generatedMeetingPlayers,
+      generatedMeetingSettings,
+    )
+    if (validationIssues.length > 0) {
+      showEditorError(`교체 불가 · ${validationIssues.join(' · ')}`)
       return
     }
 
     setMeetingOperationLabel('교체 확인 중')
-    setMeetingGenerationMessage('동일 시간 중복과 맞교환 위치를 확인하고 있습니다.')
+    setMeetingGenerationMessage('참가자 중복과 필수 대진 조건을 확인하고 있습니다.')
     setIsMeetingGenerating(true)
     setMeetingWarningsReconciled(false)
     setNotice('교체 확인 중')
+    setMatchEditorErrors((current) => {
+      const next = { ...current }
+      delete next[match.id]
+      return next
+    })
+    if (meetingGenerationEndTimerRef.current !== null) {
+      window.clearTimeout(meetingGenerationEndTimerRef.current)
+    }
     meetingGenerationEndTimerRef.current = window.setTimeout(() => {
       setMeetingLineups((current) => {
         const next = { ...current }
@@ -3112,6 +3300,8 @@ function App() {
     setBulkOpen(false)
     setBulkText('')
     setPreferredPartnerDrafts({})
+    setMatchEditorErrors({})
+    window.localStorage.removeItem(LAST_MEETING_SCHEDULE_KEY)
     setNotice('초기화됨')
   }
 
@@ -3730,16 +3920,48 @@ function App() {
   }
 
   const mixMatch = (matchId: string) => {
+    const currentMatch = schedule.rounds
+      .flatMap((round) => round.matches)
+      .find((match) => match.id === matchId)
+    if (!currentMatch) {
+      setNotice('파트너 변경 실패 · 경기를 찾을 수 없습니다.')
+      return
+    }
+
     setMeetingWarningsReconciled(false)
-    setPairMixes((current) => ({
-      ...current,
-      [matchId]: ((current[matchId] ?? 0) + 1) % 3,
-    }))
+    if (meetingLineups[matchId]) {
+      const nextMatch = cycleMeetingMatchPartners(currentMatch)
+      setMeetingLineups((current) => ({
+        ...current,
+        [matchId]: {
+          teamAPlayerIds: nextMatch.teamA.map((player) => player.id),
+          teamBPlayerIds: nextMatch.teamB.map((player) => player.id),
+        },
+      }))
+      setPairMixes((current) => {
+        if (current[matchId] === undefined) return current
+        const next = { ...current }
+        delete next[matchId]
+        return next
+      })
+    } else {
+      setPairMixes((current) => ({
+        ...current,
+        [matchId]: ((current[matchId] ?? 0) + 1) % 3,
+      }))
+    }
     setResults((current) => {
       const next = { ...current }
       delete next[matchId]
       return next
     })
+    setMatchEditorErrors((current) => {
+      if (!current[matchId]) return current
+      const next = { ...current }
+      delete next[matchId]
+      return next
+    })
+    setPrintImageUrls([])
     setNotice('파트너 변경됨')
   }
 
@@ -3886,6 +4108,38 @@ function App() {
       await saveTournamentScheduleImages(tournamentPrintImageUrls)
     } catch {
       setNotice('경쟁 대진표 저장 실패')
+    }
+  }
+
+  const saveMeetingScheduleToBrowser = () => {
+    const hasMatches = schedule.rounds.some((round) => round.matches.length > 0)
+    if (!hasMatches) {
+      setNotice('브라우저에 저장할 대진표가 없습니다.')
+      return
+    }
+
+    try {
+      const storedSchedule: StoredMeetingSchedule = {
+        version: 1,
+        savedAt: new Date().toISOString(),
+        players: generatedMeetingPlayers,
+        settings: generatedMeetingSettings,
+        schedule,
+        results,
+        // 저장 시점의 최종 대진을 기준표로 보관하므로 이미 반영된 수동
+        // 조합을 다시 중복 적용하지 않는다.
+        pairMixes: {},
+        matchNameOverrides,
+        meetingLineups: {},
+        prizeDraw,
+      }
+      window.localStorage.setItem(
+        LAST_MEETING_SCHEDULE_KEY,
+        JSON.stringify(storedSchedule),
+      )
+      setNotice('마지막 대진표가 브라우저에 저장됨')
+    } catch {
+      setNotice('브라우저 저장 실패 · 저장 공간을 확인하세요.')
     }
   }
 
@@ -5797,6 +6051,15 @@ function App() {
             <button type="button" onClick={handlePrintSchedule}>
               저장
             </button>
+            {!isSharedMode ? (
+              <button
+                type="button"
+                className="browser-save-button"
+                onClick={saveMeetingScheduleToBrowser}
+              >
+                브라우저에 저장
+              </button>
+            ) : null}
             <span>
               {completedMatches}/{totalMatches} 경기 완료
             </span>
@@ -5876,6 +6139,14 @@ function App() {
                                   meetingSwapRecommendations.get(
                                     meetingSwapRecommendationKey(match.id, player.id),
                                   ) ?? []
+                                const waitingRecommendations = recommendations.filter(
+                                  (recommendation) =>
+                                    recommendation.swapType === 'waiting-replacement',
+                                )
+                                const simultaneousRecommendations = recommendations.filter(
+                                  (recommendation) =>
+                                    recommendation.swapType === 'simultaneous-swap',
+                                )
                                 return (
                                   <select
                                     key={player.id}
@@ -5898,9 +6169,9 @@ function App() {
                                     <option value={player.id}>
                                       {playerDisplayName(player, scheduleDisplayNames)} · 현재
                                     </option>
-                                    {recommendations.length > 0 ? (
-                                      <optgroup label="교체 추천 순">
-                                        {recommendations.map((recommendation, index) => (
+                                    {waitingRecommendations.length > 0 ? (
+                                      <optgroup label="대기 참가자 · 교체 추천 순">
+                                        {waitingRecommendations.map((recommendation, index) => (
                                           <option
                                             value={recommendation.player.id}
                                             key={recommendation.player.id}
@@ -5915,9 +6186,27 @@ function App() {
                                           </option>
                                         ))}
                                       </optgroup>
-                                    ) : (
+                                    ) : null}
+                                    {simultaneousRecommendations.length > 0 ? (
+                                      <optgroup label="동시간 참가자 · 확인 후 맞교환">
+                                        {simultaneousRecommendations.map((recommendation) => (
+                                          <option
+                                            value={recommendation.player.id}
+                                            key={recommendation.player.id}
+                                          >
+                                            {playerDisplayName(
+                                              recommendation.player,
+                                              scheduleDisplayNames,
+                                            )}
+                                            {' · '}
+                                            {recommendation.conflictCourt}코트와 맞교환
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                    ) : null}
+                                    {recommendations.length === 0 ? (
                                       <option disabled>교체 가능한 참가자 없음</option>
-                                    )}
+                                    ) : null}
                                   </select>
                                 )
                               })}
@@ -6084,6 +6373,11 @@ function App() {
                                 ? renderResultButtons('B', matchTeamName(match, match.teamB))
                                 : null}
                             </div>
+                            {isEditingMatch && matchEditorErrors[match.id] ? (
+                              <p className="match-editor-error" role="alert">
+                                {matchEditorErrors[match.id]}
+                              </p>
+                            ) : null}
                             <div className="match-footer">
                               <div className="match-footer-actions">
                                 {isSharedMode ? (

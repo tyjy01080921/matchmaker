@@ -12,6 +12,7 @@ import {
   applyMeetingLineups,
   calculateTournamentMvpCandidates,
   calculateStats,
+  cycleMeetingMatchPartners,
   deferSkillWarningMatches,
   generateBalancedTournamentTeams,
   generateSchedule,
@@ -473,9 +474,41 @@ describe('generateSchedule', () => {
     }
   })
 
+  it('cycles all three partner combinations for a manually edited match', () => {
+    const players = Array.from({ length: 4 }, (_, index) =>
+      makeTestPlayer(`mix-${index + 1}`, 'B'),
+    )
+    const original: Match = {
+      id: 'manual-mix',
+      round: 1,
+      court: 1,
+      teamA: [players[2], players[0]],
+      teamB: [players[3], players[1]],
+      isSpecial: false,
+    }
+    const pairingKey = (match: Match) => [match.teamA, match.teamB]
+      .map((team) => team.map((player) => player.id).sort().join('__'))
+      .sort()
+      .join('::')
+
+    const first = cycleMeetingMatchPartners(original)
+    const second = cycleMeetingMatchPartners(first)
+    const third = cycleMeetingMatchPartners(second)
+
+    expect(new Set([
+      pairingKey(original),
+      pairingKey(first),
+      pairingKey(second),
+    ]).size).toBe(3)
+    expect(pairingKey(third)).toBe(pairingKey(original))
+    expect([...third.teamA, ...third.teamB].map((player) => player.id).sort()).toEqual(
+      players.map((player) => player.id).sort(),
+    )
+  })
+
   it('ranks only safe and selectable manual swap candidates', () => {
-    const players = Array.from({ length: 8 }, (_, index) =>
-      makeTestPlayer(`recommend-${index + 1}`, index < 4 ? 'A' : 'B'),
+    const players = Array.from({ length: 12 }, (_, index) =>
+      makeTestPlayer(`recommend-${index + 1}`, 'B'),
     )
     const settings = {
       ...defaultSettings,
@@ -492,6 +525,15 @@ describe('generateSchedule', () => {
     const sourcePlayerIds = new Set(
       [...sourceMatch.teamA, ...sourceMatch.teamB].map((player) => player.id),
     )
+    const simultaneousPlayerIds = new Set(
+      schedule.rounds[0].matches
+        .filter((match) => match.id !== sourceMatch.id)
+        .flatMap((match) => [...match.teamA, ...match.teamB])
+        .map((player) => player.id),
+    )
+    const restingPlayerIds = new Set(
+      schedule.rounds[0].resting.map((player) => player.id),
+    )
     const recommendations = rankMeetingSwapCandidates(
       schedule,
       players,
@@ -500,12 +542,31 @@ describe('generateSchedule', () => {
       outgoing.id,
     )
 
-    expect(recommendations).toHaveLength(4)
+    expect(recommendations).toHaveLength(8)
     expect(recommendations.every(
       (recommendation) => !sourcePlayerIds.has(recommendation.player.id),
     )).toBe(true)
-    expect(recommendations.every(
-      (recommendation) => recommendation.changedMatchIds.length === 2,
+    const waitingRecommendations = recommendations.filter(
+      (recommendation) => recommendation.swapType === 'waiting-replacement',
+    )
+    const simultaneousRecommendations = recommendations.filter(
+      (recommendation) => recommendation.swapType === 'simultaneous-swap',
+    )
+    expect(waitingRecommendations).toHaveLength(4)
+    expect(waitingRecommendations.every(
+      (recommendation) => restingPlayerIds.has(recommendation.player.id),
+    )).toBe(true)
+    expect(waitingRecommendations.every(
+      (recommendation) => recommendation.changedMatchIds.length === 1,
+    )).toBe(true)
+    expect(simultaneousRecommendations).toHaveLength(4)
+    expect(simultaneousRecommendations.every(
+      (recommendation) => simultaneousPlayerIds.has(recommendation.player.id),
+    )).toBe(true)
+    expect(simultaneousRecommendations.every(
+      (recommendation) =>
+        recommendation.changedMatchIds.length === 2 &&
+        recommendation.conflictCourt !== undefined,
     )).toBe(true)
     for (const recommendation of recommendations) {
       const swapped = swapMeetingPlayers(
@@ -516,6 +577,15 @@ describe('generateSchedule', () => {
       )
       expect(swapped).not.toBeNull()
       expect(validateMeetingSchedule(swapped!.schedule, players, settings)).toEqual([])
+      if (recommendation.swapType === 'waiting-replacement') {
+        const changedRound = swapped!.schedule.rounds[0]
+        expect(changedRound.resting.some(
+          (player) => player.id === outgoing.id,
+        )).toBe(true)
+        expect(changedRound.resting.some(
+          (player) => player.id === recommendation.player.id,
+        )).toBe(false)
+      }
       expect(recommendation.reasons.length).toBeGreaterThan(0)
     }
   })
