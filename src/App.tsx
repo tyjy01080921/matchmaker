@@ -3618,7 +3618,11 @@ function App() {
           <div className={`generation-card ${
             meetingOperationLabel === '대진 완료' ||
             meetingOperationLabel === '대진 검증 실패'
-              ? 'review'
+              ? `review ${
+                  meetingOperationLabel === '대진 검증 실패'
+                    ? 'failure-review'
+                    : ''
+                }`
               : ''
           }`}>
             <img src={amaLogo} alt="A.M.A" />

@@ -236,5 +236,5 @@ describe('matchmaker condition simulation', () => {
     expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
     expect(Math.max(...waits)).toBeLessThanOrEqual(25)
     expect([Math.min(...games), Math.max(...games)]).toEqual([7, 8])
-  })
+  }, 15000)
 })

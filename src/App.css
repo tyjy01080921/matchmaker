@@ -54,6 +54,14 @@
 
 .generation-card.review {
   width: min(560px, 100%);
+  max-height: calc(100svh - 32px);
+  grid-template-rows: repeat(4, auto) minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.generation-card.review.failure-review {
+  grid-template-rows: repeat(5, auto);
+  overflow-y: auto;
 }
 
 .generation-result-icon {
@@ -78,8 +86,11 @@
 .generation-review-summary {
   display: grid;
   width: 100%;
+  min-height: 0;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   text-align: left;
 }
 
@@ -146,9 +157,75 @@
 }
 
 @media (max-width: 520px) {
-  .generation-review-summary,
+  .generation-overlay {
+    padding: 6px;
+  }
+
+  .generation-card.review {
+    max-height: calc(100svh - 12px);
+    grid-template-rows: repeat(6, auto);
+    gap: 5px;
+    padding: 10px 9px;
+    overflow: hidden;
+    border-radius: 12px;
+  }
+
+  .generation-card.review img {
+    width: 72px;
+  }
+
+  .generation-card.review > strong {
+    font-size: 11px;
+  }
+
+  .generation-card.review p {
+    font-size: 14px;
+    line-height: 1.2;
+  }
+
+  .generation-card.review .generation-result-icon {
+    width: 28px;
+    height: 28px;
+    font-size: 17px;
+  }
+
+  .generation-review-summary {
+    gap: 3px;
+    overflow: visible;
+  }
+
+  .generation-review-summary > span {
+    min-height: 28px;
+    gap: 4px;
+    padding: 3px 5px;
+    font-size: 10px;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+
+  .generation-review-summary strong {
+    font-size: 11px;
+  }
+
   .generation-review-actions {
-    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .generation-review-actions button {
+    min-height: 38px;
+    padding: 6px 4px;
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 520px) and (max-height: 620px) {
+  .generation-card.review img {
+    display: none;
+  }
+
+  .generation-card.review {
+    gap: 4px;
+    padding-block: 8px;
   }
 }
 
