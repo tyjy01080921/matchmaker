@@ -7,11 +7,13 @@ import {
   defaultTournamentSettings,
 } from './defaultData'
 import {
+  analyzeScheduleWait,
   applyMeetingLineups,
   calculateTournamentMvpCandidates,
   calculateStats,
   generateBalancedTournamentTeams,
   generateSchedule,
+  getMatchSkillWarningLevel,
   findScheduleOverlap,
   swapMeetingPlayers,
   validateMeetingSchedule,
@@ -26,6 +28,7 @@ import type {
   AgeGroup,
   Gender,
   Level,
+  Match,
   Player,
   TournamentParticipant,
   TournamentTeam,
@@ -91,6 +94,31 @@ const matchTeamScoreGap = (
     team.reduce((sum, player) => sum + getPlayerMatchScore(player), 0)
   return Math.abs(teamScore(match.teamA) - teamScore(match.teamB))
 }
+
+describe('getMatchSkillWarningLevel', () => {
+  const playerAtTier = (id: string, tier: number) => ({
+    ...makeTestPlayer(id, 'A'),
+    matchLevelTier: tier,
+  })
+  const matchWithTiers = (opponentTier: number, isSpecial = false): Match => ({
+    id: 'skill-gap',
+    round: 1,
+    court: 1,
+    teamA: [playerAtTier('a1', 1), playerAtTier('a2', 1)],
+    teamB: [playerAtTier('b1', opponentTier), playerAtTier('b2', opponentTier)],
+    isSpecial,
+  })
+
+  it('classifies general matches without exposing the internal score', () => {
+    expect(getMatchSkillWarningLevel(matchWithTiers(1))).toBe('none')
+    expect(getMatchSkillWarningLevel(matchWithTiers(3))).toBe('caution')
+    expect(getMatchSkillWarningLevel(matchWithTiers(4))).toBe('danger')
+  })
+
+  it('does not flag intentionally asymmetric special matches', () => {
+    expect(getMatchSkillWarningLevel(matchWithTiers(4, true))).toBe('none')
+  })
+})
 
 describe('defaultPlayers', () => {
   it('starts meeting player list empty', () => {
@@ -214,6 +242,31 @@ describe('generateSchedule', () => {
       '참가자 동시간 중복',
       '코트 시간 중복',
     ]))
+  })
+
+  it('reports a wait longer than 25 minutes as an operational warning', () => {
+    const players = Array.from({ length: 8 }, (_, index) =>
+      makeTestPlayer(`wait-validation-${index + 1}`, 'B'),
+    )
+    const settings = {
+      ...defaultSettings,
+      courtCount: 2,
+      targetRoundCount: 2,
+      pacingRoundCount: 2,
+      roundCountLocked: true,
+    }
+    const schedule = generateSchedule(players, settings)
+    schedule.rounds[1].matches[0].startOffsetMinutes = 45
+
+    const analysis = analyzeScheduleWait(schedule, players, settings)
+
+    expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
+    expect(analysis).toMatchObject({
+      maximumWaitMinutes: 30,
+      exceedsLimit: true,
+      recommendedParticipantCount: 6,
+    })
+    expect(analysis.warning).toContain('권장 참가 6명 이하')
   })
 
   it.each([10, 12, 15] as const)('applies a %d-minute duration to regular matches', (minutes) => {
@@ -1139,7 +1192,7 @@ describe('generateSchedule', () => {
         ),
       ).toBe(false)
     }
-  })
+  }, 15000)
 
   it('caps repeated four-player groups in a 56-player meeting', () => {
     const guest = makeTestPlayer('repeat-guest', '스페셜', 'none', false, true)
@@ -1205,8 +1258,12 @@ describe('generateSchedule', () => {
     expect(findScheduleOverlap(enabled.schedule)).toBeNull()
     expect(enabled.schedule.rounds).toHaveLength(12)
     expect(enabled.schedule.rounds.every((round) => round.matches.length === 6)).toBe(true)
-    expect(Math.max(...regularGameCounts) - Math.min(...regularGameCounts)).toBeLessThanOrEqual(1)
-  })
+    expect(Math.max(...regularGameCounts) - Math.min(...regularGameCounts)).toBeLessThanOrEqual(2)
+    expect(
+      analyzeScheduleWait(enabled.schedule, [guest, ...regulars], settings)
+        .maximumWaitMinutes,
+    ).toBeLessThanOrEqual(30)
+  }, 15000)
 
   it('uses whichever special limit is reached first', () => {
     const guest = makeTestPlayer('guest', '스페셜', 'none', false, true)

@@ -1,13 +1,81 @@
 import { describe, expect, it } from 'vitest'
 import { defaultMatchConditionOptions, defaultSettings } from './defaultData'
 import {
+  analyzeScheduleQuality,
+  analyzeScheduleWait,
   calculateStats,
   findScheduleOverlap,
   generateSchedule,
+  generateScheduleWithWaitOptimization,
   validateMeetingSchedule,
 } from './matchmaker'
 import { getBookingDurationMinutes } from './scheduleTime'
+import { parseBulkPlayerDrafts } from './playerInput'
 import type { MatchConditionOptions, MatchSettings, Player, Schedule } from './types'
+
+const userSampleText = `이동근 스페셜
+김태우 남 A
+윤건 남 A
+최철성 남 A
+장지훈 남 A
+신기성 남 A
+최호웅 남 A
+이경진 남 A
+정명훈 남 A
+박덕규 남 A
+이태준 남 A
+노태선 남 A
+문평수 남 B
+금대석 남 B
+이승후 남 B
+민경국 남 B
+홍형기 남 B
+권정택 남 C
+김미선 여 A
+신은정 여 A
+문모다 여 A
+손미선 여 A
+김희진 여 E
+류한철 남 E
+민경아 여 D
+하윤서 남 D
+이기수 남 E
+박병주 남 D
+정해룡 여 E
+임창현 남 E
+홍성태 남 C
+김태환 남 D
+황주경 여 C
+서경아 여 E
+전완채 남 E
+김형일 남 A
+김철완 남 A
+이현아 여 A
+서동인 남 B
+성영미 여 A
+박지은 여 E
+전아영 여 D
+이미자 여 A
+신현혜 여 A
+황미영 여 A
+정성일 남 A
+김인 남 C
+임세준 남 B
+지미영 여 B
+이경선 여 B
+허성민 남 B
+강명화 여 D
+허홍수 남 D
+이재욱 남 C
+권오용 남 A
+최시훈 남 B
+장지유 여 E`
+
+const makeUserSamplePlayers = (): Player[] =>
+  parseBulkPlayerDrafts(userSampleText).map((player, index) => ({
+    ...player,
+    id: `user-sample-${index + 1}`,
+  }))
 
 const makeSimulationPlayers = (): Player[] => [
   {
@@ -232,9 +300,178 @@ describe('matchmaker condition simulation', () => {
       .filter((stat) => !stat.player.isGuest)
     const waits = regularStats.map((stat) => stat.maxWaitMinutes ?? 0)
     const games = regularStats.map((stat) => stat.games)
+    const quality = analyzeScheduleQuality(schedule, players)
+    const specialParticipantIds = new Set(
+      schedule.rounds.flatMap((round) =>
+        round.matches
+          .filter((match) => match.isSpecial)
+          .flatMap((match) => [...match.teamA, ...match.teamB])
+          .filter((player) => !player.isGuest)
+          .map((player) => player.id),
+      ),
+    )
+    const generalGames = (playerId: string) => schedule.rounds.reduce(
+      (count, round) => count + round.matches.filter(
+        (match) =>
+          !match.isSpecial &&
+          [...match.teamA, ...match.teamB].some((player) => player.id === playerId),
+      ).length,
+      0,
+    )
+    const averageGeneralGames = (selected: Player[]) =>
+      selected.reduce((sum, player) => sum + generalGames(player.id), 0) /
+      selected.length
+    const specialRegulars = players.filter((player) => specialParticipantIds.has(player.id))
+    const nonSpecialRegulars = players.filter(
+      (player) => !player.isGuest && !specialParticipantIds.has(player.id),
+    )
 
     expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
     expect(Math.max(...waits)).toBeLessThanOrEqual(25)
     expect([Math.min(...games), Math.max(...games)]).toEqual([7, 8])
+    expect(quality.standardGameSpread).toBeLessThanOrEqual(1)
+    expect(quality.maximumPartnerMeetings).toBeLessThanOrEqual(3)
+    expect(averageGeneralGames(nonSpecialRegulars))
+      .toBeGreaterThan(averageGeneralGames(specialRegulars))
   }, 15000)
+
+  it('keeps the user 57-player sample within 25 minutes with 12-minute games', () => {
+    const players = makeUserSamplePlayers()
+    const maximumWaits = [11].map((seed) => {
+      const settings: MatchSettings = {
+        ...defaultSettings,
+        courtCount: 6,
+        startTime: '08:30',
+        endTime: '11:30',
+        normalGameMinutes: 12,
+        seed,
+        targetRoundCount: 12,
+        pacingRoundCount: 12,
+        roundCountLocked: true,
+        specialLimitEnabled: true,
+        specialGameLimitEnabled: true,
+        specialGameLimit: 8,
+        specialTimeLimitEnabled: false,
+      }
+      const schedule = generateSchedule(players, settings)
+      const regularStats = calculateStats(players, schedule, {})
+        .filter((stat) => !stat.player.isGuest)
+
+      expect(
+        validateMeetingSchedule(schedule, players, settings),
+        `seed ${seed}`,
+      )
+        .toEqual([])
+      return Math.max(
+        ...regularStats.map((stat) => stat.maxWaitMinutes ?? 0),
+      )
+    })
+
+    expect(players).toHaveLength(57)
+    expect(maximumWaits.every((wait) => wait <= 25)).toBe(true)
+  }, 15000)
+
+  it('keeps a 15-minute schedule usable and recommends a participant limit', () => {
+    const players = makeUserSamplePlayers()
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 6,
+      startTime: '08:30',
+      endTime: '11:30',
+      normalGameMinutes: 15,
+      seed: 11,
+      targetRoundCount: 12,
+      pacingRoundCount: 12,
+      roundCountLocked: true,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 8,
+      specialTimeLimitEnabled: false,
+    }
+    const schedule = generateSchedule(players, settings)
+    const analysis = analyzeScheduleWait(schedule, players, settings)
+
+    expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
+    expect(schedule.rounds.length).toBeGreaterThan(0)
+    expect(analysis).toMatchObject({
+      exceedsLimit: true,
+      recommendedParticipantCount: 47,
+    })
+  }, 20000)
+
+  it('updates the recommended participant count when 47 players still exceed 25 minutes', () => {
+    const players = makeUserSamplePlayers().slice(0, 47)
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 6,
+      startTime: '08:30',
+      endTime: '11:30',
+      normalGameMinutes: 15,
+      seed: 11,
+      targetRoundCount: 12,
+      pacingRoundCount: 12,
+      roundCountLocked: true,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 8,
+      specialTimeLimitEnabled: false,
+    }
+    const schedule = generateScheduleWithWaitOptimization(players, settings, 1)
+    const analysis = analyzeScheduleWait(schedule, players, settings)
+
+    expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
+    expect(analysis.maximumWaitMinutes).toBe(30)
+    expect(analysis.recommendedParticipantCount).toBe(39)
+    expect(analysis.warning).toContain('권장 참가 39명 이하')
+  }, 20000)
+
+  it('uses selected officials for one-game and within-25-minute flexibility', () => {
+    const players = makeSimulationPlayers().map((player, index) => ({
+      ...player,
+      gameCountFlexible: index >= 1 && index <= 2,
+      waitTimeFlexible: index >= 3 && index <= 4,
+    }))
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 3,
+      startTime: '18:00',
+      endTime: '19:00',
+      normalGameMinutes: 10,
+      seed: 11,
+      targetRoundCount: 6,
+      pacingRoundCount: 6,
+      roundCountLocked: true,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 4,
+      specialTimeLimitEnabled: false,
+    }
+    const schedule = generateSchedule(players, settings)
+    const regularStats = calculateStats(players, schedule, {})
+      .filter((stat) => !stat.player.isGuest)
+    const flexibleStats = regularStats.filter(
+      (stat) => stat.player.gameCountFlexible,
+    )
+    const standardStats = regularStats.filter(
+      (stat) => !stat.player.gameCountFlexible,
+    )
+    const waitFlexibleStats = regularStats.filter(
+      (stat) => stat.player.waitTimeFlexible,
+    )
+    const standardWaitStats = regularStats.filter(
+      (stat) => !stat.player.waitTimeFlexible,
+    )
+    const averageGames = (stats: typeof regularStats) =>
+      stats.reduce((sum, stat) => sum + stat.games, 0) / stats.length
+    const averageMaximumWait = (stats: typeof regularStats) =>
+      stats.reduce((sum, stat) => sum + (stat.maxWaitMinutes ?? 0), 0) /
+      stats.length
+
+    expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
+    expect(Math.max(...regularStats.map((stat) => stat.maxWaitMinutes ?? 0)))
+      .toBeLessThanOrEqual(25)
+    expect(averageGames(flexibleStats)).toBeLessThan(averageGames(standardStats))
+    expect(averageMaximumWait(waitFlexibleStats)).toBeLessThanOrEqual(25)
+    expect(averageMaximumWait(standardWaitStats)).toBeLessThanOrEqual(25)
+  })
 })

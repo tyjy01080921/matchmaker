@@ -42,6 +42,7 @@ type HistoryState = {
   groups: Record<string, number>
   lastMatchEnd: Record<string, number>
   currentStartOffset: number
+  plannedSpecialIds: Set<string>
   specialCompleted: Set<string>
   specialGameCounts: Record<string, number>
   guestGameCounts: Record<string, number>
@@ -79,6 +80,14 @@ const TOTAL_ENCOUNTER_WEIGHT = 4000
 const MAX_GROUP_MEETINGS = 2
 const WAIT_PRIORITY_MINUTES = 25
 const WAIT_PRIORITY_WEIGHT = 5000
+const WAIT_DEADLINE_MINUTES = 15
+const WAIT_DEADLINE_WEIGHT = 12000000
+const WAIT_PRIORITY_MAX_VALUE = FAIR_GAME_MAX_WEIGHT * 1.5
+const STANDARD_WAIT_SOFT_START_MINUTES = 5
+const TEAM_SKILL_PREFERRED_GAP = 30
+const TEAM_SKILL_WARNING_GAP = 40
+const TEAM_SKILL_EXCESS_WEIGHT = 250
+const SPECIAL_GENERAL_GAME_OFFSET = 1
 const GAME_SLOT_MINUTES = 15
 
 const replaceMatchPlayer = (match: Match, outgoingId: string, incoming: Player): Match => ({
@@ -98,6 +107,216 @@ const windowsOverlap = (left: Match, right: Match) => {
   const a = matchTimeWindow(left)
   const b = matchTimeWindow(right)
   return a.start < b.end && b.start < a.end
+}
+
+const playerWaitGaps = (matches: Match[], playerId: string) => {
+  const windows = matches
+    .filter((match) =>
+      [...match.teamA, ...match.teamB].some((player) => player.id === playerId),
+    )
+    .map(matchTimeWindow)
+    .sort((left, right) => left.start - right.start)
+  const gaps: number[] = []
+  for (let index = 1; index < windows.length; index += 1) {
+    gaps.push(Math.max(0, windows[index].start - windows[index - 1].end))
+  }
+  return gaps
+}
+
+const playerMaximumWaitMinutes = (matches: Match[], playerId: string) =>
+  Math.max(0, ...playerWaitGaps(matches, playerId))
+
+export const getScheduleMaximumWaitMinutes = (
+  schedule: Schedule,
+  players: Player[],
+) => {
+  const matches = schedule.rounds.flatMap((round) => round.matches)
+  return Math.max(
+    0,
+    ...players
+      .filter((player) => player.active)
+      .map((player) => playerMaximumWaitMinutes(matches, player.id)),
+  )
+}
+
+export type ScheduleWaitAnalysis = {
+  maximumWaitMinutes: number
+  exceedsLimit: boolean
+  recommendedParticipantCount: number
+  warning: string | null
+}
+
+export type ScheduleQualityAnalysis = {
+  standardGameSpread: number
+  effectiveGameSpread: number
+  teamSkillWarningMatches: number
+  maximumTeamSkillGap: number
+  participantsOverWaitLimit: number
+  maximumPartnerMeetings: number
+  averageWaitMinutes: number
+  maximumGroupMeetings: number
+  repeatedGroupAssignments: number
+  repeatedPartnerAssignments: number
+  maximumOpponentMeetings: number
+  repeatedOpponentAssignments: number
+}
+
+export const analyzeScheduleWait = (
+  schedule: Schedule,
+  players: Player[],
+  settings: MatchSettings,
+): ScheduleWaitAnalysis => {
+  const activePlayers = players.filter((player) => player.active)
+  const maximumWaitMinutes = getScheduleMaximumWaitMinutes(schedule, players)
+  const exceedsLimit = maximumWaitMinutes > WAIT_PRIORITY_MINUTES
+  const normalGameMinutes = [10, 12, 15].includes(settings.normalGameMinutes)
+    ? settings.normalGameMinutes
+    : GAME_SLOT_MINUTES
+  const rotationRounds = Math.floor(WAIT_PRIORITY_MINUTES / normalGameMinutes) + 1
+  const participantSlotsPerCourt = rotationRounds * 4
+  const rotationWindowMinutes = rotationRounds * normalGameMinutes
+  const repeatingGuestCount = activePlayers.filter(
+    (player) =>
+      player.isGuest && (schedule.guestGameCounts[player.id] ?? 0) > 1,
+  ).length
+  const guestAppearancesPerWindow = Math.max(
+    1,
+    Math.ceil(rotationWindowMinutes / GAME_SLOT_MINUTES),
+  )
+  const repeatedGuestSlots =
+    repeatingGuestCount * Math.max(0, guestAppearancesPerWindow - 1)
+  const capacityParticipantCount = Math.max(
+    4,
+    settings.courtCount * participantSlotsPerCourt - repeatedGuestSlots,
+  )
+  const waitRatioParticipantCount = exceedsLimit
+    ? Math.max(
+        4,
+        Math.floor(
+          activePlayers.length * WAIT_PRIORITY_MINUTES / maximumWaitMinutes,
+        ),
+      )
+    : activePlayers.length
+  const recommendedParticipantCount = exceedsLimit
+    ? Math.min(capacityParticipantCount, waitRatioParticipantCount)
+    : capacityParticipantCount
+  const warning = exceedsLimit
+    ? `최장 대기 ${maximumWaitMinutes}분 · 권장 참가 ${recommendedParticipantCount}명 이하`
+    : null
+
+  return {
+    maximumWaitMinutes,
+    exceedsLimit,
+    recommendedParticipantCount,
+    warning,
+  }
+}
+
+const countValues = (values: string[]) => {
+  const counts = new Map<string, number>()
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1)
+  return [...counts.values()]
+}
+
+const repeatedAssignments = (counts: number[]) =>
+  counts.reduce((sum, count) => sum + Math.max(0, count - 1), 0)
+
+const matchTeamSkillGap = (match: Match) =>
+  Math.abs(
+    match.teamA.reduce((sum, player) => sum + getPlayerMatchScore(player), 0) -
+    match.teamB.reduce((sum, player) => sum + getPlayerMatchScore(player), 0),
+  )
+
+export type MatchSkillWarningLevel = 'none' | 'caution' | 'danger'
+
+export const getMatchSkillWarningLevel = (
+  match: Match,
+): MatchSkillWarningLevel => {
+  if (match.isSpecial) return 'none'
+  const gap = matchTeamSkillGap(match)
+  if (gap > TEAM_SKILL_WARNING_GAP) return 'danger'
+  if (gap > TEAM_SKILL_PREFERRED_GAP) return 'caution'
+  return 'none'
+}
+
+export const analyzeScheduleQuality = (
+  schedule: Schedule,
+  players: Player[],
+): ScheduleQualityAnalysis => {
+  const matches = schedule.rounds.flatMap((round) => round.matches)
+  const activePlayers = players.filter((player) => player.active)
+  const regulars = activePlayers.filter((player) => !player.isGuest)
+  const gameCounts = new Map(
+    regulars.map((player) => [
+      player.id,
+      matches.filter((match) =>
+        [...match.teamA, ...match.teamB].some(
+          (matchPlayer) => matchPlayer.id === player.id,
+        ),
+      ).length,
+    ]),
+  )
+  const standardCounts = regulars
+    .filter((player) => !player.gameCountFlexible)
+    .map((player) => gameCounts.get(player.id) ?? 0)
+  const effectiveCounts = regulars.map(
+    (player) =>
+      (gameCounts.get(player.id) ?? 0) + (player.gameCountFlexible ? 1 : 0),
+  )
+  const spread = (counts: number[]) =>
+    counts.length > 0 ? Math.max(...counts) - Math.min(...counts) : 0
+  const teamSkillGaps = matches
+    .filter((match) => !match.isSpecial)
+    .map(matchTeamSkillGap)
+  const waitsByPlayer = activePlayers.map((player) =>
+    playerWaitGaps(matches, player.id),
+  )
+  const participantAverageWaits = waitsByPlayer
+    .filter((gaps) => gaps.length > 0)
+    .map((gaps) => gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length)
+  const partnerCounts = countValues(
+    matches.flatMap((match) => [
+      [match.teamA[0].id, match.teamA[1].id].sort().join('__'),
+      [match.teamB[0].id, match.teamB[1].id].sort().join('__'),
+    ]),
+  )
+  const opponentCounts = countValues(
+    matches.flatMap((match) =>
+      match.teamA.flatMap((left) =>
+        match.teamB.map((right) => [left.id, right.id].sort().join('__')),
+      ),
+    ),
+  )
+  const groupCounts = countValues(
+    matches.map((match) =>
+      [...match.teamA, ...match.teamB]
+        .map((player) => player.id)
+        .sort()
+        .join('__'),
+    ),
+  )
+
+  return {
+    standardGameSpread: spread(standardCounts),
+    effectiveGameSpread: spread(effectiveCounts),
+    teamSkillWarningMatches: teamSkillGaps.filter(
+      (gap) => gap > TEAM_SKILL_WARNING_GAP,
+    ).length,
+    maximumTeamSkillGap: Math.max(0, ...teamSkillGaps),
+    participantsOverWaitLimit: waitsByPlayer.filter(
+      (gaps) => Math.max(0, ...gaps) > WAIT_PRIORITY_MINUTES,
+    ).length,
+    maximumPartnerMeetings: Math.max(0, ...partnerCounts),
+    averageWaitMinutes: participantAverageWaits.length > 0
+      ? participantAverageWaits.reduce((sum, wait) => sum + wait, 0) /
+        participantAverageWaits.length
+      : 0,
+    maximumGroupMeetings: Math.max(0, ...groupCounts),
+    repeatedGroupAssignments: repeatedAssignments(groupCounts),
+    repeatedPartnerAssignments: repeatedAssignments(partnerCounts),
+    maximumOpponentMeetings: Math.max(0, ...opponentCounts),
+    repeatedOpponentAssignments: repeatedAssignments(opponentCounts),
+  }
 }
 
 type ScheduleOverlap = {
@@ -221,6 +440,36 @@ export const validateMeetingSchedule = (
     }
   }
 
+  const gameCountByPlayer = new Map(
+    players
+      .filter((player) => player.active && !player.isGuest)
+      .map((player) => [
+        player.id,
+        matches.filter((match) =>
+          [...match.teamA, ...match.teamB].some(
+            (matchPlayer) => matchPlayer.id === player.id,
+          ),
+        ).length,
+      ]),
+  )
+  const standardGameCounts = players
+    .filter(
+      (player) =>
+        player.active && !player.isGuest && !player.gameCountFlexible,
+    )
+    .map((player) => gameCountByPlayer.get(player.id) ?? 0)
+  if (standardGameCounts.length > 0) {
+    const standardMinimumGames = Math.min(...standardGameCounts)
+    const excessiveSacrifice = players.some(
+      (player) =>
+        player.active &&
+        !player.isGuest &&
+        player.gameCountFlexible &&
+        (gameCountByPlayer.get(player.id) ?? 0) < standardMinimumGames - 1,
+    )
+    if (excessiveSacrifice) issues.add('경기 수 양보 1경기 초과')
+  }
+
   return [...issues]
 }
 
@@ -268,6 +517,8 @@ type SpecialAllocationSegment = 'low' | 'random' | 'high'
 const matchConditions = (settings: MatchSettings): MatchConditionOptions => ({
   ...defaultMatchConditionOptions,
   ...(settings.conditionOptions ?? {}),
+  fairGames: true,
+  waitPriority: true,
 })
 
 const pairKey = (a: string, b: string) => [a, b].sort().join('__')
@@ -286,7 +537,10 @@ const makeRandom = (seed: number) => {
 const emptyCounts = (players: Player[]) =>
   Object.fromEntries(players.map((player) => [player.id, 0]))
 
-const makeHistory = (players: Player[]): HistoryState => ({
+const makeHistory = (
+  players: Player[],
+  plannedSpecialIds: Set<string> = new Set<string>(),
+): HistoryState => ({
   games: emptyCounts(players),
   rests: emptyCounts(players),
   restStreaks: emptyCounts(players),
@@ -297,6 +551,7 @@ const makeHistory = (players: Player[]): HistoryState => ({
   groups: {},
   lastMatchEnd: {},
   currentStartOffset: 0,
+  plannedSpecialIds,
   specialCompleted: new Set<string>(),
   specialGameCounts: emptyCounts(players),
   guestGameCounts: Object.fromEntries(
@@ -983,6 +1238,11 @@ const scorePairing = (
   const levelPenalty = conditions.levelBalance
     ? Math.abs(teamLevel(teamA) - teamLevel(teamB)) * 32 * balanceMultiplier
     : 0
+  const teamSkillGap = Math.abs(teamLevel(teamA) - teamLevel(teamB))
+  const teamSkillExcessPenalty = conditions.levelBalance
+    ? Math.max(0, teamSkillGap - TEAM_SKILL_PREFERRED_GAP) ** 2 *
+      TEAM_SKILL_EXCESS_WEIGHT
+    : 0
   const agePenalty = conditions.ageBalance
     ? Math.abs(teamAge(teamA) - teamAge(teamB)) * 1.5
     : 0
@@ -1013,6 +1273,7 @@ const scorePairing = (
 
   return (
     levelPenalty +
+    teamSkillExcessPenalty +
     agePenalty +
     genderPenalty +
     mixedPairPenalty +
@@ -1081,6 +1342,12 @@ const bestSingleGuestPairing = (
   const partner = regulars
     .map((player) => ({
       player,
+      teamSkillGap: Math.abs(
+        teamLevel([guest, player]) -
+        teamLevel(
+          regulars.filter((opponent) => opponent.id !== player.id) as Team,
+        ),
+      ),
       opponentGenderPenalty:
         conditions.genderBalance &&
         isMixedRegularTeam(
@@ -1106,6 +1373,7 @@ const bestSingleGuestPairing = (
     .sort((left, right) => {
       const comparisons = [
         left.opponentGenderPenalty - right.opponentGenderPenalty,
+        left.teamSkillGap - right.teamSkillGap,
         left.playerScore - right.playerScore,
         left.score - right.score,
       ]
@@ -1207,13 +1475,43 @@ const consecutivePlayPenalty = (player: Player, history: HistoryState) => {
   return 780 + (streak - 3) * 360
 }
 
-const waitPriorityValue = (player: Player, history: HistoryState) => {
+const playerWaitMinutes = (player: Player, history: HistoryState) => {
   const lastMatchEnd = history.lastMatchEnd[player.id]
   if (lastMatchEnd === undefined) return 0
-  const waitMinutes = Math.max(0, history.currentStartOffset - lastMatchEnd)
-  const urgency = Math.max(0, waitMinutes - (WAIT_PRIORITY_MINUTES - 10))
-  return urgency * urgency * WAIT_PRIORITY_WEIGHT
+  return Math.max(0, history.currentStartOffset - lastMatchEnd)
 }
+
+const hasWaitDeadline = (player: Player, history: HistoryState) =>
+  playerWaitMinutes(player, history) >= WAIT_DEADLINE_MINUTES
+
+const waitPriorityValue = (player: Player, history: HistoryState) => {
+  const waitMinutes = playerWaitMinutes(player, history)
+  const softStartMinutes = player.waitTimeFlexible
+    ? WAIT_DEADLINE_MINUTES
+    : STANDARD_WAIT_SOFT_START_MINUTES
+  const softUrgency = Math.max(0, waitMinutes - softStartMinutes)
+  const deadlineUrgency = Math.max(0, waitMinutes - WAIT_DEADLINE_MINUTES)
+  return Math.min(
+    WAIT_PRIORITY_MAX_VALUE,
+    softUrgency * softUrgency * WAIT_PRIORITY_WEIGHT +
+    (waitMinutes >= WAIT_DEADLINE_MINUTES
+      ? WAIT_DEADLINE_WEIGHT +
+        deadlineUrgency * deadlineUrgency * WAIT_PRIORITY_WEIGHT
+      : 0),
+  )
+}
+
+const fairGameCount = (player: Player, history: HistoryState) =>
+  (history.games[player.id] ?? 0) +
+  (!player.isGuest && player.gameCountFlexible ? 1 : 0)
+
+const generalFairGameCount = (player: Player, history: HistoryState) =>
+  fairGameCount(player, history) +
+  (!player.isGuest &&
+  history.plannedSpecialIds.has(player.id) &&
+  !history.specialCompleted.has(player.id)
+    ? SPECIAL_GENERAL_GAME_OFFSET
+    : 0)
 
 const groupConsecutivePlayPenalty = (
   players: Player[],
@@ -1231,29 +1529,57 @@ const fairGamePenalty = (
   players: Player[],
   history: HistoryState,
   conditions: MatchConditionOptions,
+  gameCount: (player: Player, history: HistoryState) => number = fairGameCount,
 ) => {
   if (!conditions.fairGames || players.length === 0) return 0
-  const counts = players.map((player) => history.games[player.id] ?? 0)
+  const counts = players.map((player) => gameCount(player, history))
   return (
     Math.max(...counts) * FAIR_GAME_MAX_WEIGHT +
     counts.reduce((sum, count) => sum + count, 0) * FAIR_GAME_TOTAL_WEIGHT
   )
 }
 
-const playerPriority = (
+const playerPriorityWithGameCount = (
   player: Player,
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
+  gameCount: (player: Player, history: HistoryState) => number,
 ) =>
   (conditions.fairGames
-    ? (history.games[player.id] ?? 0) * FAIR_GAME_MAX_WEIGHT
+    ? gameCount(player, history) * FAIR_GAME_MAX_WEIGHT
     : 0) -
   (conditions.waitPriority ? waitPriorityValue(player, history) : 0) -
   (conditions.restBalance ? (history.restStreaks[player.id] ?? 0) * 18 : 0) -
   (conditions.restBalance ? (history.rests[player.id] ?? 0) * 4 : 0) +
   (conditions.restBalance ? consecutivePlayPenalty(player, history) : 0) +
   random()
+
+const playerPriority = (
+  player: Player,
+  history: HistoryState,
+  random: () => number,
+  conditions: MatchConditionOptions,
+) => playerPriorityWithGameCount(
+  player,
+  history,
+  random,
+  conditions,
+  fairGameCount,
+)
+
+const generalPlayerPriority = (
+  player: Player,
+  history: HistoryState,
+  random: () => number,
+  conditions: MatchConditionOptions,
+) => playerPriorityWithGameCount(
+  player,
+  history,
+  random,
+  conditions,
+  generalFairGameCount,
+)
 
 const uniquePlayers = (players: Player[]) =>
   Array.from(new Map(players.map((player) => [player.id, player])).values())
@@ -1311,6 +1637,8 @@ const isValidGuestGroup = (
 }
 
 type SpecialRegularScore = {
+  waitDeadlineCount: number
+  waitPriorityTotal: number
   genderPenalty: number
   levelSpread: number
   ageSpread: number
@@ -1337,7 +1665,7 @@ const scoreSpecialRegulars = (
 ): SpecialRegularScore => {
   const pendingCount = regulars.filter((player) => pendingIds.has(player.id)).length
   const specialCounts = regulars.map((player) => specialGameCount(player, history))
-  const gameCounts = regulars.map((player) => history.games[player.id] ?? 0)
+  const gameCounts = regulars.map((player) => fairGameCount(player, history))
   const regularScoreSum = regulars.reduce(
     (sum, player) => sum + getPlayerMatchScore(player),
     0,
@@ -1352,6 +1680,15 @@ const scoreSpecialRegulars = (
   )
 
   return {
+    waitDeadlineCount: conditions.waitPriority
+      ? regulars.filter((player) => hasWaitDeadline(player, history)).length
+      : 0,
+    waitPriorityTotal: conditions.waitPriority
+      ? regulars.reduce(
+          (sum, player) => sum + waitPriorityValue(player, history),
+          0,
+        )
+      : 0,
     genderPenalty: conditions.genderBalance
       ? Math.min(...Object.values(genderCounts(regulars)))
       : 0,
@@ -1389,12 +1726,39 @@ const scoreSpecialRegulars = (
   }
 }
 
+const hasWaitCapacityPressure = (
+  activePlayers: Player[],
+  settings: MatchSettings,
+) => {
+  const rotationRounds =
+    Math.floor(WAIT_PRIORITY_MINUTES / settings.normalGameMinutes) + 1
+  const rotationWindowMinutes = rotationRounds * settings.normalGameMinutes
+  const guestAppearancesPerWindow = Math.max(
+    1,
+    Math.ceil(rotationWindowMinutes / GAME_SLOT_MINUTES),
+  )
+  const activeGuestCount = activePlayers.filter((player) => player.isGuest).length
+  const participantCapacity = Math.max(
+    4,
+    settings.courtCount * rotationRounds * 4 -
+      activeGuestCount * Math.max(0, guestAppearancesPerWindow - 1),
+  )
+  return activePlayers.length >= participantCapacity * 0.9
+}
+
 const compareSpecialRegularScores = (
   left: SpecialRegularScore,
   right: SpecialRegularScore,
   segment: SpecialAllocationSegment,
+  prioritizeWait: boolean,
 ) => {
   const commonComparisons = [
+    ...(prioritizeWait
+      ? [
+          right.waitDeadlineCount - left.waitDeadlineCount,
+          right.waitPriorityTotal - left.waitPriorityTotal,
+        ]
+      : []),
     left.genderPenalty - right.genderPenalty,
     left.levelSpread - right.levelSpread,
     left.ageSpread - right.ageSpread,
@@ -1403,6 +1767,12 @@ const compareSpecialRegularScores = (
     left.maximumSpecialGames - right.maximumSpecialGames,
     left.totalSpecialGames - right.totalSpecialGames,
     left.pendingPenalty - right.pendingPenalty,
+    ...(!prioritizeWait
+      ? [
+          right.waitDeadlineCount - left.waitDeadlineCount,
+          right.waitPriorityTotal - left.waitPriorityTotal,
+        ]
+      : []),
     left.maximumGames - right.maximumGames,
     left.totalGames - right.totalGames,
     left.guestPartnerPenalty - right.guestPartnerPenalty,
@@ -1430,10 +1800,19 @@ const pickSpecialRegulars = (
   )
   if (availableRegulars.length < 3) return null
 
-  const pendingIds = new Set(pending.map((player) => player.id))
-  const hasPending = pending.length > 0
+  const plannedPending = pending.filter((player) =>
+    history.plannedSpecialIds.has(player.id),
+  )
+  const allocationPending =
+    history.plannedSpecialIds.size > 0 && plannedPending.length > 0
+      ? plannedPending
+      : pending
+  const pendingIds = new Set(allocationPending.map((player) => player.id))
+  const hasPending = allocationPending.length > 0
   const expectedPendingCount = hasPending ? Math.min(3, pendingIds.size) : 0
   const requirePending = hasPending
+  const prioritizeWait =
+    conditions.waitPriority && hasWaitCapacityPressure(activePlayers, settings)
   const segment = specialAllocationSegment(
     guest,
     activePlayers,
@@ -1449,6 +1828,16 @@ const pickSpecialRegulars = (
           Number(pendingIds.has(left.player.id))
         if (pendingDiff !== 0) return pendingDiff
       }
+      if (prioritizeWait) {
+        const deadlineDiff =
+          Number(hasWaitDeadline(right.player, history)) -
+          Number(hasWaitDeadline(left.player, history))
+        if (deadlineDiff !== 0) return deadlineDiff
+        const waitPriorityDiff =
+          waitPriorityValue(right.player, history) -
+          waitPriorityValue(left.player, history)
+        if (waitPriorityDiff !== 0) return waitPriorityDiff
+      }
       if (segment !== 'random') {
         const levelDiff =
           getPlayerMatchScore(left.player) - getPlayerMatchScore(right.player)
@@ -1459,9 +1848,19 @@ const pickSpecialRegulars = (
         specialGameCount(right.player, history)
       if (specialGameDiff !== 0) return specialGameDiff
       const gameDiff =
-        (history.games[left.player.id] ?? 0) -
-        (history.games[right.player.id] ?? 0)
+        fairGameCount(left.player, history) -
+        fairGameCount(right.player, history)
       if (gameDiff !== 0) return gameDiff
+      if (conditions.waitPriority && !prioritizeWait) {
+        const deadlineDiff =
+          Number(hasWaitDeadline(right.player, history)) -
+          Number(hasWaitDeadline(left.player, history))
+        if (deadlineDiff !== 0) return deadlineDiff
+        const waitPriorityDiff =
+          waitPriorityValue(right.player, history) -
+          waitPriorityValue(left.player, history)
+        if (waitPriorityDiff !== 0) return waitPriorityDiff
+      }
       return left.randomValue - right.randomValue
     })
     .map(({ player }) => player)
@@ -1503,7 +1902,12 @@ const pickSpecialRegulars = (
         )
         if (
           fallbackScore === null ||
-          compareSpecialRegularScores(score, fallbackScore, segment) < 0
+          compareSpecialRegularScores(
+            score,
+            fallbackScore,
+            segment,
+            prioritizeWait,
+          ) < 0
         ) {
           fallbackScore = score
           fallbackGroup = regulars
@@ -1516,7 +1920,12 @@ const pickSpecialRegulars = (
         }
         if (
           bestScore === null ||
-          compareSpecialRegularScores(score, bestScore, segment) < 0
+          compareSpecialRegularScores(
+            score,
+            bestScore,
+            segment,
+            prioritizeWait,
+          ) < 0
         ) {
           bestScore = score
           bestGroup = regulars
@@ -1554,11 +1963,18 @@ const pickSingleGuestSpecialGroup = (
         !history.specialCompleted.has(player.id) &&
         !usedIds.has(player.id),
     )
-    .sort(
-      (a, b) =>
+    .sort((a, b) => {
+      if (history.plannedSpecialIds.size > 0) {
+        const plannedDifference =
+          Number(history.plannedSpecialIds.has(b.id)) -
+          Number(history.plannedSpecialIds.has(a.id))
+        if (plannedDifference !== 0) return plannedDifference
+      }
+      return (
         playerPriority(a, history, random, conditions) -
-        playerPriority(b, history, random, conditions),
-    )
+        playerPriority(b, history, random, conditions)
+      )
+    })
 
   const needsGuestFirstMatch = candidateGuests.some(
     (guest) => (history.guestGameCounts[guest.id] ?? 0) === 0,
@@ -1651,6 +2067,12 @@ const scoreAdaptiveSpecialGroup = (
     (conditions.genderBalance ? groupGenderMixPenalty(regulars) : 0) +
     historyPenalty +
     fairGamePenalty(group, history, conditions) +
+    (conditions.waitPriority
+      ? -group.reduce(
+          (sum, player) => sum + waitPriorityValue(player, history),
+          0,
+        )
+      : 0) +
     pendingPriorityPenalty -
     (conditions.specialPriority ? firstGuestCount * 40 : 0) +
     repeatGuestPenalty +
@@ -1873,7 +2295,7 @@ const scoreGroup = (
 
   return (
     pairing.score +
-    fairGamePenalty(group, history, conditions) +
+    fairGamePenalty(group, history, conditions, generalFairGameCount) +
     (conditions.waitPriority
       ? -group.reduce(
           (sum, player) => sum + waitPriorityValue(player, history),
@@ -1902,6 +2324,7 @@ const pickGeneralGroup = (
   conditions: MatchConditionOptions,
   pacing: RoundPacing,
 ): [Player, Player, Player, Player] | null => {
+  const selectionConditions = conditions
   const availablePlayers = activePlayers
     .filter((player) => {
       if (usedIds.has(player.id)) return false
@@ -1909,7 +2332,12 @@ const pickGeneralGroup = (
     })
     .map((player) => ({
       player,
-      priority: playerPriority(player, history, random, conditions),
+      priority: generalPlayerPriority(
+        player,
+        history,
+        random,
+        selectionConditions,
+      ),
     }))
     .sort((left, right) => left.priority - right.priority)
     .map(({ player }) => player)
@@ -1917,11 +2345,11 @@ const pickGeneralGroup = (
   if (availablePlayers.length < 4) return null
 
   const minimumGameCount = Math.min(
-    ...availablePlayers.map((player) => history.games[player.id] ?? 0),
+    ...availablePlayers.map((player) => generalFairGameCount(player, history)),
   )
   const fairAnchorPool = conditions.fairGames
     ? availablePlayers.filter(
-        (player) => (history.games[player.id] ?? 0) === minimumGameCount,
+        (player) => generalFairGameCount(player, history) === minimumGameCount,
       )
     : availablePlayers
   const cohortMap = new Map<string, Player[]>()
@@ -1952,17 +2380,26 @@ const pickGeneralGroup = (
       .filter((player) => player.id !== anchor.id)
       .map((player) => ({
         player,
-        priority: playerPriority(player, history, random, conditions),
+        priority: generalPlayerPriority(
+          player,
+          history,
+          random,
+          selectionConditions,
+        ),
         randomValue: random(),
       }))
       .sort((left, right) => {
         if (conditions.fairGames) {
           const gameDiff =
-            (history.games[left.player.id] ?? 0) -
-            (history.games[right.player.id] ?? 0)
+            generalFairGameCount(left.player, history) -
+            generalFairGameCount(right.player, history)
           if (gameDiff !== 0) return gameDiff
         }
-        if (conditions.waitPriority) {
+        if (selectionConditions.waitPriority) {
+          const deadlineDiff =
+            Number(hasWaitDeadline(right.player, history)) -
+            Number(hasWaitDeadline(left.player, history))
+          if (deadlineDiff !== 0) return deadlineDiff
           const waitPriorityDiff =
             waitPriorityValue(right.player, history) -
             waitPriorityValue(left.player, history)
@@ -2010,7 +2447,13 @@ const pickGeneralGroup = (
           ]
           if (!isValidGuestGroup(group, settings.singleGuestPerMatch)) continue
 
-          const score = scoreGroup(group, history, random, conditions, pacing)
+          const score = scoreGroup(
+            group,
+            history,
+            random,
+            selectionConditions,
+            pacing,
+          )
           if (score < fallbackScore) {
             fallbackScore = score
             fallbackGroup = group
@@ -3182,9 +3625,10 @@ export const generateTournamentSchedule = (
   }
 }
 
-export const generateSchedule = (
+const generateSchedulePass = (
   players: Player[],
   settings: MatchSettings,
+  plannedSpecialIds = new Set<string>(),
 ): Schedule => {
   const activePlayers = players
     .filter((player) => player.active)
@@ -3194,7 +3638,7 @@ export const generateSchedule = (
     }))
   const activeRegulars = activePlayers.filter((player) => !player.isGuest)
   const activeGuests = activePlayers.filter((player) => player.isGuest)
-  const history = makeHistory(activePlayers)
+  const history = makeHistory(activePlayers, plannedSpecialIds)
   const rounds: Round[] = []
   const warnings: string[] = []
   const random = makeRandom(settings.seed)
@@ -3416,6 +3860,66 @@ export const generateSchedule = (
     specialCompletedIds: Array.from(history.specialCompleted),
     guestGameCounts: history.guestGameCounts,
   }
+}
+
+export const generateSchedule = (
+  players: Player[],
+  settings: MatchSettings,
+): Schedule => {
+  const initialSchedule = generateSchedulePass(players, settings)
+  const plannedSpecialIds = new Set(
+    initialSchedule.rounds.flatMap((round) =>
+      round.matches
+        .filter((match) => match.isSpecial)
+        .flatMap((match) => [...match.teamA, ...match.teamB])
+        .filter((player) => !player.isGuest)
+        .map((player) => player.id),
+    ),
+  )
+
+  return plannedSpecialIds.size === 0
+    ? initialSchedule
+    : generateSchedulePass(players, settings, plannedSpecialIds)
+}
+
+export const generateScheduleWithWaitOptimization = (
+  players: Player[],
+  settings: MatchSettings,
+  attemptCount = 3,
+): Schedule => {
+  const attempts = Math.min(5, Math.max(1, Math.floor(attemptCount)))
+  return Array.from({ length: attempts }, (_, index) => {
+    const schedule = generateSchedule(players, {
+      ...settings,
+      seed: settings.seed + index,
+    })
+    return {
+      schedule,
+      wait: analyzeScheduleWait(schedule, players, settings),
+      quality: analyzeScheduleQuality(schedule, players),
+      index,
+    }
+  }).sort((left, right) => {
+    const comparisons = [
+      Number(left.wait.exceedsLimit) - Number(right.wait.exceedsLimit),
+      Math.max(0, left.wait.maximumWaitMinutes - WAIT_PRIORITY_MINUTES) -
+        Math.max(0, right.wait.maximumWaitMinutes - WAIT_PRIORITY_MINUTES),
+      left.quality.maximumGroupMeetings - right.quality.maximumGroupMeetings,
+      left.quality.repeatedGroupAssignments - right.quality.repeatedGroupAssignments,
+      left.quality.maximumPartnerMeetings - right.quality.maximumPartnerMeetings,
+      left.quality.repeatedPartnerAssignments - right.quality.repeatedPartnerAssignments,
+      left.quality.maximumOpponentMeetings - right.quality.maximumOpponentMeetings,
+      left.quality.repeatedOpponentAssignments - right.quality.repeatedOpponentAssignments,
+      left.quality.standardGameSpread - right.quality.standardGameSpread,
+      left.quality.effectiveGameSpread - right.quality.effectiveGameSpread,
+      left.quality.maximumTeamSkillGap - right.quality.maximumTeamSkillGap,
+      left.quality.teamSkillWarningMatches - right.quality.teamSkillWarningMatches,
+      left.quality.averageWaitMinutes - right.quality.averageWaitMinutes,
+      left.schedule.warnings.length - right.schedule.warnings.length,
+      left.index - right.index,
+    ]
+    return comparisons.find((difference) => difference !== 0) ?? 0
+  })[0].schedule
 }
 
 const numericScore = (score: string) => {

@@ -65,7 +65,7 @@ export const parseBulkLevel = (value: string): Level | undefined => {
 
 export const parseBulkPlayerDrafts = (
   text: string,
-): Array<Pick<Player, 'name' | 'level' | 'ageGroup' | 'gender' | 'active' | 'specialRequired' | 'isGuest' | 'guestGameLimit'>> =>
+): Array<Pick<Player, 'name' | 'level' | 'ageGroup' | 'gender' | 'active' | 'specialRequired' | 'isGuest' | 'guestGameLimit' | 'gameCountFlexible' | 'waitTimeFlexible'>> =>
   text
     .split(/\n+/)
     .map((line) => line.trim())
@@ -94,6 +94,16 @@ export const parseBulkPlayerDrafts = (
         attributeTokens.some(
           (token) => token === '스페셜' || token.toLowerCase() === 'special',
         )
+      const gameCountFlexible =
+        !isGuest &&
+        attributeTokens.some((token) =>
+          ['경기양보', '경기수양보'].includes(token),
+        )
+      const waitTimeFlexible =
+        !isGuest &&
+        attributeTokens.some((token) =>
+          ['대기양보', '긴대기', '25분대기'].includes(token),
+        )
 
       return {
         name: name ?? '',
@@ -104,5 +114,7 @@ export const parseBulkPlayerDrafts = (
         specialRequired,
         isGuest,
         guestGameLimit: 0,
+        gameCountFlexible,
+        waitTimeFlexible,
       }
     })

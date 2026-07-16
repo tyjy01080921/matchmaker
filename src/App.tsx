@@ -19,12 +19,15 @@ import {
   samplePlayers,
 } from './defaultData'
 import {
+  analyzeScheduleQuality,
+  analyzeScheduleWait,
   calculateTournamentMvpCandidates,
   calculateStats,
   applyMeetingLineups,
   findScheduleOverlap,
   generateBalancedTournamentTeams,
-  generateSchedule,
+  generateScheduleWithWaitOptimization,
+  getMatchSkillWarningLevel,
   generateTournamentLineups,
   generateTournamentSchedule,
   makeNumberedTournamentPlayers,
@@ -116,6 +119,7 @@ const MEETING_GENERATION_MESSAGES = [
   '준비운동 중요한 거 아시죠?! 꼭 하세요!',
   '즐거운 배드민턴, 고성현&신백철의 A.M.A와 함께 하세요!',
 ] as const
+const MEETING_GENERATION_ATTEMPTS = 3
 
 const getTargetRoundCount = (settings: MatchSettings) => {
   const numeric = Number(settings.targetRoundCount)
@@ -209,9 +213,9 @@ const matchConditionKeys: MatchConditionKey[] = [
 const matchConditionLabels: Record<MatchConditionKey, string> = {
   levelBalance: '팀 레벨 균형',
   genderBalance: '동일 성별 우선',
-  fairGames: '경기 수 균등',
+  fairGames: '경기 수 1경기 이내 (필수)',
   restBalance: '휴식 균형',
-  waitPriority: '최장 대기 25분 우선',
+  waitPriority: '최장 대기 25분 제한 (필수)',
   partnerRepeat: '파트너 반복 최소',
   opponentRepeat: '상대 반복 최소',
   groupRepeat: '같은 4인 최대 2경기',
@@ -355,6 +359,8 @@ const normalizePlayer = (player: Partial<Player>): Player => {
       isGuest || isSpecialLevel ? false : (player.specialMatchEligible ?? true),
     isGuest,
     guestGameLimit: player.guestGameLimit ?? 0,
+    gameCountFlexible: !isGuest && (player.gameCountFlexible ?? false),
+    waitTimeFlexible: !isGuest && (player.waitTimeFlexible ?? false),
   }
 }
 
@@ -415,9 +421,11 @@ const normalizeMatchConditionOptions = (
   return Object.fromEntries(
     matchConditionKeys.map((key) => [
       key,
-      typeof raw[key] === 'boolean'
-        ? raw[key]
-        : defaultMatchConditionOptions[key],
+      key === 'waitPriority' || key === 'fairGames'
+        ? true
+        : typeof raw[key] === 'boolean'
+          ? raw[key]
+          : defaultMatchConditionOptions[key],
     ]),
   ) as MatchConditionOptions
 }
@@ -933,6 +941,8 @@ const makeRegularPlayer = (_index: number): Player => ({
   specialRequired: true,
   isGuest: false,
   guestGameLimit: 0,
+  gameCountFlexible: false,
+  waitTimeFlexible: false,
 })
 
 const makeGuestPlayer = (_index: number): Player => ({
@@ -945,6 +955,8 @@ const makeGuestPlayer = (_index: number): Player => ({
   specialRequired: false,
   isGuest: true,
   guestGameLimit: 0,
+  gameCountFlexible: false,
+  waitTimeFlexible: false,
 })
 
 const makeTournamentTeam = (index: number): TournamentTeam => ({
@@ -1167,6 +1179,7 @@ const bulkPlayerPlaceholder = [
   '이지연',
   '박태호 남 30 B',
   '최수빈 40 여 A',
+  '홍길동 B 경기양보 대기양보',
   '스페셜1 스페셜',
 ].join('\n')
 
@@ -1387,7 +1400,11 @@ function App() {
     () =>
       generatedMeetingPlayers.length === 0
         ? emptyMeetingSchedule
-        : generateSchedule(generatedMeetingPlayers, generatedMeetingSettings),
+        : generateScheduleWithWaitOptimization(
+            generatedMeetingPlayers,
+            generatedMeetingSettings,
+            MEETING_GENERATION_ATTEMPTS,
+          ),
     [generatedMeetingPlayers, generatedMeetingSettings],
   )
   const schedule = useMemo(() => applyMeetingLineups(
@@ -1395,6 +1412,33 @@ function App() {
     generatedMeetingPlayers,
     meetingLineups,
   ), [generatedMeetingPlayers, meetingLineups, pairMixes, rawSchedule])
+  const scheduleWaitAnalysis = useMemo(
+    () => analyzeScheduleWait(
+      schedule,
+      generatedMeetingPlayers,
+      generatedMeetingSettings,
+    ),
+    [generatedMeetingPlayers, generatedMeetingSettings, schedule],
+  )
+  const scheduleQualityAnalysis = useMemo(
+    () => analyzeScheduleQuality(schedule, generatedMeetingPlayers),
+    [generatedMeetingPlayers, schedule],
+  )
+  const skillBalanceWarning = scheduleQualityAnalysis.teamSkillWarningMatches > 0
+    ? `실력 차 주의 ${scheduleQualityAnalysis.teamSkillWarningMatches}경기 · 대진 카드 확인`
+    : null
+  const gameSpreadWarning = scheduleQualityAnalysis.standardGameSpread > 1
+    ? `일반 참가자 경기 수 차 ${scheduleQualityAnalysis.standardGameSpread}경기`
+    : null
+  const meetingWarnings = useMemo(
+    () => [
+      ...schedule.warnings,
+      ...(scheduleWaitAnalysis.warning ? [scheduleWaitAnalysis.warning] : []),
+      ...(skillBalanceWarning ? [skillBalanceWarning] : []),
+      ...(gameSpreadWarning ? [gameSpreadWarning] : []),
+    ],
+    [gameSpreadWarning, schedule.warnings, scheduleWaitAnalysis.warning, skillBalanceWarning],
+  )
   useEffect(() => {
     if (!isMeetingGenerating || meetingOperationLabel !== '대진 검증 중') return
     if (meetingGenerationEndTimerRef.current !== null) {
@@ -1416,8 +1460,17 @@ function App() {
       }
 
       setMeetingOperationLabel('대진 완료')
-      setMeetingGenerationMessage('참가자와 코트 중복 검증을 마쳤습니다.')
-      setNotice('대진 검증 완료')
+      setMeetingGenerationMessage(
+        [scheduleWaitAnalysis.warning, gameSpreadWarning, skillBalanceWarning]
+          .filter(Boolean)
+          .join(' · ') ||
+        '중복과 최장 대기 25분 검증을 마쳤습니다.',
+      )
+      setNotice(
+        scheduleWaitAnalysis.exceedsLimit || gameSpreadWarning || skillBalanceWarning
+          ? '대진 완료 · 품질 경고'
+          : '대진 검증 완료',
+      )
       meetingGenerationEndTimerRef.current = null
     }, 500)
   }, [
@@ -1426,6 +1479,9 @@ function App() {
     isMeetingGenerating,
     meetingOperationLabel,
     schedule,
+    gameSpreadWarning,
+    skillBalanceWarning,
+    scheduleWaitAnalysis,
   ])
   const displayNames = useMemo(() => makePlayerNameLookup(players), [players])
   const scheduleDisplayNames = useMemo(
@@ -1858,9 +1914,13 @@ function App() {
         ) / participantWaitStats.length,
       )
     : 0
-  const meetingMaximumWaitMinutes = participantWaitStats.length
-    ? Math.max(...participantWaitStats.map((stat) => stat.maxWaitMinutes ?? 0))
-    : 0
+  const meetingMaximumWaitMinutes = scheduleWaitAnalysis.maximumWaitMinutes
+  const gameCountFlexibleParticipantCount = scheduledActiveMembers.filter(
+    (player) => player.gameCountFlexible,
+  ).length
+  const waitTimeFlexibleParticipantCount = scheduledActiveMembers.filter(
+    (player) => player.waitTimeFlexible,
+  ).length
   const meetingGroupCounts = new Map<string, number>()
   for (const match of allScheduledMatches) {
     const key = [...match.teamA, ...match.teamB]
@@ -2758,7 +2818,7 @@ function App() {
       setGeneratedMeetingSettings(nextSettings)
       clearMeetingScheduleState()
       setMeetingOperationLabel('대진 검증 중')
-      setMeetingGenerationMessage('참가자 중복과 코트 배정을 확인하고 있습니다.')
+      setMeetingGenerationMessage('참가자 중복, 코트, 25분 대기를 확인하고 있습니다.')
       meetingGenerationStartTimerRef.current = null
     }, 60)
   }
@@ -2777,7 +2837,7 @@ function App() {
     startMeetingGeneration(
       {
         ...generatedMeetingSettings,
-        seed: generatedMeetingSettings.seed + 1,
+        seed: generatedMeetingSettings.seed + MEETING_GENERATION_ATTEMPTS,
       },
       '새 대진 생성됨',
       true,
@@ -3630,11 +3690,18 @@ function App() {
             meetingOperationLabel === '대진 검증 실패' ? (
               <span
                 className={`generation-result-icon ${
-                  meetingOperationLabel === '대진 완료' ? 'success' : 'failure'
+                  meetingOperationLabel === '대진 완료'
+                    ? scheduleWaitAnalysis.exceedsLimit
+                      ? 'warning'
+                      : 'success'
+                    : 'failure'
                 }`}
                 aria-hidden="true"
               >
-                {meetingOperationLabel === '대진 완료' ? '✓' : '!'}
+                {meetingOperationLabel === '대진 완료' &&
+                !scheduleWaitAnalysis.exceedsLimit
+                  ? '✓'
+                  : '!'}
               </span>
             ) : (
               <span className="generation-spinner" aria-hidden="true" />
@@ -3644,8 +3711,16 @@ function App() {
             {meetingOperationLabel === '대진 완료' ? (
               <div className="generation-review-summary">
                 <span>중복 <strong>0건</strong></span>
-                <span>경기 <strong>{minimumParticipantGames}~{maximumParticipantGames}경기</strong></span>
+                <span className={scheduleQualityAnalysis.standardGameSpread > 1 ? 'wait-warning' : ''}>
+                  경기 <strong>{minimumParticipantGames}~{maximumParticipantGames}경기</strong>
+                </span>
                 <span>동일 4인 최대 <strong>{maximumMeetingGroupCount}경기</strong></span>
+                <span className={scheduleQualityAnalysis.maximumPartnerMeetings > 2 ? 'wait-warning' : ''}>
+                  파트너 반복 최대 <strong>{scheduleQualityAnalysis.maximumPartnerMeetings}회</strong>
+                </span>
+                <span className={scheduleQualityAnalysis.teamSkillWarningMatches > 0 ? 'wait-warning' : ''}>
+                  실력 차 경고 <strong>{scheduleQualityAnalysis.teamSkillWarningMatches}경기</strong>
+                </span>
                 <span>
                   스페셜 <strong>
                     {hasScheduledActiveGuests
@@ -3658,7 +3733,17 @@ function App() {
                   </strong>
                 </span>
                 <span>평균 대기 <strong>{meetingAverageWaitMinutes}분</strong></span>
-                <span>최장 대기 <strong>{meetingMaximumWaitMinutes}분</strong></span>
+                <span className={scheduleWaitAnalysis.exceedsLimit ? 'wait-warning' : ''}>
+                  최장 대기 <strong>{meetingMaximumWaitMinutes}분</strong>
+                </span>
+                <span className={scheduleQualityAnalysis.participantsOverWaitLimit > 0 ? 'wait-warning' : ''}>
+                  25분 초과 <strong>{scheduleQualityAnalysis.participantsOverWaitLimit}명</strong>
+                </span>
+                <span>
+                  양보 설정 <strong>
+                    경기 {gameCountFlexibleParticipantCount} · 대기 {waitTimeFlexibleParticipantCount}
+                  </strong>
+                </span>
                 <span>총 <strong>{totalMatches}경기</strong></span>
               </div>
             ) : null}
@@ -4513,6 +4598,7 @@ function App() {
                   <label className="condition-row" key={key}>
                     <input
                       type="checkbox"
+                      disabled={key === 'waitPriority' || key === 'fairGames'}
                       checked={
                         settings.conditionOptions?.[key] ??
                         defaultMatchConditionOptions[key]
@@ -4654,6 +4740,40 @@ function App() {
                         {rawName && displayName !== rawName ? (
                           <div className="name-display-hint">표시명 {displayName}</div>
                         ) : null}
+                        {!isSpecialLevel ? (
+                          <div className="player-flex-options">
+                            <label
+                              className="checkbox-label"
+                              title="일반 참가자보다 최대 1경기 적게 배정할 수 있습니다."
+                            >
+                              <input
+                                type="checkbox"
+                                checked={player.gameCountFlexible ?? false}
+                                onChange={(event) =>
+                                  updatePlayer(player.id, {
+                                    gameCountFlexible: event.target.checked,
+                                  })
+                                }
+                              />
+                              경기 수 양보 가능
+                            </label>
+                            <label
+                              className="checkbox-label"
+                              title="25분을 넘지 않는 범위에서 긴 대기를 우선 부담합니다."
+                            >
+                              <input
+                                type="checkbox"
+                                checked={player.waitTimeFlexible ?? false}
+                                onChange={(event) =>
+                                  updatePlayer(player.id, {
+                                    waitTimeFlexible: event.target.checked,
+                                  })
+                                }
+                              />
+                              25분 내 긴 대기 가능
+                            </label>
+                          </div>
+                        ) : null}
                         <div className={isSpecialLevel ? 'row-fields single-field' : 'row-fields'}>
                           <label>
                             레벨
@@ -4670,6 +4790,8 @@ function App() {
                                         gender: 'none' as Gender,
                                         specialRequired: false,
                                         specialMatchEligible: false,
+                                        gameCountFlexible: false,
+                                        waitTimeFlexible: false,
                                       }
                                     : {
                                         isGuest: false,
@@ -5046,9 +5168,9 @@ function App() {
             </section>
           ) : null}
 
-          {schedule.warnings.length > 0 ? (
+          {meetingWarnings.length > 0 ? (
             <div className="warning-strip">
-              {schedule.warnings.map((warning) => (
+              {meetingWarnings.map((warning) => (
                 <span key={warning}>{warning}</span>
               ))}
             </div>
@@ -5223,10 +5345,16 @@ function App() {
                     </div>
                     <div className="match-grid">
                       {round.matches.map((match, matchIndex) => {
+                        const skillWarningLevel = getMatchSkillWarningLevel(match)
+                        const skillWarningClass = skillWarningLevel === 'danger'
+                          ? 'skill-balance-danger'
+                          : skillWarningLevel === 'caution'
+                            ? 'skill-balance-caution'
+                            : ''
                         if (collapsedMatchIds[match.id]) {
                           return (
                             <article
-                              className="match-card collapsed-match-card"
+                              className={`match-card collapsed-match-card ${skillWarningClass}`}
                               key={match.id}
                             >
                               <strong>{matchIndex + 1}번</strong>
@@ -5317,7 +5445,7 @@ function App() {
                           <article
                             className={`match-card ${
                               match.isSpecial ? 'special-match' : ''
-                            }`}
+                            } ${skillWarningClass}`}
                             key={match.id}
                           >
                             <header>
@@ -5354,6 +5482,13 @@ function App() {
                                       미션
                                     </button>
                                   </>
+                                ) : null}
+                                {skillWarningLevel !== 'none' ? (
+                                  <strong className={`skill-balance-badge ${skillWarningClass}`}>
+                                    {skillWarningLevel === 'danger'
+                                      ? '실력 차 큼'
+                                      : '실력 차 주의'}
+                                  </strong>
                                 ) : null}
                                 {match.isSpecial ? <strong>스페셜</strong> : null}
                               </div>

@@ -55,6 +55,8 @@ export type Player = {
   matchLevelTier?: number
   isGuest: boolean
   guestGameLimit: number
+  gameCountFlexible?: boolean
+  waitTimeFlexible?: boolean
 }
 
 export type MatchSettings = {

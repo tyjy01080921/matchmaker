@@ -53,4 +53,14 @@ describe('parseBulkPlayerDrafts', () => {
       ageGroup: '55대이상',
     })
   })
+
+  it('recognizes game and wait flexibility tokens', () => {
+    const [player] = parseBulkPlayerDrafts('홍길동 B 경기양보 대기양보')
+
+    expect(player).toMatchObject({
+      name: '홍길동',
+      gameCountFlexible: true,
+      waitTimeFlexible: true,
+    })
+  })
 })
