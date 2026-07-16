@@ -542,6 +542,50 @@ describe('generateSchedule', () => {
     expect(applied.rounds[0].matches[0]).toEqual(left)
   })
 
+  it('recalculates special metadata after a manual lineup change', () => {
+    const guest = makeTestPlayer('metadata-guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 4 }, (_, index) =>
+      makeTestPlayer(`metadata-regular-${index + 1}`, 'B'),
+    )
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 1,
+      targetRoundCount: 1,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 1,
+      specialTimeLimitEnabled: false,
+    })
+    const match = schedule.rounds[0].matches[0]
+    const originalRegular = [...match.teamA, ...match.teamB]
+      .find((player) => !player.isGuest)!
+    const replacement = regulars.find((player) =>
+      ![...match.teamA, ...match.teamB].some(
+        (scheduled) => scheduled.id === player.id,
+      ),
+    )!
+    const replaceId = (id: string) =>
+      id === originalRegular.id ? replacement.id : id
+    const applied = applyMeetingLineups(
+      {
+        ...schedule,
+        specialCompletedIds: [],
+        guestGameCounts: {},
+      },
+      [guest, ...regulars],
+      {
+        [match.id]: {
+          teamAPlayerIds: match.teamA.map((player) => replaceId(player.id)),
+          teamBPlayerIds: match.teamB.map((player) => replaceId(player.id)),
+        },
+      },
+    )
+
+    expect(applied.guestGameCounts[guest.id]).toBe(1)
+    expect(applied.specialCompletedIds).toContain(replacement.id)
+    expect(applied.specialCompletedIds).not.toContain(originalRegular.id)
+  })
+
   it('reports participant and court overlaps during schedule validation', () => {
     const players = Array.from({ length: 8 }, (_, index) =>
       makeTestPlayer(`validation-${index + 1}`, 'B'),

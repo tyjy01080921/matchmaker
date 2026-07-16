@@ -1441,6 +1441,8 @@ function App() {
   const [rouletteWinnerName, setRouletteWinnerName] = useState('')
   const [isRouletteSpinning, setIsRouletteSpinning] = useState(false)
   const [isMeetingGenerating, setIsMeetingGenerating] = useState(false)
+  const [isMeetingStatusRefreshing, setIsMeetingStatusRefreshing] = useState(false)
+  const [meetingWarningsReconciled, setMeetingWarningsReconciled] = useState(false)
   const [meetingGenerationMessage, setMeetingGenerationMessage] = useState('')
   const [meetingOperationLabel, setMeetingOperationLabel] = useState('대진 생성 중')
   const meetingPrintPreviewRef = useRef<HTMLElement | null>(null)
@@ -1449,6 +1451,7 @@ function App() {
   const rouletteTimerRef = useRef<number | null>(null)
   const meetingGenerationStartTimerRef = useRef<number | null>(null)
   const meetingGenerationEndTimerRef = useRef<number | null>(null)
+  const meetingStatusRefreshTimerRef = useRef<number | null>(null)
   const meetingGenerationCompletedNoticeRef = useRef('대진 완료')
   const isRosterDrafting = !playerDetailsOpen || players.length === 0
   const showBulkPlayerInput = bulkOpen || isRosterDrafting
@@ -1478,6 +1481,9 @@ function App() {
     generatedMeetingPlayers,
     meetingLineups,
   ), [generatedMeetingPlayers, meetingLineups, pairMixes, rawSchedule])
+  useEffect(() => {
+    setMeetingWarningsReconciled(false)
+  }, [generatedMeetingPlayers, generatedMeetingSettings])
   const scheduleWaitAnalysis = useMemo(
     () => analyzeScheduleWait(
       schedule,
@@ -1520,6 +1526,74 @@ function App() {
     generatedMeetingSettings,
     schedule,
   ])
+  const displayNames = useMemo(() => makePlayerNameLookup(players), [players])
+  const scheduleDisplayNames = useMemo(
+    () => makePlayerNameLookup(generatedMeetingPlayers),
+    [generatedMeetingPlayers],
+  )
+  const scheduleWarningsForStatus = useMemo(() => {
+    if (!meetingWarningsReconciled) return schedule.warnings
+    return schedule.warnings.filter(
+      (warning) =>
+        !warning.startsWith('동시 품질조건 후보 없음') &&
+        !warning.startsWith('스페셜 경기 미완료:') &&
+        !warning.startsWith('스페셜 경기 미배정:'),
+    )
+  }, [meetingWarningsReconciled, schedule.warnings])
+  const reconciledSpecialWarnings = useMemo(() => {
+    if (!meetingWarningsReconciled) return []
+    const conditions = {
+      ...defaultMatchConditionOptions,
+      ...generatedMeetingSettings.conditionOptions,
+    }
+    if (!conditions.specialMatchCreation) return []
+    const matches = schedule.rounds.flatMap((round) => round.matches)
+    const specialRegularIds = new Set(
+      matches
+        .filter((match) => match.isSpecial)
+        .flatMap((match) => [...match.teamA, ...match.teamB])
+        .filter((player) => !player.isGuest)
+        .map((player) => player.id),
+    )
+    const warnings: string[] = []
+    if (!generatedMeetingSettings.specialLimitEnabled) {
+      const pending = generatedMeetingPlayers.filter(
+        (player) =>
+          player.active &&
+          !player.isGuest &&
+          (player.specialMatchEligible ?? true) &&
+          !specialRegularIds.has(player.id),
+      )
+      if (pending.length > 0) {
+        warnings.push(
+          `스페셜 경기 미완료: ${pending
+            .map((player) => playerDisplayName(player, scheduleDisplayNames))
+            .join(', ')}`,
+        )
+      }
+    }
+    const unplayedGuests = generatedMeetingPlayers.filter(
+      (player) =>
+        player.active &&
+        player.isGuest &&
+        (schedule.guestGameCounts[player.id] ?? 0) === 0,
+    )
+    if (unplayedGuests.length > 0) {
+      warnings.push(
+        `스페셜 경기 미배정: ${unplayedGuests
+          .map((player) => playerDisplayName(player, scheduleDisplayNames))
+          .join(', ')}`,
+      )
+    }
+    return warnings
+  }, [
+    generatedMeetingPlayers,
+    generatedMeetingSettings.conditionOptions,
+    generatedMeetingSettings.specialLimitEnabled,
+    meetingWarningsReconciled,
+    schedule,
+    scheduleDisplayNames,
+  ])
   const skillBalanceWarning = scheduleQualityAnalysis.teamSkillWarningMatches > 0
     ? `실력 차 주의 ${scheduleQualityAnalysis.teamSkillWarningMatches}경기 · 대진 카드 확인`
     : null
@@ -1529,7 +1603,7 @@ function App() {
   const groupRepeatWarning = scheduleQualityAnalysis.maximumGroupMeetings > 2
     ? `동일 4인 최대 ${scheduleQualityAnalysis.maximumGroupMeetings}경기`
     : null
-  const candidateQualityWarning = schedule.warnings.find((warning) =>
+  const candidateQualityWarning = scheduleWarningsForStatus.find((warning) =>
     warning.startsWith('동시 품질조건 후보 없음'),
   ) ?? null
   const hasMeetingQualityWarning = Boolean(
@@ -1541,13 +1615,21 @@ function App() {
   )
   const meetingWarnings = useMemo(
     () => [
-      ...schedule.warnings,
+      ...scheduleWarningsForStatus,
+      ...reconciledSpecialWarnings,
       ...(scheduleWaitAnalysis.warning ? [scheduleWaitAnalysis.warning] : []),
       ...(skillBalanceWarning ? [skillBalanceWarning] : []),
       ...(gameSpreadWarning ? [gameSpreadWarning] : []),
       ...(groupRepeatWarning ? [groupRepeatWarning] : []),
     ],
-    [gameSpreadWarning, groupRepeatWarning, schedule.warnings, scheduleWaitAnalysis.warning, skillBalanceWarning],
+    [
+      gameSpreadWarning,
+      groupRepeatWarning,
+      reconciledSpecialWarnings,
+      scheduleWaitAnalysis.warning,
+      scheduleWarningsForStatus,
+      skillBalanceWarning,
+    ],
   )
   useEffect(() => {
     if (!isMeetingGenerating || meetingOperationLabel !== '대진 검증 중') return
@@ -1602,11 +1684,6 @@ function App() {
     skillBalanceWarning,
     scheduleWaitAnalysis,
   ])
-  const displayNames = useMemo(() => makePlayerNameLookup(players), [players])
-  const scheduleDisplayNames = useMemo(
-    () => makePlayerNameLookup(generatedMeetingPlayers),
-    [generatedMeetingPlayers],
-  )
   const stats = useMemo(
     () =>
       calculateStats(
@@ -2006,17 +2083,11 @@ function App() {
     ? Math.min(...scheduleParticipantStats.map((stat) => stat.games))
     : 0
   const maximumParticipants = scheduleParticipantStats
-    .filter(
-      (stat) =>
-        stat.games === maximumParticipantGames && stat.games > averageGames,
-    )
+    .filter((stat) => stat.games === maximumParticipantGames)
     .map((stat) => playerDisplayName(stat.player, scheduleDisplayNames))
     .join(', ')
   const minimumParticipants = scheduleParticipantStats
-    .filter(
-      (stat) =>
-        stat.games === minimumParticipantGames && stat.games < averageGames,
-    )
+    .filter((stat) => stat.games === minimumParticipantGames)
     .map((stat) => playerDisplayName(stat.player, scheduleDisplayNames))
     .join(', ')
   const maximumParticipantCount = scheduleParticipantStats.filter(
@@ -2286,6 +2357,9 @@ function App() {
       if (meetingGenerationEndTimerRef.current !== null) {
         window.clearTimeout(meetingGenerationEndTimerRef.current)
       }
+      if (meetingStatusRefreshTimerRef.current !== null) {
+        window.clearTimeout(meetingStatusRefreshTimerRef.current)
+      }
     },
     [],
   )
@@ -2335,6 +2409,7 @@ function App() {
     setCollapsedMatchIds({})
     setPrizeDraw((current) => ({ ...current, matchMissions: {} }))
     setPrintImageUrls([])
+    setMeetingWarningsReconciled(false)
   }
 
   const resetMeetingTargetRounds = () => {
@@ -2848,6 +2923,7 @@ function App() {
     setMeetingOperationLabel('교체 확인 중')
     setMeetingGenerationMessage('동일 시간 중복과 맞교환 위치를 확인하고 있습니다.')
     setIsMeetingGenerating(true)
+    setMeetingWarningsReconciled(false)
     setNotice('교체 확인 중')
     meetingGenerationEndTimerRef.current = window.setTimeout(() => {
       setMeetingLineups((current) => {
@@ -2879,6 +2955,63 @@ function App() {
       setNotice(swapped.changedMatchIds.length > 1 ? '맞교환 완료' : '교체 완료')
       meetingGenerationEndTimerRef.current = null
     }, 800)
+  }
+
+  const refreshMeetingStatus = () => {
+    if (isMeetingStatusRefreshing) return
+    const changedCompletedMatchIds = Object.keys(meetingLineups).filter(
+      (matchId) => {
+        const result = results[matchId]
+        return Boolean(result?.completed || result?.winnerSide)
+      },
+    )
+    const resetChangedResults =
+      changedCompletedMatchIds.length > 0 &&
+      window.confirm(
+        `수동 수정된 완료 경기 ${changedCompletedMatchIds.length}개의 결과가 있습니다.\n` +
+        '실제 참가자가 교체됐다면 확인을 눌러 결과를 초기화하세요.\n' +
+        '명단 입력 오류 수정이었다면 취소를 눌러 결과를 유지합니다.',
+      )
+
+    if (meetingStatusRefreshTimerRef.current !== null) {
+      window.clearTimeout(meetingStatusRefreshTimerRef.current)
+    }
+    setIsMeetingStatusRefreshing(true)
+    setNotice('대진 분석 중')
+    meetingStatusRefreshTimerRef.current = window.setTimeout(() => {
+      if (resetChangedResults) {
+        const resetIds = new Set(changedCompletedMatchIds)
+        setResults((current) =>
+          Object.fromEntries(
+            Object.entries(current).filter(([matchId]) => !resetIds.has(matchId)),
+          ),
+        )
+      }
+      setPrintImageUrls([])
+      setMeetingWarningsReconciled(true)
+      const issues = validateMeetingSchedule(
+        schedule,
+        generatedMeetingPlayers,
+        generatedMeetingSettings,
+      )
+      const qualityWarningCount = [
+        scheduleWaitAnalysis.exceedsLimit,
+        scheduleQualityAnalysis.standardGameSpread > 1,
+        scheduleQualityAnalysis.maximumGroupMeetings > 2,
+        scheduleQualityAnalysis.teamSkillWarningMatches > 0,
+      ].filter(Boolean).length
+      setIsMeetingStatusRefreshing(false)
+      setNotice(
+        issues.length > 0
+          ? `현황 업데이트 완료 · 검증 문제 ${issues.length}건`
+          : qualityWarningCount > 0
+            ? `현황 업데이트 완료 · 품질 확인 ${qualityWarningCount}건`
+            : resetChangedResults
+              ? '현황 업데이트 완료 · 변경 경기 결과 초기화'
+              : '현황 업데이트 완료',
+      )
+      meetingStatusRefreshTimerRef.current = null
+    }, 450)
   }
 
   const setRegularPlayerCount = (
@@ -3597,6 +3730,7 @@ function App() {
   }
 
   const mixMatch = (matchId: string) => {
+    setMeetingWarningsReconciled(false)
     setPairMixes((current) => ({
       ...current,
       [matchId]: ((current[matchId] ?? 0) + 1) % 3,
@@ -5556,10 +5690,12 @@ function App() {
               <div className="schedule-summary-wide">
                 <span>최다 배정</span>
                 <strong>{maximumParticipantGames}경기 · {maximumParticipantCount}명</strong>
+                <small>{maximumParticipants || '해당 참가자 없음'}</small>
               </div>
               <div className="schedule-summary-wide">
                 <span>최소 배정</span>
                 <strong>{minimumParticipantGames}경기 · {minimumParticipantCount}명</strong>
+                <small>{minimumParticipants || '해당 참가자 없음'}</small>
               </div>
               {generatedMeetingSettings.specialLimitEnabled &&
               generatedMeetingSettings.specialTimeLimitEnabled ? (
@@ -5574,9 +5710,19 @@ function App() {
           </section>
 
           <section className="progress-panel" id="meeting-progress">
-            <div>
+            <div className="progress-heading">
               <span className="eyebrow">진행 상황</span>
               <h2>{progressPercent}%</h2>
+              {!isSharedMode ? (
+                <button
+                  type="button"
+                  className="status-refresh-button"
+                  disabled={isMeetingStatusRefreshing}
+                  onClick={refreshMeetingStatus}
+                >
+                  {isMeetingStatusRefreshing ? '대진 분석 중' : '현황 업데이트'}
+                </button>
+              ) : null}
             </div>
             <div className="progress-meter" aria-label={`경기 진행률 ${progressPercent}%`}>
               <span style={{ width: `${progressPercent}%` }} />

@@ -464,6 +464,34 @@ export const applyMeetingLineups = (
   players: Player[],
   lineups: MeetingLineupsByMatch,
 ): Schedule => {
+  const refreshMetadata = (currentSchedule: Schedule): Schedule => {
+    const matches = currentSchedule.rounds.flatMap((round) => round.matches)
+    const activeGuestIds = players
+      .filter((player) => player.active && player.isGuest)
+      .map((player) => player.id)
+    const guestGameCounts = Object.fromEntries(
+      activeGuestIds.map((guestId) => [
+        guestId,
+        matches.filter((match) =>
+          [...match.teamA, ...match.teamB].some(
+            (player) => player.id === guestId,
+          ),
+        ).length,
+      ]),
+    )
+    const specialCompletedIds = Array.from(new Set(
+      matches
+        .filter((match) => match.isSpecial)
+        .flatMap((match) => [...match.teamA, ...match.teamB])
+        .filter((player) => !player.isGuest)
+        .map((player) => player.id),
+    ))
+    return {
+      ...currentSchedule,
+      specialCompletedIds,
+      guestGameCounts,
+    }
+  }
   const playersById = new Map(
     players.filter((player) => player.active).map((player) => [player.id, player]),
   )
@@ -487,15 +515,15 @@ export const applyMeetingLineups = (
   while (activeLineupIds.size > 0) {
     const nextSchedule = applyActiveLineups()
     const overlap = findScheduleOverlapDetail(nextSchedule)
-    if (!overlap) return nextSchedule
+    if (!overlap) return refreshMetadata(nextSchedule)
     const invalidLineupIds = overlap.matchIds.filter((matchId) =>
       activeLineupIds.has(matchId),
     )
-    if (invalidLineupIds.length === 0) return schedule
+    if (invalidLineupIds.length === 0) return refreshMetadata(schedule)
     for (const matchId of invalidLineupIds) activeLineupIds.delete(matchId)
   }
 
-  return schedule
+  return refreshMetadata(schedule)
 }
 
 export const findScheduleOverlap = (schedule: Schedule): string | null =>

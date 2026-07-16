@@ -406,13 +406,13 @@ const drawScheduleSummary = (options: PrintScheduleOptions) => {
   const detailWidth = (A4_IMAGE_WIDTH - 100 - gap) / 2
   const details = [
     {
-      label: '최다 경기 · 평균 초과',
+      label: '최다 경기 배정자',
       value: summary.maximumParticipants
         ? `${summary.maximumParticipants} · ${summary.maximumGames}경기`
         : '없음',
     },
     {
-      label: '최소 경기 · 평균 미만',
+      label: '최소 경기 배정자',
       value: summary.minimumParticipants
         ? `${summary.minimumParticipants} · ${summary.minimumGames}경기`
         : '없음',
