@@ -7,12 +7,14 @@ import {
   defaultTournamentSettings,
 } from './defaultData'
 import {
+  applyMeetingLineups,
   calculateTournamentMvpCandidates,
   calculateStats,
   generateBalancedTournamentTeams,
   generateSchedule,
   findScheduleOverlap,
   swapMeetingPlayers,
+  validateMeetingSchedule,
   generateTournamentLineups,
   generateTournamentSchedule,
   getPlayerMatchTier,
@@ -141,6 +143,77 @@ describe('generateSchedule', () => {
     expect([...changedMatches[1].teamA, ...changedMatches[1].teamB]
       .some((player) => player.id === outgoing.id)).toBe(true)
     expect(findScheduleOverlap(swapped!.schedule)).toBeNull()
+
+    const lineups = Object.fromEntries(
+      swapped!.changedMatchIds.map((matchId) => {
+        const match = swapped!.schedule.rounds
+          .flatMap((round) => round.matches)
+          .find((candidate) => candidate.id === matchId)!
+        return [matchId, {
+          teamAPlayerIds: match.teamA.map((player) => player.id),
+          teamBPlayerIds: match.teamB.map((player) => player.id),
+        }]
+      }),
+    )
+    const reapplied = applyMeetingLineups(schedule, players, lineups)
+    const findMatch = (candidate: typeof reapplied, matchId: string) =>
+      candidate.rounds
+        .flatMap((round) => round.matches)
+        .find((match) => match.id === matchId)!
+    for (const matchId of swapped!.changedMatchIds) {
+      expect([
+        ...findMatch(reapplied, matchId).teamA,
+        ...findMatch(reapplied, matchId).teamB,
+      ].map((player) => player.id)).toEqual([
+        ...findMatch(swapped!.schedule, matchId).teamA,
+        ...findMatch(swapped!.schedule, matchId).teamB,
+      ].map((player) => player.id))
+    }
+  })
+
+  it('ignores a stale manual lineup that creates a simultaneous overlap', () => {
+    const players = Array.from({ length: 8 }, (_, index) =>
+      makeTestPlayer(`stale-${index + 1}`, 'B'),
+    )
+    const schedule = generateSchedule(players, {
+      ...defaultSettings,
+      courtCount: 2,
+      targetRoundCount: 1,
+    })
+    const [left, right] = schedule.rounds[0].matches
+    const duplicatedPlayer = right.teamA[0]
+    const applied = applyMeetingLineups(schedule, players, {
+      [left.id]: {
+        teamAPlayerIds: [duplicatedPlayer.id, left.teamA[1].id],
+        teamBPlayerIds: left.teamB.map((player) => player.id),
+      },
+    })
+
+    expect(findScheduleOverlap(applied)).toBeNull()
+    expect(applied.rounds[0].matches[0]).toEqual(left)
+  })
+
+  it('reports participant and court overlaps during schedule validation', () => {
+    const players = Array.from({ length: 8 }, (_, index) =>
+      makeTestPlayer(`validation-${index + 1}`, 'B'),
+    )
+    const schedule = generateSchedule(players, {
+      ...defaultSettings,
+      courtCount: 2,
+      targetRoundCount: 1,
+    })
+    const [left, right] = schedule.rounds[0].matches
+    right.court = left.court
+    right.teamA = [left.teamA[0], right.teamA[1]]
+
+    expect(validateMeetingSchedule(schedule, players, {
+      ...defaultSettings,
+      courtCount: 2,
+      targetRoundCount: 1,
+    })).toEqual(expect.arrayContaining([
+      '참가자 동시간 중복',
+      '코트 시간 중복',
+    ]))
   })
 
   it.each([10, 12, 15] as const)('applies a %d-minute duration to regular matches', (minutes) => {
@@ -1068,7 +1141,7 @@ describe('generateSchedule', () => {
     }
   })
 
-  it('reduces repeated four-player groups in a 56-player meeting', () => {
+  it('caps repeated four-player groups in a 56-player meeting', () => {
     const guest = makeTestPlayer('repeat-guest', '스페셜', 'none', false, true)
     const regulars = Array.from({ length: 55 }, (_, index) =>
       makeTestPlayer(
@@ -1109,6 +1182,7 @@ describe('generateSchedule', () => {
       }
       return {
         schedule,
+        maxMeetings: Math.max(0, ...counts.values()),
         duplicates: [...counts.values()].reduce(
           (sum, count) => sum + Math.max(0, count - 1),
           0,
@@ -1126,8 +1200,9 @@ describe('generateSchedule', () => {
         ).length,
     )
 
-    expect(enabled.duplicates).toBe(0)
+    expect(enabled.maxMeetings).toBeLessThanOrEqual(2)
     expect(enabled.duplicates).toBeLessThan(disabled.duplicates)
+    expect(findScheduleOverlap(enabled.schedule)).toBeNull()
     expect(enabled.schedule.rounds).toHaveLength(12)
     expect(enabled.schedule.rounds.every((round) => round.matches.length === 6)).toBe(true)
     expect(Math.max(...regularGameCounts) - Math.min(...regularGameCounts)).toBeLessThanOrEqual(1)

@@ -37,6 +37,7 @@ export const defaultLevelTiers: LevelTierTable = {
 export const defaultMatchConditionOptions: MatchConditionOptions = {
   fairGames: true,
   restBalance: true,
+  waitPriority: true,
   levelBalance: true,
   ageBalance: true,
   genderBalance: true,

@@ -30,6 +30,7 @@ import {
   makeNumberedTournamentPlayers,
   swapMeetingPlayers,
   tournamentParticipantsFromTeams,
+  validateMeetingSchedule,
 } from './matchmaker'
 import {
   decodeSharePayload,
@@ -195,6 +196,7 @@ const matchConditionKeys: MatchConditionKey[] = [
   'genderBalance',
   'fairGames',
   'restBalance',
+  'waitPriority',
   'partnerRepeat',
   'opponentRepeat',
   'groupRepeat',
@@ -209,9 +211,10 @@ const matchConditionLabels: Record<MatchConditionKey, string> = {
   genderBalance: '동일 성별 우선',
   fairGames: '경기 수 균등',
   restBalance: '휴식 균형',
+  waitPriority: '최장 대기 25분 우선',
   partnerRepeat: '파트너 반복 최소',
   opponentRepeat: '상대 반복 최소',
-  groupRepeat: '같은 4인 조합 최소',
+  groupRepeat: '같은 4인 최대 2경기',
   specialPriority: '스페셜 우선',
   guestPartnerRepeat: '스페셜 파트너 반복 최소',
   ageBalance: '연령대 균형',
@@ -1367,6 +1370,7 @@ function App() {
   const rouletteTimerRef = useRef<number | null>(null)
   const meetingGenerationStartTimerRef = useRef<number | null>(null)
   const meetingGenerationEndTimerRef = useRef<number | null>(null)
+  const meetingGenerationCompletedNoticeRef = useRef('대진 완료')
   const isRosterDrafting = !playerDetailsOpen || players.length === 0
   const showBulkPlayerInput = bulkOpen || isRosterDrafting
   const hasMeetingDraftChanges = useMemo(
@@ -1391,6 +1395,38 @@ function App() {
     generatedMeetingPlayers,
     meetingLineups,
   ), [generatedMeetingPlayers, meetingLineups, pairMixes, rawSchedule])
+  useEffect(() => {
+    if (!isMeetingGenerating || meetingOperationLabel !== '대진 검증 중') return
+    if (meetingGenerationEndTimerRef.current !== null) {
+      window.clearTimeout(meetingGenerationEndTimerRef.current)
+    }
+
+    meetingGenerationEndTimerRef.current = window.setTimeout(() => {
+      const issues = validateMeetingSchedule(
+        schedule,
+        generatedMeetingPlayers,
+        generatedMeetingSettings,
+      )
+      if (issues.length > 0) {
+        setMeetingOperationLabel('대진 검증 실패')
+        setMeetingGenerationMessage(issues.join(' · '))
+        setNotice('대진 검증 실패')
+        meetingGenerationEndTimerRef.current = null
+        return
+      }
+
+      setMeetingOperationLabel('대진 완료')
+      setMeetingGenerationMessage('참가자와 코트 중복 검증을 마쳤습니다.')
+      setNotice('대진 검증 완료')
+      meetingGenerationEndTimerRef.current = null
+    }, 500)
+  }, [
+    generatedMeetingPlayers,
+    generatedMeetingSettings,
+    isMeetingGenerating,
+    meetingOperationLabel,
+    schedule,
+  ])
   const displayNames = useMemo(() => makePlayerNameLookup(players), [players])
   const scheduleDisplayNames = useMemo(
     () => makePlayerNameLookup(generatedMeetingPlayers),
@@ -1810,6 +1846,32 @@ function App() {
   ).length
   const minimumParticipantCount = scheduleParticipantStats.filter(
     (stat) => stat.games === minimumParticipantGames,
+  ).length
+  const participantWaitStats = scheduleParticipantStats.filter(
+    (stat) => stat.averageWaitMinutes !== null && stat.maxWaitMinutes !== null,
+  )
+  const meetingAverageWaitMinutes = participantWaitStats.length
+    ? Math.round(
+        participantWaitStats.reduce(
+          (sum, stat) => sum + (stat.averageWaitMinutes ?? 0),
+          0,
+        ) / participantWaitStats.length,
+      )
+    : 0
+  const meetingMaximumWaitMinutes = participantWaitStats.length
+    ? Math.max(...participantWaitStats.map((stat) => stat.maxWaitMinutes ?? 0))
+    : 0
+  const meetingGroupCounts = new Map<string, number>()
+  for (const match of allScheduledMatches) {
+    const key = [...match.teamA, ...match.teamB]
+      .map((player) => player.id)
+      .sort()
+      .join('|')
+    meetingGroupCounts.set(key, (meetingGroupCounts.get(key) ?? 0) + 1)
+  }
+  const maximumMeetingGroupCount = Math.max(0, ...meetingGroupCounts.values())
+  const scheduledSpecialMatchCount = allScheduledMatches.filter(
+    (match) => match.isSpecial,
   ).length
   const activeTournamentTeams = tournamentTeams.filter(
     (team) => team.active && team.name.trim(),
@@ -2666,9 +2728,11 @@ function App() {
   const startMeetingGeneration = (
     nextSettings: MatchSettings,
     completedNotice: string,
+    force = false,
   ) => {
-    if (isMeetingGenerating) return
+    if (isMeetingGenerating && !force) return
     setMeetingOperationLabel('대진 생성 중')
+    meetingGenerationCompletedNoticeRef.current = completedNotice
 
     if (meetingGenerationStartTimerRef.current !== null) {
       window.clearTimeout(meetingGenerationStartTimerRef.current)
@@ -2693,14 +2757,42 @@ function App() {
       setGeneratedMeetingPlayers(playerSnapshot)
       setGeneratedMeetingSettings(nextSettings)
       clearMeetingScheduleState()
+      setMeetingOperationLabel('대진 검증 중')
+      setMeetingGenerationMessage('참가자 중복과 코트 배정을 확인하고 있습니다.')
       meetingGenerationStartTimerRef.current = null
-      meetingGenerationEndTimerRef.current = window.setTimeout(() => {
-        setIsMeetingGenerating(false)
-        setView('schedule')
-        setNotice(completedNotice)
-        meetingGenerationEndTimerRef.current = null
-      }, 1000)
     }, 60)
+  }
+
+  const acceptGeneratedMeeting = () => {
+    if (meetingGenerationEndTimerRef.current !== null) {
+      window.clearTimeout(meetingGenerationEndTimerRef.current)
+      meetingGenerationEndTimerRef.current = null
+    }
+    setIsMeetingGenerating(false)
+    setView('schedule')
+    setNotice(meetingGenerationCompletedNoticeRef.current)
+  }
+
+  const regenerateReviewedMeeting = () => {
+    startMeetingGeneration(
+      {
+        ...generatedMeetingSettings,
+        seed: generatedMeetingSettings.seed + 1,
+      },
+      '새 대진 생성됨',
+      true,
+    )
+  }
+
+  const returnToMeetingSettings = () => {
+    if (meetingGenerationEndTimerRef.current !== null) {
+      window.clearTimeout(meetingGenerationEndTimerRef.current)
+      meetingGenerationEndTimerRef.current = null
+    }
+    setIsMeetingGenerating(false)
+    setSettingsOpen(true)
+    setNotice('설정 확인 필요')
+    window.setTimeout(() => scrollToSection('meeting-settings'), 0)
   }
 
   const reshuffle = () => {
@@ -3518,15 +3610,73 @@ function App() {
       {isMeetingGenerating ? (
         <div
           className="generation-overlay"
-          role="status"
+          role="dialog"
+          aria-modal="true"
           aria-live="polite"
           aria-label={meetingOperationLabel}
         >
-          <div className="generation-card">
+          <div className={`generation-card ${
+            meetingOperationLabel === '대진 완료' ||
+            meetingOperationLabel === '대진 검증 실패'
+              ? 'review'
+              : ''
+          }`}>
             <img src={amaLogo} alt="A.M.A" />
-            <span className="generation-spinner" aria-hidden="true" />
+            {meetingOperationLabel === '대진 완료' ||
+            meetingOperationLabel === '대진 검증 실패' ? (
+              <span
+                className={`generation-result-icon ${
+                  meetingOperationLabel === '대진 완료' ? 'success' : 'failure'
+                }`}
+                aria-hidden="true"
+              >
+                {meetingOperationLabel === '대진 완료' ? '✓' : '!'}
+              </span>
+            ) : (
+              <span className="generation-spinner" aria-hidden="true" />
+            )}
             <strong>{meetingOperationLabel}</strong>
             <p>{meetingGenerationMessage}</p>
+            {meetingOperationLabel === '대진 완료' ? (
+              <div className="generation-review-summary">
+                <span>중복 <strong>0건</strong></span>
+                <span>경기 <strong>{minimumParticipantGames}~{maximumParticipantGames}경기</strong></span>
+                <span>동일 4인 최대 <strong>{maximumMeetingGroupCount}경기</strong></span>
+                <span>
+                  스페셜 <strong>
+                    {hasScheduledActiveGuests
+                      ? `${scheduledSpecialMatchCount}${
+                          generatedMeetingSettings.specialLimitEnabled
+                            ? `/${specialLimitMatchCapacity}`
+                            : ''
+                        }경기`
+                      : '없음'}
+                  </strong>
+                </span>
+                <span>평균 대기 <strong>{meetingAverageWaitMinutes}분</strong></span>
+                <span>최장 대기 <strong>{meetingMaximumWaitMinutes}분</strong></span>
+                <span>총 <strong>{totalMatches}경기</strong></span>
+              </div>
+            ) : null}
+            {meetingOperationLabel === '대진 완료' ? (
+              <div className="generation-review-actions">
+                <button type="button" className="primary-action" onClick={acceptGeneratedMeeting}>
+                  이 대진 사용
+                </button>
+                <button type="button" onClick={regenerateReviewedMeeting}>
+                  다시 생성
+                </button>
+              </div>
+            ) : meetingOperationLabel === '대진 검증 실패' ? (
+              <div className="generation-review-actions">
+                <button type="button" className="primary-action" onClick={returnToMeetingSettings}>
+                  다시 설정
+                </button>
+                <button type="button" onClick={regenerateReviewedMeeting}>
+                  재생성
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -3856,7 +4006,7 @@ function App() {
       <main className={`app-shell ${isSharedMode ? 'shared-shell' : ''}`}>
         {!isSharedMode ? (
         <aside className="control-panel">
-          <section className="panel-section">
+          <section className="panel-section" id="meeting-settings">
             <div className="section-heading">
               <div className="section-title-stack">
                 <div className="title-with-controls">

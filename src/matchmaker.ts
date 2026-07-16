@@ -40,6 +40,8 @@ type HistoryState = {
   opponents: Record<string, number>
   encounters: Record<string, number>
   groups: Record<string, number>
+  lastMatchEnd: Record<string, number>
+  currentStartOffset: number
   specialCompleted: Set<string>
   specialGameCounts: Record<string, number>
   guestGameCounts: Record<string, number>
@@ -74,6 +76,9 @@ const FAIR_GAME_TOTAL_WEIGHT = 100000
 const REPEATED_GROUP_WEIGHT = 2000000
 const MAX_ENCOUNTER_WEIGHT = 60000
 const TOTAL_ENCOUNTER_WEIGHT = 4000
+const MAX_GROUP_MEETINGS = 2
+const WAIT_PRIORITY_MINUTES = 25
+const WAIT_PRIORITY_WEIGHT = 5000
 const GAME_SLOT_MINUTES = 15
 
 const replaceMatchPlayer = (match: Match, outgoingId: string, incoming: Player): Match => ({
@@ -95,18 +100,54 @@ const windowsOverlap = (left: Match, right: Match) => {
   return a.start < b.end && b.start < a.end
 }
 
+type ScheduleOverlap = {
+  playerId: string
+  matchIds: [string, string]
+}
+
+const findScheduleOverlapDetail = (schedule: Schedule): ScheduleOverlap | null => {
+  const matches = schedule.rounds.flatMap((round) => round.matches)
+  for (const match of matches) {
+    const ids = [...match.teamA, ...match.teamB].map((player) => player.id)
+    const duplicate = ids.find((id, index) => ids.indexOf(id) !== index)
+    if (duplicate) {
+      return { playerId: duplicate, matchIds: [match.id, match.id] }
+    }
+  }
+  for (let left = 0; left < matches.length; left += 1) {
+    for (let right = left + 1; right < matches.length; right += 1) {
+      if (!windowsOverlap(matches[left], matches[right])) continue
+      const rightIds = new Set(
+        [...matches[right].teamA, ...matches[right].teamB].map((player) => player.id),
+      )
+      const duplicate = [...matches[left].teamA, ...matches[left].teamB]
+        .find((player) => rightIds.has(player.id))
+      if (duplicate) {
+        return {
+          playerId: duplicate.id,
+          matchIds: [matches[left].id, matches[right].id],
+        }
+      }
+    }
+  }
+  return null
+}
+
 export const applyMeetingLineups = (
   schedule: Schedule,
   players: Player[],
   lineups: MeetingLineupsByMatch,
 ): Schedule => {
-  const playersById = new Map(players.map((player) => [player.id, player]))
-  return {
+  const playersById = new Map(
+    players.filter((player) => player.active).map((player) => [player.id, player]),
+  )
+  const activeLineupIds = new Set(Object.keys(lineups))
+  const applyActiveLineups = (): Schedule => ({
     ...schedule,
     rounds: schedule.rounds.map((round) => ({
       ...round,
       matches: round.matches.map((match) => {
-        const lineup = lineups[match.id]
+        const lineup = activeLineupIds.has(match.id) ? lineups[match.id] : undefined
         if (!lineup) return match
         const teamA = lineup.teamAPlayerIds.map((id) => playersById.get(id)).filter(Boolean)
         const teamB = lineup.teamBPlayerIds.map((id) => playersById.get(id)).filter(Boolean)
@@ -115,26 +156,72 @@ export const applyMeetingLineups = (
           : match
       }),
     })),
+  })
+
+  while (activeLineupIds.size > 0) {
+    const nextSchedule = applyActiveLineups()
+    const overlap = findScheduleOverlapDetail(nextSchedule)
+    if (!overlap) return nextSchedule
+    const invalidLineupIds = overlap.matchIds.filter((matchId) =>
+      activeLineupIds.has(matchId),
+    )
+    if (invalidLineupIds.length === 0) return schedule
+    for (const matchId of invalidLineupIds) activeLineupIds.delete(matchId)
   }
+
+  return schedule
 }
 
-export const findScheduleOverlap = (schedule: Schedule): string | null => {
+export const findScheduleOverlap = (schedule: Schedule): string | null =>
+  findScheduleOverlapDetail(schedule)?.playerId ?? null
+
+export const validateMeetingSchedule = (
+  schedule: Schedule,
+  players: Player[],
+  settings: MatchSettings,
+): string[] => {
+  const issues = new Set<string>()
   const matches = schedule.rounds.flatMap((round) => round.matches)
+  const activeIds = new Set(
+    players.filter((player) => player.active).map((player) => player.id),
+  )
+
+  if (findScheduleOverlapDetail(schedule)) issues.add('참가자 동시간 중복')
+
   for (const match of matches) {
-    const ids = [...match.teamA, ...match.teamB].map((player) => player.id)
-    const duplicate = ids.find((id, index) => ids.indexOf(id) !== index)
-    if (duplicate) return duplicate
-  }
-  for (let left = 0; left < matches.length; left += 1) {
-    for (let right = left + 1; right < matches.length; right += 1) {
-      if (!windowsOverlap(matches[left], matches[right])) continue
-      const rightIds = new Set([...matches[right].teamA, ...matches[right].teamB].map((player) => player.id))
-      const duplicate = [...matches[left].teamA, ...matches[left].teamB]
-        .find((player) => rightIds.has(player.id))
-      if (duplicate) return duplicate.id
+    const matchPlayers = [...match.teamA, ...match.teamB]
+    if (
+      matchPlayers.length !== 4 ||
+      new Set(matchPlayers.map((player) => player.id)).size !== 4
+    ) {
+      issues.add('경기 인원 구성 오류')
+    }
+    if (matchPlayers.some((player) => !activeIds.has(player.id))) {
+      issues.add('비활성 참가자 배정')
+    }
+    if (match.court < 1 || match.court > settings.courtCount) {
+      issues.add('코트 번호 오류')
+    }
+    if (
+      settings.singleGuestPerMatch &&
+      matchPlayers.filter((player) => player.isGuest).length > 1
+    ) {
+      issues.add('스페셜 인원 제한 위반')
     }
   }
-  return null
+
+  for (let left = 0; left < matches.length; left += 1) {
+    for (let right = left + 1; right < matches.length; right += 1) {
+      if (
+        matches[left].court === matches[right].court &&
+        windowsOverlap(matches[left], matches[right])
+      ) {
+        issues.add('코트 시간 중복')
+      }
+    }
+  }
+
+  return [...issues]
 }
 
 export const swapMeetingPlayers = (
@@ -208,6 +295,8 @@ const makeHistory = (players: Player[]): HistoryState => ({
   opponents: {},
   encounters: {},
   groups: {},
+  lastMatchEnd: {},
+  currentStartOffset: 0,
   specialCompleted: new Set<string>(),
   specialGameCounts: emptyCounts(players),
   guestGameCounts: Object.fromEntries(
@@ -1058,11 +1147,13 @@ const createMatch = (
 const updateHistoryForMatch = (history: HistoryState, match: Match) => {
   const players = matchPlayers(match)
   const guestInMatch = hasGuest(players)
+  const matchEnd = matchTimeWindow(match).end
 
   for (const player of players) {
     history.games[player.id] = (history.games[player.id] ?? 0) + 1
     history.restStreaks[player.id] = 0
     history.playStreaks[player.id] = (history.playStreaks[player.id] ?? 0) + 1
+    history.lastMatchEnd[player.id] = matchEnd
     if (player.isGuest) {
       history.guestGameCounts[player.id] = (history.guestGameCounts[player.id] ?? 0) + 1
     } else if (guestInMatch) {
@@ -1116,6 +1207,14 @@ const consecutivePlayPenalty = (player: Player, history: HistoryState) => {
   return 780 + (streak - 3) * 360
 }
 
+const waitPriorityValue = (player: Player, history: HistoryState) => {
+  const lastMatchEnd = history.lastMatchEnd[player.id]
+  if (lastMatchEnd === undefined) return 0
+  const waitMinutes = Math.max(0, history.currentStartOffset - lastMatchEnd)
+  const urgency = Math.max(0, waitMinutes - (WAIT_PRIORITY_MINUTES - 10))
+  return urgency * urgency * WAIT_PRIORITY_WEIGHT
+}
+
 const groupConsecutivePlayPenalty = (
   players: Player[],
   history: HistoryState,
@@ -1150,6 +1249,7 @@ const playerPriority = (
   (conditions.fairGames
     ? (history.games[player.id] ?? 0) * FAIR_GAME_MAX_WEIGHT
     : 0) -
+  (conditions.waitPriority ? waitPriorityValue(player, history) : 0) -
   (conditions.restBalance ? (history.restStreaks[player.id] ?? 0) * 18 : 0) -
   (conditions.restBalance ? (history.rests[player.id] ?? 0) * 4 : 0) +
   (conditions.restBalance ? consecutivePlayPenalty(player, history) : 0) +
@@ -1157,6 +1257,12 @@ const playerPriority = (
 
 const uniquePlayers = (players: Player[]) =>
   Array.from(new Map(players.map((player) => [player.id, player])).values())
+
+const groupMeetingCount = (players: Player[], history: HistoryState) =>
+  history.groups[groupKey(players)] ?? 0
+
+const groupHasMeetingCapacity = (players: Player[], history: HistoryState) =>
+  groupMeetingCount(players, history) < MAX_GROUP_MEETINGS
 
 const groupRepeatPenalty = (
   players: Player[],
@@ -1175,7 +1281,8 @@ const groupRepeatPenalty = (
   }
 
   return (
-    (history.groups[groupKey(players)] ?? 0) * REPEATED_GROUP_WEIGHT +
+    Math.max(0, groupMeetingCount(players, history) - 1) *
+      REPEATED_GROUP_WEIGHT +
     Math.max(0, ...encounterCounts) * MAX_ENCOUNTER_WEIGHT +
     encounterCounts.reduce((sum, count) => sum + count, 0) *
       TOTAL_ENCOUNTER_WEIGHT
@@ -1366,6 +1473,8 @@ const pickSpecialRegulars = (
 
   let bestGroup: [Player, Player, Player] | null = null
   let bestScore: SpecialRegularScore | null = null
+  let fallbackGroup: [Player, Player, Player] | null = null
+  let fallbackScore: SpecialRegularScore | null = null
 
   for (let a = 0; a < candidatePool.length - 2; a += 1) {
     for (let b = a + 1; b < candidatePool.length - 1; b += 1) {
@@ -1393,6 +1502,19 @@ const pickSpecialRegulars = (
           segment,
         )
         if (
+          fallbackScore === null ||
+          compareSpecialRegularScores(score, fallbackScore, segment) < 0
+        ) {
+          fallbackScore = score
+          fallbackGroup = regulars
+        }
+        if (
+          conditions.groupRepeat &&
+          !groupHasMeetingCapacity([guest, ...regulars], history)
+        ) {
+          continue
+        }
+        if (
           bestScore === null ||
           compareSpecialRegularScores(score, bestScore, segment) < 0
         ) {
@@ -1403,7 +1525,7 @@ const pickSpecialRegulars = (
     }
   }
 
-  return bestGroup
+  return bestGroup ?? fallbackGroup
 }
 
 const pickSingleGuestSpecialGroup = (
@@ -1642,6 +1764,8 @@ const pickAdaptiveSpecialGroup = (
 
   let bestGroup: [Player, Player, Player, Player] | null = null
   let bestScore = Number.POSITIVE_INFINITY
+  let fallbackGroup: [Player, Player, Player, Player] | null = null
+  let fallbackScore = Number.POSITIVE_INFINITY
 
   for (let a = 0; a < candidatePool.length - 3; a += 1) {
     for (let b = a + 1; b < candidatePool.length - 2; b += 1) {
@@ -1676,6 +1800,16 @@ const pickAdaptiveSpecialGroup = (
             conditions,
             pacing,
           )
+          if (score < fallbackScore) {
+            fallbackScore = score
+            fallbackGroup = group
+          }
+          if (
+            conditions.groupRepeat &&
+            !groupHasMeetingCapacity(group, history)
+          ) {
+            continue
+          }
           if (score < bestScore) {
             bestScore = score
             bestGroup = group
@@ -1685,7 +1819,7 @@ const pickAdaptiveSpecialGroup = (
     }
   }
 
-  return bestGroup
+  return bestGroup ?? fallbackGroup
 }
 
 const pickSpecialGroup = (
@@ -1740,6 +1874,12 @@ const scoreGroup = (
   return (
     pairing.score +
     fairGamePenalty(group, history, conditions) +
+    (conditions.waitPriority
+      ? -group.reduce(
+          (sum, player) => sum + waitPriorityValue(player, history),
+          0,
+        )
+      : 0) +
     groupRepeatPenalty(group, history, conditions) +
     (conditions.levelBalance ? levelSpread * 500 * balanceMultiplier : 0) +
     (conditions.ageBalance ? ageSpread * 900 : 0) +
@@ -1804,6 +1944,8 @@ const pickGeneralGroup = (
 
   let bestGroup: [Player, Player, Player, Player] | null = null
   let bestScore = Number.POSITIVE_INFINITY
+  let fallbackGroup: [Player, Player, Player, Player] | null = null
+  let fallbackScore = Number.POSITIVE_INFINITY
 
   for (const anchor of anchorCandidates) {
     const companionCandidates = availablePlayers
@@ -1819,6 +1961,12 @@ const pickGeneralGroup = (
             (history.games[left.player.id] ?? 0) -
             (history.games[right.player.id] ?? 0)
           if (gameDiff !== 0) return gameDiff
+        }
+        if (conditions.waitPriority) {
+          const waitPriorityDiff =
+            waitPriorityValue(right.player, history) -
+            waitPriorityValue(left.player, history)
+          if (waitPriorityDiff !== 0) return waitPriorityDiff
         }
         if (conditions.genderBalance && anchor.gender !== 'none') {
           const genderDiff =
@@ -1863,6 +2011,16 @@ const pickGeneralGroup = (
           if (!isValidGuestGroup(group, settings.singleGuestPerMatch)) continue
 
           const score = scoreGroup(group, history, random, conditions, pacing)
+          if (score < fallbackScore) {
+            fallbackScore = score
+            fallbackGroup = group
+          }
+          if (
+            conditions.groupRepeat &&
+            !groupHasMeetingCapacity(group, history)
+          ) {
+            continue
+          }
           if (score < bestScore) {
             bestScore = score
             bestGroup = group
@@ -1872,7 +2030,7 @@ const pickGeneralGroup = (
     }
   }
 
-  return bestGroup
+  return bestGroup ?? fallbackGroup
 }
 
 const normalizeTournamentCourtCount = (settings: TournamentSettings) => {
@@ -3083,6 +3241,7 @@ export const generateSchedule = (
   for (let roundNumber = 1; roundNumber <= maxAutoRounds; roundNumber += 1) {
     if (settings.roundCountLocked && normalGameMinutes === GAME_SLOT_MINUTES && roundNumber > targetRoundCount) break
     const startOffset = Math.min(...courtAvailableAt)
+    history.currentStartOffset = startOffset
     if (startOffset >= schedulingMinutes) break
     const openCourts = courtAvailableAt
       .map((availableAt, index) => ({ availableAt, court: index + 1 }))
@@ -3101,6 +3260,7 @@ export const generateSchedule = (
 
     const addSpecialMatches = (courts: number[]) => {
       for (const court of courts) {
+        if (matches.some((match) => match.court === court)) continue
         if (startOffset + GAME_SLOT_MINUTES > schedulingMinutes) continue
         const group = pickSpecialGroup(
           activePlayers,

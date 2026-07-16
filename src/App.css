@@ -52,6 +52,73 @@
   word-break: keep-all;
 }
 
+.generation-card.review {
+  width: min(560px, 100%);
+}
+
+.generation-result-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.generation-result-icon.success {
+  background: var(--green);
+}
+
+.generation-result-icon.failure {
+  background: #b42318;
+}
+
+.generation-review-summary {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  text-align: left;
+}
+
+.generation-review-summary > span {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--soft-green);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.generation-review-summary strong {
+  color: var(--navy);
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.generation-review-summary > span:last-child {
+  grid-column: 1 / -1;
+}
+
+.generation-review-actions {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.generation-review-actions button {
+  min-height: 44px;
+}
+
 .generation-spinner {
   width: 34px;
   height: 34px;
@@ -75,6 +142,13 @@
 @media (prefers-reduced-motion: reduce) {
   .generation-spinner {
     animation-duration: 1.8s;
+  }
+}
+
+@media (max-width: 520px) {
+  .generation-review-summary,
+  .generation-review-actions {
+    grid-template-columns: 1fr;
   }
 }
 

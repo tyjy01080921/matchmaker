@@ -30,6 +30,7 @@ export type TournamentFormat =
 export type MatchConditionKey =
   | 'fairGames'
   | 'restBalance'
+  | 'waitPriority'
   | 'levelBalance'
   | 'ageBalance'
   | 'genderBalance'
