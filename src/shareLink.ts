@@ -6,6 +6,7 @@ import type {
   Player,
   PrizeDrawState,
   ResultsByMatch,
+  Schedule,
   TournamentLineupsByMatch,
   TournamentResultsByMatch,
   TournamentSettings,
@@ -14,6 +15,7 @@ import type {
 
 export const SHARE_PARAM = 'share'
 export const SHARE_MODE_PARAM = 'shared'
+export const SHORT_SHARE_PARAM = 's'
 
 export type SharePayload = {
   version: 1
@@ -24,6 +26,7 @@ export type SharePayload = {
   pairMixes: Record<string, number>
   matchNameOverrides?: MatchNameOverrides
   meetingLineups?: MeetingLineupsByMatch
+  meetingSchedule?: Schedule
   appMode?: AppMode
   tournamentTeams?: TournamentTeam[]
   tournamentSettings?: TournamentSettings
@@ -116,6 +119,14 @@ const isSharePayload = (value: unknown): value is SharePayload => {
       )
     ) &&
     (
+      payload.meetingSchedule === undefined ||
+      (
+        typeof payload.meetingSchedule === 'object' &&
+        payload.meetingSchedule !== null &&
+        Array.isArray(payload.meetingSchedule.rounds)
+      )
+    ) &&
+    (
       payload.appMode === undefined ||
       payload.appMode === 'meeting' ||
       payload.appMode === 'tournament'
@@ -155,6 +166,9 @@ const isSharePayload = (value: unknown): value is SharePayload => {
   )
 }
 
+export const parseSharePayload = (value: unknown): SharePayload | null =>
+  isSharePayload(value) ? value : null
+
 export const encodeSharePayload = (payload: SharePayload) =>
   bytesToBase64Url(textEncoder.encode(JSON.stringify(payload)))
 
@@ -164,10 +178,17 @@ export const decodeSharePayload = (value: string): SharePayload | null => {
       textDecoder.decode(base64UrlToBytes(value)),
     ) as unknown
 
-    return isSharePayload(payload) ? payload : null
+    return parseSharePayload(payload)
   } catch {
     return null
   }
+}
+
+export const getShortShareIdFromLocation = (
+  location: Pick<Location, 'search'>,
+) => {
+  const shareId = new URLSearchParams(location.search).get(SHORT_SHARE_PARAM)
+  return shareId && /^[A-Za-z0-9_-]{12}$/.test(shareId) ? shareId : null
 }
 
 export const getShareTokenFromLocation = (

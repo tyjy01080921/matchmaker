@@ -9,6 +9,7 @@ import {
 import {
   analyzeScheduleQuality,
   analyzeScheduleWait,
+  appendGeneralCourtGames,
   applyMeetingLineups,
   calculateTournamentMvpCandidates,
   calculateStats,
@@ -370,31 +371,33 @@ describe('generateSchedule', () => {
   })
 
   it('adds one general game after the last game on every court when time is extended', () => {
-    const players = Array.from({ length: 16 }, (_, index) =>
+    const players = Array.from({ length: 12 }, (_, index) =>
       makeTestPlayer(`extension-${index + 1}`, 'B'),
     )
     const settings = {
       ...defaultSettings,
       courtCount: 2,
       startTime: '18:00',
-      endTime: '19:00',
+      endTime: '18:12',
       normalGameMinutes: 12 as const,
-      targetRoundCount: 4,
-      pacingRoundCount: 4,
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
       roundCountLocked: true,
       seed: 11,
     }
     const original = generateScheduleWithWaitOptimization(players, settings, 5)
+    const originalSnapshot = structuredClone(original)
     const extendedSettings = {
       ...settings,
-      endTime: '19:12',
+      endTime: '18:24',
       targetRoundCount: settings.targetRoundCount + 1,
     }
-    const extended = generateScheduleWithWaitOptimization(
+    const appended = appendGeneralCourtGames(
+      original,
       players,
       extendedSettings,
-      5,
     )
+    const extended = appended.schedule
 
     const matchesOnCourt = (schedule: typeof original, court: number) =>
       schedule.rounds
@@ -422,6 +425,24 @@ describe('generateSchedule', () => {
           (previousLast.durationMinutes ?? 12),
       )
     }
+    expect(original).toEqual(originalSnapshot)
+    expect(appended.addedMatchIds).toHaveLength(2)
+    const originalGameCounts = new Map(
+      players.map((player) => [
+        player.id,
+        original.rounds.flatMap((round) => round.matches).filter((match) =>
+          [...match.teamA, ...match.teamB].some(
+            (matchPlayer) => matchPlayer.id === player.id,
+          )).length,
+      ]),
+    )
+    const minimumOriginalGames = Math.min(...originalGameCounts.values())
+    const firstAddedMatch = extended.rounds
+      .flatMap((round) => round.matches)
+      .find((match) => match.id === appended.addedMatchIds[0])!
+    expect([...firstAddedMatch.teamA, ...firstAddedMatch.teamB].every(
+      (player) => originalGameCounts.get(player.id) === minimumOriginalGames,
+    )).toBe(true)
     expect(validateMeetingSchedule(extended, players, extendedSettings)).toEqual([])
   })
 

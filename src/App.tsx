@@ -21,6 +21,7 @@ import {
 import {
   analyzeScheduleQuality,
   analyzeScheduleWait,
+  appendGeneralCourtGames,
   calculateTournamentMvpCandidates,
   calculateStats,
   applyMeetingLineups,
@@ -41,11 +42,14 @@ import {
 import {
   decodeSharePayload,
   getShareTokenFromLocation,
+  getShortShareIdFromLocation,
   makeShareUrl,
   SHARE_MODE_PARAM,
   SHARE_PARAM,
+  SHORT_SHARE_PARAM,
   type SharePayload,
 } from './shareLink'
+import { createShortShareUrl, loadShortShare, ShortShareError } from './shortShare'
 import {
   makePlayerNameLookup,
   playerDisplayName,
@@ -1030,31 +1034,36 @@ const readStoredState = (): StoredState => {
   }
 }
 
-const storedStateFromSharePayload = (payload: SharePayload): StoredState => ({
-  appMode: normalizeAppMode(payload.appMode),
-  players: payload.players.length
+const storedStateFromSharePayload = (payload: SharePayload): StoredState => {
+  const meetingPlayers = payload.players.length
     ? payload.players.map((player) => normalizeStoredPlayer(player))
-    : defaultPlayers,
-  settings: normalizeMatchSettings(payload.settings),
-  generatedMeetingPlayers: payload.players.length
-    ? payload.players.map((player) => normalizeStoredPlayer(player))
-    : defaultPlayers,
-  generatedMeetingSettings: normalizeMatchSettings(payload.settings),
-  results: payload.results ?? {},
-  pairMixes: payload.pairMixes ?? {},
-  matchNameOverrides: payload.matchNameOverrides ?? {},
-  meetingLineups: payload.meetingLineups ?? {},
-  prizeDraw: normalizePrizeDrawState(payload.prizeDraw),
-  tournamentTeams: payload.tournamentTeams?.length
-    ? payload.tournamentTeams.map((team, index) =>
-        normalizeTournamentTeam(team, index),
-      )
-    : defaultTournamentTeams,
-  tournamentSettings: normalizeTournamentSettings(payload.tournamentSettings),
-  tournamentResults: payload.tournamentResults ?? {},
-  tournamentLineups: normalizeTournamentLineups(payload.tournamentLineups),
-  cachedMeetingSchedule: null,
-})
+    : defaultPlayers
+  const cachedMeetingSchedule = normalizeStoredSchedule(
+    payload.meetingSchedule,
+    meetingPlayers,
+  )
+  return {
+    appMode: normalizeAppMode(payload.appMode),
+    players: meetingPlayers,
+    settings: normalizeMatchSettings(payload.settings),
+    generatedMeetingPlayers: meetingPlayers,
+    generatedMeetingSettings: normalizeMatchSettings(payload.settings),
+    results: payload.results ?? {},
+    pairMixes: cachedMeetingSchedule ? {} : (payload.pairMixes ?? {}),
+    matchNameOverrides: payload.matchNameOverrides ?? {},
+    meetingLineups: cachedMeetingSchedule ? {} : (payload.meetingLineups ?? {}),
+    prizeDraw: normalizePrizeDrawState(payload.prizeDraw),
+    tournamentTeams: payload.tournamentTeams?.length
+      ? payload.tournamentTeams.map((team, index) =>
+          normalizeTournamentTeam(team, index),
+        )
+      : defaultTournamentTeams,
+    tournamentSettings: normalizeTournamentSettings(payload.tournamentSettings),
+    tournamentResults: payload.tournamentResults ?? {},
+    tournamentLineups: normalizeTournamentLineups(payload.tournamentLineups),
+    cachedMeetingSchedule,
+  }
+}
 
 const readSharedState = (): StoredState | null => {
   if (typeof window === 'undefined') return null
@@ -1070,6 +1079,7 @@ const getBaseUrl = () => {
   const url = new URL(window.location.href)
   url.searchParams.delete(SHARE_PARAM)
   url.searchParams.delete(SHARE_MODE_PARAM)
+  url.searchParams.delete(SHORT_SHARE_PARAM)
   url.hash = ''
   return url.toString()
 }
@@ -1450,8 +1460,10 @@ function NumberStepper({
 function App() {
   const initialContext = useMemo(() => {
     const sharedState = readSharedState()
+    const shortShareId = getShortShareIdFromLocation(window.location)
     return {
-      isShared: Boolean(sharedState),
+      isShared: Boolean(sharedState || shortShareId),
+      shortShareId,
       state: sharedState ?? readStoredState(),
     }
   }, [])
@@ -1464,6 +1476,9 @@ function App() {
   )
   const [generatedMeetingSettings, setGeneratedMeetingSettings] =
     useState<MatchSettings>(initialState.generatedMeetingSettings)
+  const [scheduleOverride, setScheduleOverride] = useState<Schedule | null>(
+    initialState.cachedMeetingSchedule,
+  )
   const [results, setResults] = useState<ResultsByMatch>(initialState.results)
   const [pairMixes, setPairMixes] = useState<Record<string, number>>(
     initialState.pairMixes,
@@ -1490,9 +1505,6 @@ function App() {
   const [tournamentLineups, setTournamentLineups] = useState<TournamentLineupsByMatch>(
     initialState.tournamentLineups,
   )
-  const cachedMeetingScheduleRef = useRef(initialState.cachedMeetingSchedule)
-  const cachedMeetingPlayersRef = useRef(initialState.generatedMeetingPlayers)
-  const cachedMeetingSettingsRef = useRef(initialState.generatedMeetingSettings)
   const restoredMeetingNoticePendingRef = useRef(
     Boolean(initialState.cachedMeetingSchedule),
   )
@@ -1542,6 +1554,14 @@ function App() {
   const [isRouletteSpinning, setIsRouletteSpinning] = useState(false)
   const [isMeetingGenerating, setIsMeetingGenerating] = useState(false)
   const [isMeetingStatusRefreshing, setIsMeetingStatusRefreshing] = useState(false)
+  const [isShortShareLoading, setIsShortShareLoading] = useState(
+    Boolean(initialContext.shortShareId),
+  )
+  const [shortShareError, setShortShareError] = useState('')
+  const [browserSaveToast, setBrowserSaveToast] = useState<{
+    message: string
+    error: boolean
+  } | null>(null)
   const [meetingWarningsReconciled, setMeetingWarningsReconciled] = useState(false)
   const [meetingGenerationMessage, setMeetingGenerationMessage] = useState('')
   const [meetingOperationLabel, setMeetingOperationLabel] = useState('대진 생성 중')
@@ -1552,6 +1572,7 @@ function App() {
   const meetingGenerationStartTimerRef = useRef<number | null>(null)
   const meetingGenerationEndTimerRef = useRef<number | null>(null)
   const meetingStatusRefreshTimerRef = useRef<number | null>(null)
+  const browserSaveToastTimerRef = useRef<number | null>(null)
   const meetingGenerationCompletedNoticeRef = useRef('대진 완료')
   const isRosterDrafting = !playerDetailsOpen || players.length === 0
   const showBulkPlayerInput = bulkOpen || isRosterDrafting
@@ -1567,10 +1588,8 @@ function App() {
 
   const rawSchedule = useMemo(
     () =>
-      cachedMeetingScheduleRef.current &&
-      generatedMeetingPlayers === cachedMeetingPlayersRef.current &&
-      generatedMeetingSettings === cachedMeetingSettingsRef.current
-        ? cachedMeetingScheduleRef.current
+      scheduleOverride
+        ? scheduleOverride
         : generatedMeetingPlayers.length === 0
         ? emptyMeetingSchedule
         : generateScheduleWithWaitOptimization(
@@ -1578,7 +1597,7 @@ function App() {
             generatedMeetingSettings,
             MEETING_GENERATION_ATTEMPTS,
           ),
-    [generatedMeetingPlayers, generatedMeetingSettings],
+    [generatedMeetingPlayers, generatedMeetingSettings, scheduleOverride],
   )
   const schedule = useMemo(() => applyMeetingLineups(
     applyPairMixes(rawSchedule, pairMixes),
@@ -2423,6 +2442,7 @@ function App() {
       setSettings(sharedState.settings)
       setGeneratedMeetingPlayers(sharedState.generatedMeetingPlayers)
       setGeneratedMeetingSettings(sharedState.generatedMeetingSettings)
+      setScheduleOverride(sharedState.cachedMeetingSchedule)
       setResults(sharedState.results)
       setPairMixes(sharedState.pairMixes)
       setMatchNameOverrides(sharedState.matchNameOverrides)
@@ -2451,6 +2471,56 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    const shareId = initialContext.shortShareId
+    if (!shareId) return
+    let active = true
+
+    void (async () => {
+      try {
+        const payload = await loadShortShare(shareId)
+        if (!active) return
+        const sharedState = storedStateFromSharePayload(payload)
+        setIsSharedMode(true)
+        setAppMode(sharedState.appMode)
+        setPlayers(sharedState.players)
+        setSettings(sharedState.settings)
+        setGeneratedMeetingPlayers(sharedState.generatedMeetingPlayers)
+        setGeneratedMeetingSettings(sharedState.generatedMeetingSettings)
+        setScheduleOverride(sharedState.cachedMeetingSchedule)
+        setResults(sharedState.results)
+        setPairMixes(sharedState.pairMixes)
+        setMatchNameOverrides(sharedState.matchNameOverrides)
+        setMeetingLineups(sharedState.meetingLineups)
+        setPrizeDraw(sharedState.prizeDraw)
+        setTournamentTeams(sharedState.tournamentTeams)
+        setTournamentSettings(sharedState.tournamentSettings)
+        setTournamentResults(sharedState.tournamentResults)
+        setTournamentLineups(sharedState.tournamentLineups)
+        setPlayerDetailsOpen(sharedState.players.length > 0)
+        setBulkOpen(false)
+        setBulkText('')
+        setView('schedule')
+        setTournamentView('progress')
+        setShortShareError('')
+        setNotice('24시간 공유본')
+      } catch (error) {
+        if (!active) return
+        setShortShareError(
+          error instanceof ShortShareError && error.code === 'expired'
+            ? '공유 링크가 만료되었습니다.'
+            : '공유 대진을 불러오지 못했습니다.',
+        )
+      } finally {
+        if (active) setIsShortShareLoading(false)
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [initialContext.shortShareId])
+
   useEffect(
     () => () => {
       if (rouletteTimerRef.current !== null) {
@@ -2467,6 +2537,9 @@ function App() {
       }
       if (meetingStatusRefreshTimerRef.current !== null) {
         window.clearTimeout(meetingStatusRefreshTimerRef.current)
+      }
+      if (browserSaveToastTimerRef.current !== null) {
+        window.clearTimeout(browserSaveToastTimerRef.current)
       }
     },
     [],
@@ -3357,6 +3430,7 @@ function App() {
     setSettings(defaultSettings)
     setGeneratedMeetingPlayers(defaultPlayers)
     setGeneratedMeetingSettings(defaultSettings)
+    setScheduleOverride(null)
     setResults({})
     setPairMixes({})
     setMatchNameOverrides({})
@@ -3401,6 +3475,7 @@ function App() {
       setSettings(nextSettings)
       setGeneratedMeetingPlayers(playerSnapshot)
       setGeneratedMeetingSettings(nextSettings)
+      setScheduleOverride(null)
       clearMeetingScheduleState()
       setMeetingOperationLabel('대진 검증 중')
       setMeetingGenerationMessage('참가자 중복, 코트, 25분 대기를 확인하고 있습니다.')
@@ -3487,20 +3562,37 @@ function App() {
       getTargetRoundCount(generatedMeetingSettings),
       schedule.rounds.length,
     ) + 1
-    setGeneratedMeetingSettings((current) => ({
-      ...current,
+    const nextSettings: MatchSettings = {
+      ...generatedMeetingSettings,
       endTime,
       targetRoundCount,
       roundCountLocked: true,
-    }))
-    setSettings((current) => ({
-      ...current,
-      endTime,
-      targetRoundCount,
-      roundCountLocked: true,
-    }))
+    }
+    const appended = appendGeneralCourtGames(
+      schedule,
+      generatedMeetingPlayers,
+      nextSettings,
+    )
+    if (appended.addedMatchIds.length === 0) {
+      setNotice('경기 추가 불가 · 배정 가능한 일반 참가자가 부족합니다.')
+      return
+    }
+
+    // 현재 화면의 수동 수정·믹스가 모두 반영된 대진을 새 기준표로 고정한다.
+    // 이후에는 추가된 경기만 붙고 기존 경기 조합은 다시 생성하지 않는다.
+    setScheduleOverride(appended.schedule)
+    setPairMixes({})
+    setMeetingLineups({})
+    setMatchNameDrafts({})
+    setEditingMatchIds({})
+    setMatchEditorErrors({})
+    setGeneratedMeetingSettings(nextSettings)
+    setSettings(nextSettings)
     setPrintImageUrls([])
-    setNotice(`코트별 경기 추가됨 · 종료 ${endTime}`)
+    setMeetingWarningsReconciled(false)
+    setNotice(
+      `기존 대진 유지 · 경기 ${appended.addedMatchIds.length}개 추가 · 종료 ${endTime}`,
+    )
   }
 
   const removeLastCourtGames = () => {
@@ -3548,6 +3640,23 @@ function App() {
       1,
       getTargetRoundCount(generatedMeetingSettings) - 1,
     )
+    const trimmedSchedule = applyMeetingLineups(
+      {
+        ...schedule,
+        rounds: schedule.rounds
+          .map((round) => ({
+            ...round,
+            matches: round.matches.filter((match) => !matchIds.has(match.id)),
+          }))
+          .filter((round) => round.matches.length > 0),
+        warnings: schedule.warnings.filter(
+          (warning) => !warning.startsWith('경기 추가 미배정'),
+        ),
+      },
+      generatedMeetingPlayers,
+      {},
+    )
+    setScheduleOverride(trimmedSchedule)
     setSettings((current) => ({
       ...current,
       endTime,
@@ -3561,7 +3670,8 @@ function App() {
       roundCountLocked: true,
     }))
     setResults((current) => omitRecordKeys(current, matchIds))
-    setPairMixes((current) => omitRecordKeys(current, matchIds))
+    setPairMixes({})
+    setMeetingLineups({})
     setMatchNameOverrides((current) => omitRecordKeys(current, matchIds))
     setMatchNameDrafts((current) => omitRecordKeys(current, matchIds))
     setEditingMatchIds((current) => omitRecordKeys(current, matchIds))
@@ -4032,7 +4142,7 @@ function App() {
 
   const handleCopyShareLink = async () => {
     try {
-      const sharePayload: SharePayload = {
+      const legacyPayload: SharePayload = {
         version: 1,
         generatedAt: new Date().toISOString(),
         appMode,
@@ -4048,9 +4158,26 @@ function App() {
         tournamentResults,
         tournamentLineups,
       }
-      await copyToClipboard(makeShareUrl(window.location.href, sharePayload))
-      window.alert(SHARE_LINK_SAVED_MESSAGE)
-      setNotice(SHARE_LINK_SAVED_MESSAGE)
+      let shareUrl: string
+      let savedMessage: string
+      try {
+        shareUrl = await createShortShareUrl(
+          {
+            ...legacyPayload,
+            pairMixes: appMode === 'meeting' ? {} : pairMixes,
+            meetingLineups: appMode === 'meeting' ? {} : meetingLineups,
+            meetingSchedule: appMode === 'meeting' ? schedule : undefined,
+          },
+          getBaseUrl(),
+        )
+        savedMessage = '24시간 짧은 공유 링크를 복사했습니다.'
+      } catch {
+        shareUrl = makeShareUrl(getBaseUrl(), legacyPayload)
+        savedMessage = `${SHARE_LINK_SAVED_MESSAGE}\n짧은 링크 연결 실패로 기존 링크를 복사했습니다.`
+      }
+      await copyToClipboard(shareUrl)
+      window.alert(savedMessage)
+      setNotice(savedMessage.split('\n')[0])
     } catch {
       setNotice('공유 링크 실패')
     }
@@ -4177,9 +4304,20 @@ function App() {
   }
 
   const saveMeetingScheduleToBrowser = () => {
+    const showBrowserSaveToast = (message: string, error = false) => {
+      if (browserSaveToastTimerRef.current !== null) {
+        window.clearTimeout(browserSaveToastTimerRef.current)
+      }
+      setBrowserSaveToast({ message, error })
+      browserSaveToastTimerRef.current = window.setTimeout(() => {
+        setBrowserSaveToast(null)
+        browserSaveToastTimerRef.current = null
+      }, 3000)
+    }
     const hasMatches = schedule.rounds.some((round) => round.matches.length > 0)
     if (!hasMatches) {
       setNotice('브라우저에 저장할 대진표가 없습니다.')
+      showBrowserSaveToast('저장할 대진표가 없습니다.', true)
       return
     }
 
@@ -4202,9 +4340,11 @@ function App() {
         LAST_MEETING_SCHEDULE_KEY,
         JSON.stringify(storedSchedule),
       )
-      setNotice('마지막 대진표가 브라우저에 저장됨')
+      setNotice('대진표가 브라우저에 저장됨')
+      showBrowserSaveToast('대진표가 브라우저에 저장되었습니다.')
     } catch {
       setNotice('브라우저 저장 실패 · 저장 공간을 확인하세요.')
+      showBrowserSaveToast('브라우저 저장에 실패했습니다.', true)
     }
   }
 
@@ -4362,6 +4502,42 @@ function App() {
 
   return (
     <div className="app">
+      {browserSaveToast ? (
+        <div
+          className={`browser-save-toast ${browserSaveToast.error ? 'error' : ''}`}
+          role={browserSaveToast.error ? 'alert' : 'status'}
+          aria-live="polite"
+        >
+          {browserSaveToast.message}
+        </div>
+      ) : null}
+      {isShortShareLoading || shortShareError ? (
+        <div
+          className="generation-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-live="polite"
+          aria-label={shortShareError ? '공유 링크 만료' : '공유 대진 불러오는 중'}
+        >
+          <div className={`generation-card ${shortShareError ? 'failure-review' : ''}`}>
+            <img src={amaLogo} alt="A.M.A" />
+            {shortShareError ? (
+              <span className="generation-result-icon failure" aria-hidden="true">!</span>
+            ) : (
+              <span className="generation-spinner" aria-hidden="true" />
+            )}
+            <strong>{shortShareError ? '공유 링크 확인' : '공유 대진 불러오는 중'}</strong>
+            <p>{shortShareError || '잠시만 기다려 주세요.'}</p>
+            {shortShareError ? (
+              <div className="generation-review-actions">
+                <button type="button" className="primary-action" onClick={openMySchedule}>
+                  내 대진 열기
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       {isMeetingGenerating ? (
         <div
           className="generation-overlay"

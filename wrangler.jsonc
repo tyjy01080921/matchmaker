@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "matchmaker",
+  "pages_build_output_dir": "./dist",
+  "compatibility_date": "2026-07-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "kv_namespaces": [
+    {
+      "binding": "MATCHMAKER_SHARES",
+      "id": "d3703863fed5423bbdd0cad55feb0b9b"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

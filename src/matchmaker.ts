@@ -4811,6 +4811,170 @@ export const generateSchedule = (
     : generateSchedulePass(players, settings, plannedSpecialIds)
 }
 
+export const appendGeneralCourtGames = (
+  schedule: Schedule,
+  players: Player[],
+  settings: MatchSettings,
+): { schedule: Schedule; addedMatchIds: string[] } => {
+  const activePlayers = players.filter((player) => player.active)
+  const activeRegulars = activePlayers.filter((player) => !player.isGuest)
+  if (activeRegulars.length < 4) {
+    return {
+      schedule: {
+        ...schedule,
+        warnings: [...schedule.warnings, '경기 추가는 일반 참가자 4명 이상 필요합니다.'],
+      },
+      addedMatchIds: [],
+    }
+  }
+
+  const existingMatches = schedule.rounds
+    .flatMap((round) => round.matches)
+    .sort((left, right) =>
+      (left.startOffsetMinutes ?? 0) - (right.startOffsetMinutes ?? 0) ||
+      left.court - right.court,
+    )
+  const plannedSpecialIds = new Set(
+    existingMatches
+      .filter((match) => match.isSpecial)
+      .flatMap((match) => [...match.teamA, ...match.teamB])
+      .filter((player) => !player.isGuest)
+      .map((player) => player.id),
+  )
+  const history = makeHistory(activePlayers, plannedSpecialIds)
+  for (const match of existingMatches) {
+    history.currentStartOffset = match.startOffsetMinutes ?? 0
+    updateHistoryForMatch(history, match)
+  }
+
+  const normalGameMinutes = [10, 12, 15].includes(settings.normalGameMinutes)
+    ? settings.normalGameMinutes
+    : GAME_SLOT_MINUTES
+  const startsByCourt = Array.from({ length: settings.courtCount }, (_, index) => {
+    const court = index + 1
+    const courtMatches = existingMatches.filter((match) => match.court === court)
+    const startOffset = courtMatches.reduce(
+      (maximum, match) => Math.max(maximum, matchTimeWindow(match).end),
+      0,
+    )
+    return { court, startOffset }
+  })
+  const courtsByStart = new Map<number, number[]>()
+  for (const { court, startOffset } of startsByCourt) {
+    courtsByStart.set(startOffset, [
+      ...(courtsByStart.get(startOffset) ?? []),
+      court,
+    ])
+  }
+
+  const conditions = matchConditions(settings)
+  const random = makeRandom(settings.seed + existingMatches.length + 101)
+  const addedMatches: Match[] = []
+  const addedRounds: Round[] = []
+  let nextRoundNumber = schedule.rounds.reduce(
+    (maximum, round) => Math.max(maximum, round.number),
+    0,
+  ) + 1
+  const sortedStarts = [...courtsByStart.keys()].sort((left, right) => left - right)
+
+  for (const startOffset of sortedStarts) {
+    const roundMatches: Match[] = []
+    const windowEnd = startOffset + normalGameMinutes
+    const usedIds = new Set(
+      [...existingMatches, ...addedMatches]
+        .filter((match) => {
+          const window = matchTimeWindow(match)
+          return window.start < windowEnd && startOffset < window.end
+        })
+        .flatMap((match) => [...match.teamA, ...match.teamB])
+        .map((player) => player.id),
+    )
+    history.currentStartOffset = startOffset
+
+    for (const court of courtsByStart.get(startOffset) ?? []) {
+      const availableRegulars = activeRegulars
+        .filter((player) => !usedIds.has(player.id))
+        .sort((left, right) =>
+          (history.games[left.id] ?? 0) - (history.games[right.id] ?? 0) ||
+          left.name.localeCompare(right.name, 'ko'),
+        )
+      if (availableRegulars.length < 4) continue
+      const pacing = {
+        roundNumber: Math.max(1, settings.pacingRoundCount),
+        targetRoundCount: Math.max(1, settings.pacingRoundCount),
+        earlyPhaseEndPercent: settings.earlyPhaseEndPercent,
+        middlePhaseEndPercent: settings.middlePhaseEndPercent,
+      }
+      const gameCountThresholds = [...new Set(
+        availableRegulars.map((player) => history.games[player.id] ?? 0),
+      )].sort((left, right) => left - right)
+      let group: [Player, Player, Player, Player] | null = null
+      for (const threshold of gameCountThresholds) {
+        const lowGamePoolIds = new Set(
+          availableRegulars
+            .filter((player) => (history.games[player.id] ?? 0) <= threshold)
+            .map((player) => player.id),
+        )
+        if (lowGamePoolIds.size < 4) continue
+        const lowGamePool = activeRegulars.filter((player) =>
+          lowGamePoolIds.has(player.id),
+        )
+        group = pickGeneralGroup(
+          lowGamePool,
+          usedIds,
+          history,
+          random,
+          settings,
+          conditions,
+          pacing,
+        )
+        if (group) break
+      }
+      if (!group) continue
+
+      const match = createMatch(
+        nextRoundNumber,
+        court,
+        group,
+        history,
+        random,
+        conditions,
+        pacing,
+        false,
+      )
+      match.startOffsetMinutes = startOffset
+      match.durationMinutes = normalGameMinutes
+      roundMatches.push(match)
+      addedMatches.push(match)
+      for (const player of group) usedIds.add(player.id)
+      updateHistoryForMatch(history, match)
+    }
+
+    if (roundMatches.length > 0) {
+      addedRounds.push({
+        id: `added-round-${nextRoundNumber}-${startOffset}`,
+        number: nextRoundNumber,
+        matches: roundMatches,
+        resting: [],
+      })
+      nextRoundNumber += 1
+    }
+  }
+
+  const missingCourtCount = settings.courtCount - addedMatches.length
+  const nextSchedule = refreshScheduleRestingPlayers({
+    ...schedule,
+    rounds: [...schedule.rounds, ...addedRounds],
+    warnings: missingCourtCount > 0
+      ? [...schedule.warnings, `경기 추가 미배정 ${missingCourtCount}코트`]
+      : schedule.warnings,
+  }, activePlayers)
+  return {
+    schedule: nextSchedule,
+    addedMatchIds: addedMatches.map((match) => match.id),
+  }
+}
+
 const swapScheduleMatchSlots = (
   schedule: Schedule,
   left: Match,

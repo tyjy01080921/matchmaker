@@ -6,6 +6,31 @@
     var(--paper);
 }
 
+.browser-save-toast {
+  position: fixed;
+  z-index: 120;
+  left: 50%;
+  bottom: max(24px, env(safe-area-inset-bottom));
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  transform: translateX(-50%);
+  padding: 11px 16px;
+  border: 1px solid rgba(12, 143, 127, 0.35);
+  border-radius: 999px;
+  background: var(--navy);
+  color: #fff;
+  box-shadow: 0 12px 36px rgba(5, 22, 41, 0.24);
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.browser-save-toast.error {
+  border-color: rgba(177, 61, 61, 0.4);
+  background: var(--red);
+}
+
 .generation-overlay {
   position: fixed;
   z-index: 100;
