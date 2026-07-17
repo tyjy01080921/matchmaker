@@ -21,6 +21,12 @@ export type LevelTierTable = Record<
 
 export type AppMode = 'meeting' | 'tournament'
 
+export type MeetingShuffleDirection =
+  | 'balanced'
+  | 'variety'
+  | 'skill'
+  | 'wait'
+
 export type TournamentFormat =
   | 'group-knockout'
   | 'knockout'
@@ -69,6 +75,7 @@ export type MatchSettings = {
   endTime: string
   normalGameMinutes: 10 | 12 | 15
   seed: number
+  shuffleDirection: MeetingShuffleDirection
   singleGuestPerMatch: boolean
   specialLimitEnabled: boolean
   specialGameLimitEnabled: boolean

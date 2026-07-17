@@ -58,6 +58,7 @@ export const defaultSettings: MatchSettings = {
   endTime: '20:00',
   normalGameMinutes: 15,
   seed: 11,
+  shuffleDirection: 'balanced',
   singleGuestPerMatch: true,
   specialLimitEnabled: false,
   specialGameLimitEnabled: true,

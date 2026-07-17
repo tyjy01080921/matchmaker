@@ -8,6 +8,7 @@ import type {
   MatchConditionOptions,
   MatchNameOverrides,
   MeetingLineupsByMatch,
+  MeetingShuffleDirection,
   MatchSettings,
   Player,
   PlayerStat,
@@ -3660,18 +3661,30 @@ export const generateTournamentLineups = (
 const completedTournamentScores = (
   result: TournamentResultsByMatch[string] | undefined,
 ) => {
+  if (!result?.completed) return null
+
   const teamAScore = result ? numericScore(result.teamAScore) : null
   const teamBScore = result ? numericScore(result.teamBScore) : null
   if (
-    !result?.completed ||
-    teamAScore === null ||
-    teamBScore === null ||
-    teamAScore === teamBScore
+    teamAScore !== null &&
+    teamBScore !== null &&
+    teamAScore !== teamBScore
   ) {
-    return null
+    return {
+      teamAScore,
+      teamBScore,
+      winnerSide: teamAScore > teamBScore ? 'A' as const : 'B' as const,
+    }
   }
 
-  return { teamAScore, teamBScore }
+  if (result.winnerSide === 'A' || result.winnerSide === 'B') {
+    return {
+      teamAScore: 0,
+      teamBScore: 0,
+      winnerSide: result.winnerSide,
+    }
+  }
+  return null
 }
 
 export const calculateTournamentMvpCandidates = (
@@ -3718,7 +3731,7 @@ export const calculateTournamentMvpCandidates = (
     const lineup = lineups[match.id]
     if (!scores || !lineup) continue
 
-    const teamAWon = scores.teamAScore > scores.teamBScore
+    const teamAWon = scores.winnerSide === 'A'
     addSideStats(
       lineup.teamAPlayerIds,
       teamAWon,
@@ -3757,7 +3770,7 @@ export const calculateTournamentMvpCandidates = (
   )
 }
 
-const tournamentMatchWinnerId = (
+export const getTournamentMatchWinnerId = (
   match: TournamentMatch,
   result: TournamentResultsByMatch[string] | undefined,
 ) => {
@@ -3767,7 +3780,7 @@ const tournamentMatchWinnerId = (
   const scores = completedTournamentScores(result)
   if (!scores) return undefined
 
-  return scores.teamAScore > scores.teamBScore ? match.teamAId : match.teamBId
+  return scores.winnerSide === 'A' ? match.teamAId : match.teamBId
 }
 
 const tournamentMatchLoserId = (
@@ -3779,7 +3792,7 @@ const tournamentMatchLoserId = (
   const scores = completedTournamentScores(result)
   if (!scores) return undefined
 
-  return scores.teamAScore > scores.teamBScore ? match.teamBId : match.teamAId
+  return scores.winnerSide === 'A' ? match.teamBId : match.teamAId
 }
 
 const assignTournamentOrder = (
@@ -3946,7 +3959,7 @@ const compareHeadToHead = (
   )
   if (!directMatch) return 0
 
-  const winnerId = tournamentMatchWinnerId(directMatch, results[directMatch.id])
+  const winnerId = getTournamentMatchWinnerId(directMatch, results[directMatch.id])
   if (winnerId === teamAId) return -1
   if (winnerId === teamBId) return 1
   return 0
@@ -3996,7 +4009,7 @@ const calculateTournamentGroupStandings = (
       teamB.pointsFor += scores.teamBScore
       teamB.pointsAgainst += scores.teamAScore
 
-      if (scores.teamAScore > scores.teamBScore) {
+      if (scores.winnerSide === 'A') {
         teamA.wins += 1
         teamB.losses += 1
       } else {
@@ -4109,7 +4122,7 @@ const makeKnockoutMatches = (
       matches.push(match)
       if (participantCount === 4) semifinalMatches.push(match)
 
-      const winnerId = tournamentMatchWinnerId(match, results[id])
+      const winnerId = getTournamentMatchWinnerId(match, results[id])
       nextEntries.push({
         teamId: winnerId,
         source: winnerId ? undefined : `${label} 승자`,
@@ -4255,7 +4268,7 @@ const calculateTeamBattleTies = (
         teamBWins: 0,
       } satisfies TournamentTeamBattleTie)
 
-    const winnerId = tournamentMatchWinnerId(match, results[match.id])
+    const winnerId = getTournamentMatchWinnerId(match, results[match.id])
     if (winnerId === match.teamAId) tie.teamAWins += 1
     if (winnerId === match.teamBId) tie.teamBWins += 1
     ties.set(match.teamBattleTieId, tie)
@@ -4388,7 +4401,7 @@ export const generateTournamentSchedule = (
       groupMatches.some(
         (match) =>
           match.groupId === group.id &&
-          !tournamentMatchWinnerId(match, results[match.id]),
+          !getTournamentMatchWinnerId(match, results[match.id]),
       ),
     )
 
@@ -5404,6 +5417,7 @@ const compareMultiObjectiveCandidates = (
   right: ScheduleCandidate,
   candidates: ScheduleCandidate[],
   conditions: MatchConditionOptions,
+  shuffleDirection: MeetingShuffleDirection,
 ) => {
   const comparisons = [
     left.qualityFailureCount - right.qualityFailureCount,
@@ -5411,6 +5425,66 @@ const compareMultiObjectiveCandidates = (
   ]
   const qualityDifference = comparisons.find((difference) => difference !== 0)
   if (qualityDifference !== undefined) return qualityDifference
+
+  if (shuffleDirection === 'variety') {
+    const varietyDifference = compareNumberTuples(
+      [
+        left.quality.repeatedGroupAssignments,
+        left.quality.maximumGroupMeetings,
+        left.quality.maximumPartnerMeetings,
+        left.quality.repeatedPartnerAssignments,
+        left.quality.maximumOpponentMeetings,
+        left.quality.repeatedOpponentAssignments,
+      ],
+      [
+        right.quality.repeatedGroupAssignments,
+        right.quality.maximumGroupMeetings,
+        right.quality.maximumPartnerMeetings,
+        right.quality.repeatedPartnerAssignments,
+        right.quality.maximumOpponentMeetings,
+        right.quality.repeatedOpponentAssignments,
+      ],
+    )
+    if (varietyDifference !== 0) return varietyDifference
+  }
+
+  if (shuffleDirection === 'skill') {
+    const skillDifference = compareNumberTuples(
+      [
+        left.quality.teamSkillDangerMatches,
+        left.quality.teamSkillWarningMatches,
+        left.quality.individualSkillDangerMatches,
+        left.quality.individualSkillWarningMatches,
+        left.quality.maximumTeamSkillGap,
+        left.quality.maximumIndividualSkillSpread,
+      ],
+      [
+        right.quality.teamSkillDangerMatches,
+        right.quality.teamSkillWarningMatches,
+        right.quality.individualSkillDangerMatches,
+        right.quality.individualSkillWarningMatches,
+        right.quality.maximumTeamSkillGap,
+        right.quality.maximumIndividualSkillSpread,
+      ],
+    )
+    if (skillDifference !== 0) return skillDifference
+  }
+
+  if (shuffleDirection === 'wait') {
+    const waitDifference = compareNumberTuples(
+      [
+        left.wait.maximumWaitMinutes,
+        left.quality.averageWaitMinutes,
+        left.quality.participantsOverWaitLimit,
+      ],
+      [
+        right.wait.maximumWaitMinutes,
+        right.quality.averageWaitMinutes,
+        right.quality.participantsOverWaitLimit,
+      ],
+    )
+    if (waitDifference !== 0) return waitDifference
+  }
 
   const categoryComparisons = [
     ...(conditions.levelBalance ? [skillCategoryComparison] : []),
@@ -5448,6 +5522,7 @@ export const generateScheduleWithWaitOptimization = (
   attemptCount = 3,
 ): Schedule => {
   const conditions = matchConditions(settings)
+  const shuffleDirection = settings.shuffleDirection ?? 'balanced'
   const largeMeeting = players.filter((player) => player.active).length >= 40
   const strictSkillLimit = conditions.strictSkillLimit
   const requestedAttempts = Math.min(5, Math.max(1, Math.floor(attemptCount)))
@@ -5484,6 +5559,7 @@ export const generateScheduleWithWaitOptimization = (
       index,
     })
     if (
+      shuffleDirection === 'balanced' &&
       candidates.length >= minimumAttempts &&
       candidates.some(
         (candidate) =>
@@ -5504,7 +5580,13 @@ export const generateScheduleWithWaitOptimization = (
     ? qualifiedCandidates
     : safePool
   const selected = [...selectionPool].sort((left, right) =>
-    compareMultiObjectiveCandidates(left, right, selectionPool, conditions),
+    compareMultiObjectiveCandidates(
+      left,
+      right,
+      selectionPool,
+      conditions,
+      shuffleDirection,
+    ),
   )[0]
   const deferredSchedule = conditions.levelBalance
     ? deferSkillWarningMatches(selected.schedule, players, settings)

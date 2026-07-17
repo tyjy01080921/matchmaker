@@ -34,6 +34,7 @@ import {
   generateTournamentLineups,
   generateTournamentSchedule,
   makeNumberedTournamentPlayers,
+  getTournamentMatchWinnerId as tournamentWinnerTeamId,
   rankMeetingSwapCandidates,
   swapMeetingPlayers,
   tournamentParticipantsFromTeams,
@@ -50,6 +51,18 @@ import {
   type SharePayload,
 } from './shareLink'
 import { createShortShareUrl, loadShortShare, ShortShareError } from './shortShare'
+import {
+  MeetingProgressMode,
+  TournamentProgressMode,
+} from './ProgressModeView'
+import {
+  buildMeetingCourtLanes,
+  buildTournamentCourtLanes,
+  getProgressWinnerSide,
+  getUndoableTournamentMatchId,
+  toggleProgressWinner,
+  updateProgressScore,
+} from './progressMode'
 import {
   makePlayerNameLookup,
   playerDisplayName,
@@ -87,6 +100,7 @@ import type {
   MatchResult,
   MatchWinnerSide,
   MatchSettings,
+  MeetingShuffleDirection,
   MeetingLineupsByMatch,
   Player,
   PrizeDrawState,
@@ -119,7 +133,7 @@ const STORAGE_KEY = 'badminton-matchmaker-v1'
 const LAST_MEETING_SCHEDULE_KEY = 'badminton-matchmaker-last-meeting-v1'
 const CONTACT_EMAIL = 'ama_official@naver.com'
 const APP_VERSION = '0.0.1'
-const LAST_UPDATED = '2026.07.16'
+const LAST_UPDATED = '2026.07.17'
 const SHARE_LINK_SAVED_MESSAGE = '현재 생성된 이벤트의 링크를 저장하였습니다.'
 const MEETING_GENERATION_MESSAGES = [
   '고성현이 만든 첫번째 라켓, 마티라',
@@ -136,6 +150,28 @@ const MIN_MEETING_PHASE_PERCENT = 15
 const MEETING_PHASE_STEP = 5
 const meetingSwapRecommendationKey = (matchId: string, playerId: string) =>
   `${matchId}::${playerId}`
+
+const meetingShuffleDirections: Array<{
+  key: Exclude<MeetingShuffleDirection, 'balanced'>
+  label: string
+  description: string
+}> = [
+  {
+    key: 'variety',
+    label: '조합 다양하게',
+    description: '파트너·상대·같은 4인 반복이 적은 대진을 우선합니다.',
+  },
+  {
+    key: 'skill',
+    label: '실력 더 비슷하게',
+    description: '팀 간 실력 차와 실력 경고가 적은 대진을 우선합니다.',
+  },
+  {
+    key: 'wait',
+    label: '대기 더 고르게',
+    description: '최장 대기와 참가자 평균 대기가 짧은 대진을 우선합니다.',
+  },
+]
 
 const getTargetRoundCount = (settings: MatchSettings) => {
   const numeric = Number(settings.targetRoundCount)
@@ -168,6 +204,7 @@ const defaultPrizeDrawState: PrizeDrawState = {
 
 type StoredState = {
   appMode: AppMode
+  progressMode: boolean
   players: Player[]
   settings: MatchSettings
   generatedMeetingPlayers: Player[]
@@ -429,6 +466,13 @@ const normalizeStoredPlayer = (player: Partial<Player>): Player => {
 const normalizeAppMode = (value: unknown): AppMode =>
   value === 'tournament' ? 'tournament' : 'meeting'
 
+const normalizeMeetingShuffleDirection = (
+  value: unknown,
+): MeetingShuffleDirection =>
+  value === 'variety' || value === 'skill' || value === 'wait'
+    ? value
+    : 'balanced'
+
 const normalizeTournamentFormat = (value: unknown): TournamentFormat => {
   if (
     value === 'group-knockout' ||
@@ -638,6 +682,9 @@ const normalizeMatchSettings = (
       ? Number(settings?.normalGameMinutes) as 10 | 12 | 15
       : defaultSettings.normalGameMinutes,
     seed: normalizePositiveInteger(settings?.seed, defaultSettings.seed, 1, 999999),
+    shuffleDirection: normalizeMeetingShuffleDirection(
+      settings?.shuffleDirection,
+    ),
     singleGuestPerMatch: settings?.singleGuestPerMatch ?? true,
     specialLimitEnabled: settings?.specialLimitEnabled ?? false,
     specialGameLimitEnabled: settings?.specialGameLimitEnabled ?? true,
@@ -940,6 +987,7 @@ const readStoredState = (): StoredState => {
   if (typeof window === 'undefined') {
     return {
       appMode: 'meeting',
+      progressMode: false,
       players: defaultPlayers,
       settings: defaultSettings,
       generatedMeetingPlayers: defaultPlayers,
@@ -984,6 +1032,10 @@ const readStoredState = (): StoredState => {
       : null
     return {
       appMode: normalizeAppMode(parsed.appMode),
+      progressMode: Boolean(
+        parsed.progressMode &&
+        (normalizeAppMode(parsed.appMode) === 'tournament' || cachedMeetingSchedule),
+      ),
       players: savedMeetingPlayers ?? players,
       settings: savedMeetingSettings ?? settings,
       // 자동 저장 데이터는 참가자와 설정만 복원한다. 사용자가 명시적으로
@@ -1016,6 +1068,7 @@ const readStoredState = (): StoredState => {
   } catch {
     return {
       appMode: 'meeting',
+      progressMode: false,
       players: defaultPlayers,
       settings: defaultSettings,
       generatedMeetingPlayers: defaultPlayers,
@@ -1044,6 +1097,7 @@ const storedStateFromSharePayload = (payload: SharePayload): StoredState => {
   )
   return {
     appMode: normalizeAppMode(payload.appMode),
+    progressMode: false,
     players: meetingPlayers,
     settings: normalizeMatchSettings(payload.settings),
     generatedMeetingPlayers: meetingPlayers,
@@ -1153,23 +1207,7 @@ const winnerLabel = (
 }
 
 const tournamentHasScore = (result?: TournamentMatchResult) =>
-  Boolean(result?.teamAScore || result?.teamBScore)
-
-const tournamentWinnerTeamId = (
-  match: TournamentMatch,
-  result: TournamentMatchResult | undefined,
-) => {
-  if (match.isBye) return match.teamAId ?? match.teamBId
-  if (!match.teamAId || !match.teamBId) return undefined
-
-  const a = Number(result?.teamAScore)
-  const b = Number(result?.teamBScore)
-  if (!result?.completed || !Number.isFinite(a) || !Number.isFinite(b) || a === b) {
-    return undefined
-  }
-
-  return a > b ? match.teamAId : match.teamBId
-}
+  Boolean(result?.teamAScore || result?.teamBScore || result?.winnerSide)
 
 const formatDuration = (minutes: number) => {
   const hours = Math.floor(minutes / 60)
@@ -1469,6 +1507,7 @@ function App() {
   }, [])
   const initialState = initialContext.state
   const [appMode, setAppMode] = useState<AppMode>(initialState.appMode)
+  const [progressMode, setProgressMode] = useState(initialState.progressMode)
   const [players, setPlayers] = useState<Player[]>(initialState.players)
   const [settings, setSettings] = useState<MatchSettings>(initialState.settings)
   const [generatedMeetingPlayers, setGeneratedMeetingPlayers] = useState<Player[]>(
@@ -1527,6 +1566,7 @@ function App() {
   const [conditionsOpen, setConditionsOpen] = useState(false)
   const [levelHelpOpen, setLevelHelpOpen] = useState(false)
   const [levelTierEditorOpen, setLevelTierEditorOpen] = useState(false)
+  const [shuffleDirectionOpen, setShuffleDirectionOpen] = useState(false)
   const [levelTierDraft, setLevelTierDraft] = useState<LevelTierTable>(
     () => normalizeLevelTiers(initialState.settings.levelTiers),
   )
@@ -1562,6 +1602,7 @@ function App() {
     message: string
     error: boolean
   } | null>(null)
+  const [isFullscreen, setIsFullscreen] = useState(false)
   const [meetingWarningsReconciled, setMeetingWarningsReconciled] = useState(false)
   const [meetingGenerationMessage, setMeetingGenerationMessage] = useState('')
   const [meetingOperationLabel, setMeetingOperationLabel] = useState('대진 생성 중')
@@ -1604,6 +1645,26 @@ function App() {
     generatedMeetingPlayers,
     meetingLineups,
   ), [generatedMeetingPlayers, meetingLineups, pairMixes, rawSchedule])
+  const storedMeetingScheduleSnapshot = useMemo<StoredMeetingSchedule>(() => ({
+    version: 1,
+    savedAt: new Date().toISOString(),
+    players: generatedMeetingPlayers,
+    settings: generatedMeetingSettings,
+    schedule,
+    results,
+    // 최종 화면 대진을 저장하므로 이미 적용한 수동 조합은 다시 적용하지 않는다.
+    pairMixes: {},
+    matchNameOverrides,
+    meetingLineups: {},
+    prizeDraw,
+  }), [
+    generatedMeetingPlayers,
+    generatedMeetingSettings,
+    matchNameOverrides,
+    prizeDraw,
+    results,
+    schedule,
+  ])
   useEffect(() => {
     setMeetingWarningsReconciled(false)
   }, [generatedMeetingPlayers, generatedMeetingSettings])
@@ -1857,6 +1918,33 @@ function App() {
         tournamentResults,
       ),
     [tournamentScheduleTeams, tournamentSettings, tournamentResults],
+  )
+  const meetingProgressLanes = useMemo(
+    () => buildMeetingCourtLanes(schedule, results),
+    [results, schedule],
+  )
+  const tournamentProgressLanes = useMemo(
+    () => buildTournamentCourtLanes(
+      tournamentSchedule.matches,
+      tournamentResults,
+    ),
+    [tournamentResults, tournamentSchedule.matches],
+  )
+  const tournamentProgressCompletedCount = tournamentProgressLanes.reduce(
+    (sum, lane) => sum + lane.completed.length,
+    0,
+  )
+  const tournamentProgressTotalCount = tournamentProgressLanes.reduce(
+    (sum, lane) =>
+      sum + lane.ready.length + lane.waiting.length + lane.completed.length,
+    0,
+  )
+  const undoableTournamentMatchId = useMemo(
+    () => getUndoableTournamentMatchId(
+      tournamentSchedule.matches,
+      tournamentResults,
+    ),
+    [tournamentResults, tournamentSchedule.matches],
   )
   const tournamentTeamLookup = useMemo(
     () => new Map(tournamentScheduleTeams.map((team) => [team.id, team])),
@@ -2378,6 +2466,7 @@ function App() {
       STORAGE_KEY,
       JSON.stringify({
         appMode,
+        progressMode,
         players,
         settings,
         generatedMeetingPlayers,
@@ -2412,6 +2501,7 @@ function App() {
     settings,
     results,
     pairMixes,
+    progressMode,
     matchNameOverrides,
     meetingLineups,
     prizeDraw,
@@ -2419,6 +2509,32 @@ function App() {
     tournamentSettings,
     tournamentResults,
     tournamentLineups,
+  ])
+
+  useEffect(() => {
+    if (
+      !progressMode ||
+      appMode !== 'meeting' ||
+      isSharedMode ||
+      !schedule.rounds.some((round) => round.matches.length > 0)
+    ) {
+      return
+    }
+
+    try {
+      window.localStorage.setItem(
+        LAST_MEETING_SCHEDULE_KEY,
+        JSON.stringify(storedMeetingScheduleSnapshot),
+      )
+    } catch {
+      setNotice('진행 저장 실패 · 브라우저 저장 공간을 확인하세요.')
+    }
+  }, [
+    appMode,
+    isSharedMode,
+    progressMode,
+    schedule.rounds,
+    storedMeetingScheduleSnapshot,
   ])
 
   useEffect(() => {
@@ -2437,6 +2553,7 @@ function App() {
 
       currentShareToken = nextShareToken
       setIsSharedMode(true)
+      setProgressMode(false)
       setAppMode(sharedState.appMode)
       setPlayers(sharedState.players)
       setSettings(sharedState.settings)
@@ -2482,6 +2599,7 @@ function App() {
         if (!active) return
         const sharedState = storedStateFromSharePayload(payload)
         setIsSharedMode(true)
+        setProgressMode(false)
         setAppMode(sharedState.appMode)
         setPlayers(sharedState.players)
         setSettings(sharedState.settings)
@@ -2520,6 +2638,16 @@ function App() {
       active = false
     }
   }, [initialContext.shortShareId])
+
+  useEffect(() => {
+    const updateFullscreenState = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement))
+    }
+    document.addEventListener('fullscreenchange', updateFullscreenState)
+    return () => {
+      document.removeEventListener('fullscreenchange', updateFullscreenState)
+    }
+  }, [])
 
   useEffect(
     () => () => {
@@ -2672,8 +2800,65 @@ function App() {
   }
 
   const setAppModeAndNotice = (mode: AppMode) => {
+    setProgressMode(false)
     setAppMode(mode)
     setNotice(mode === 'meeting' ? '친목 모드' : '경쟁 모드')
+  }
+
+  const enterProgressMode = () => {
+    if (isSharedMode) {
+      setNotice('공유본은 진행할 수 없습니다.')
+      return
+    }
+    if (appMode === 'meeting') {
+      if (hasMeetingDraftChanges) {
+        setNotice('변경사항 반영 후 대진을 다시 생성해 주세요.')
+        return
+      }
+      if (totalMatches === 0) {
+        setNotice('먼저 친목 대진을 생성해 주세요.')
+        return
+      }
+      try {
+        window.localStorage.setItem(
+          LAST_MEETING_SCHEDULE_KEY,
+          JSON.stringify(storedMeetingScheduleSnapshot),
+        )
+      } catch {
+        setNotice('진행 저장 실패 · 브라우저 저장 공간을 확인하세요.')
+      }
+    } else if (tournamentProgressTotalCount === 0) {
+      setNotice('먼저 경쟁 대진을 생성해 주세요.')
+      return
+    }
+
+    setProgressMode(true)
+    setNotice(appMode === 'meeting' ? '친목 진행 중' : '경쟁 진행 중')
+    window.scrollTo({ top: 0 })
+  }
+
+  const exitProgressMode = () => {
+    setProgressMode(false)
+    setNotice('진행 모드 종료')
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => undefined)
+    }
+  }
+
+  const toggleProgressFullscreen = () => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen?.().catch(() => {
+        setNotice('전체 화면 종료 실패')
+      })
+      return
+    }
+    if (!document.fullscreenEnabled || !document.documentElement.requestFullscreen) {
+      setNotice('이 브라우저에서는 전체 화면을 사용할 수 없습니다.')
+      return
+    }
+    void document.documentElement.requestFullscreen().catch(() => {
+      setNotice('이 브라우저에서는 전체 화면을 사용할 수 없습니다.')
+    })
   }
 
   const updateTournamentSettings = (patch: Partial<TournamentSettings>) => {
@@ -2919,8 +3104,10 @@ function App() {
       const next = { ...previous, ...patch }
       const a = Number(next.teamAScore)
       const b = Number(next.teamBScore)
+      const scoreChanged =
+        patch.teamAScore !== undefined || patch.teamBScore !== undefined
       if (
-        (patch.teamAScore !== undefined || patch.teamBScore !== undefined) &&
+        scoreChanged &&
         next.teamAScore !== '' &&
         next.teamBScore !== '' &&
         Number.isFinite(a) &&
@@ -2928,9 +3115,78 @@ function App() {
         a !== b
       ) {
         next.completed = true
+        next.winnerSide = a > b ? 'A' : 'B'
+      } else if (scoreChanged) {
+        next.completed = false
+        next.winnerSide = undefined
       }
       return { ...current, [matchId]: next }
     })
+  }
+
+  const updateTournamentProgressScore = (
+    matchId: string,
+    side: MatchWinnerSide,
+    value: string,
+  ) => {
+    setTournamentResults((current) => ({
+      ...current,
+      [matchId]: updateProgressScore(current[matchId], side, value),
+    }))
+  }
+
+  const selectTournamentProgressWinner = (
+    matchId: string,
+    winnerSide: MatchWinnerSide,
+  ) => {
+    setTournamentResults((current) => ({
+      ...current,
+      [matchId]: toggleProgressWinner(current[matchId], winnerSide),
+    }))
+  }
+
+  const completeTournamentProgressMatch = (matchId: string) => {
+    const winnerSide = getProgressWinnerSide(tournamentResults[matchId])
+    if (!winnerSide) {
+      setNotice('승리 팀을 먼저 선택해 주세요.')
+      return
+    }
+    setTournamentResults((current) => {
+      const previous = current[matchId] ?? {
+        teamAScore: '',
+        teamBScore: '',
+        completed: false,
+        note: '',
+      }
+      return {
+        ...current,
+        [matchId]: {
+          ...previous,
+          completed: true,
+          winnerSide,
+        },
+      }
+    })
+    setNotice('경쟁 경기 완료')
+  }
+
+  const undoTournamentProgressMatch = (matchId: string) => {
+    if (matchId !== undoableTournamentMatchId) {
+      setNotice('뒤 경기부터 완료를 취소해 주세요.')
+      return
+    }
+    setTournamentResults((current) => {
+      const previous = current[matchId]
+      if (!previous) return current
+      return {
+        ...current,
+        [matchId]: {
+          ...previous,
+          completed: false,
+        },
+      }
+    })
+    setNotice('경쟁 완료 취소')
   }
 
   const resetTournament = () => {
@@ -2940,6 +3196,7 @@ function App() {
     if (!confirmed) return
 
     setTournamentTeams(defaultTournamentTeams)
+    setProgressMode(false)
     setTournamentSettings(defaultTournamentSettings)
     setTournamentResults({})
     setTournamentLineups({})
@@ -3430,6 +3687,7 @@ function App() {
     setSettings(defaultSettings)
     setGeneratedMeetingPlayers(defaultPlayers)
     setGeneratedMeetingSettings(defaultSettings)
+    setProgressMode(false)
     setScheduleOverride(null)
     setResults({})
     setPairMixes({})
@@ -3515,10 +3773,20 @@ function App() {
     window.setTimeout(() => scrollToSection('meeting-settings'), 0)
   }
 
-  const reshuffle = () => {
+  const reshuffle = (
+    direction: Exclude<MeetingShuffleDirection, 'balanced'>,
+  ) => {
+    const selectedDirection = meetingShuffleDirections.find(
+      (option) => option.key === direction,
+    )
+    setShuffleDirectionOpen(false)
     startMeetingGeneration(
-      { ...settings, seed: settings.seed + 1 },
-      '새 대진 생성됨',
+      {
+        ...settings,
+        seed: settings.seed + 1,
+        shuffleDirection: direction,
+      },
+      `${selectedDirection?.label ?? '선택 방향'} · 새 대진 생성됨`,
     )
   }
 
@@ -3531,6 +3799,7 @@ function App() {
       {
         ...settings,
         seed: settings.seed + 1,
+        shuffleDirection: 'balanced',
         targetRoundCount: bookingRoundTarget,
         pacingRoundCount: bookingRoundTarget,
         roundCountLocked: true,
@@ -3697,6 +3966,37 @@ function App() {
       }
       return { ...current, [matchId]: { ...previous, ...patch } }
     })
+  }
+
+  const completeMeetingProgressMatch = (matchId: string) => {
+    updateResult(matchId, { completed: true })
+    setNotice('친목 경기 완료')
+  }
+
+  const updateMeetingProgressScore = (
+    matchId: string,
+    side: MatchWinnerSide,
+    value: string,
+  ) => {
+    setResults((current) => ({
+      ...current,
+      [matchId]: updateProgressScore(current[matchId], side, value),
+    }))
+  }
+
+  const selectMeetingProgressWinner = (
+    matchId: string,
+    winnerSide: MatchWinnerSide,
+  ) => {
+    setResults((current) => ({
+      ...current,
+      [matchId]: toggleProgressWinner(current[matchId], winnerSide),
+    }))
+  }
+
+  const undoMeetingProgressMatch = (matchId: string) => {
+    updateResult(matchId, { completed: false })
+    setNotice('친목 완료 취소')
   }
 
   const updateMatchWinner = (matchId: string, winnerSide: MatchWinnerSide) => {
@@ -4322,23 +4622,9 @@ function App() {
     }
 
     try {
-      const storedSchedule: StoredMeetingSchedule = {
-        version: 1,
-        savedAt: new Date().toISOString(),
-        players: generatedMeetingPlayers,
-        settings: generatedMeetingSettings,
-        schedule,
-        results,
-        // 저장 시점의 최종 대진을 기준표로 보관하므로 이미 반영된 수동
-        // 조합을 다시 중복 적용하지 않는다.
-        pairMixes: {},
-        matchNameOverrides,
-        meetingLineups: {},
-        prizeDraw,
-      }
       window.localStorage.setItem(
         LAST_MEETING_SCHEDULE_KEY,
-        JSON.stringify(storedSchedule),
+        JSON.stringify(storedMeetingScheduleSnapshot),
       )
       setNotice('대진표가 브라우저에 저장됨')
       showBrowserSaveToast('대진표가 브라우저에 저장되었습니다.')
@@ -4353,6 +4639,7 @@ function App() {
       STORAGE_KEY,
       JSON.stringify({
         appMode,
+        progressMode: false,
         players,
         settings,
         generatedMeetingPlayers,
@@ -4370,6 +4657,7 @@ function App() {
     )
     window.history.replaceState(null, '', getBaseUrl())
     setIsSharedMode(false)
+    setProgressMode(false)
     setPlayerDetailsOpen(players.length > 0)
     setBulkOpen(false)
     setNotice('편집 모드')
@@ -4500,6 +4788,63 @@ function App() {
     )
   }
 
+  if (progressMode && !isSharedMode) {
+    if (appMode === 'meeting') {
+      return (
+        <div className="app progress-mode-app">
+          <MeetingProgressMode
+            eventName={generatedMeetingSettings.eventName}
+            startTime={generatedMeetingSettings.startTime}
+            lanes={meetingProgressLanes}
+            results={results}
+            completedCount={completedMatches}
+            totalCount={totalMatches}
+            isFullscreen={isFullscreen}
+            fullscreenSupported={Boolean(
+              document.fullscreenEnabled && document.documentElement.requestFullscreen
+            )}
+            teamName={(match, side) =>
+              matchTeamName(match, side === 'A' ? match.teamA : match.teamB)}
+            onScoreChange={updateMeetingProgressScore}
+            onWinner={selectMeetingProgressWinner}
+            onComplete={completeMeetingProgressMatch}
+            onUndo={undoMeetingProgressMatch}
+            onToggleFullscreen={toggleProgressFullscreen}
+            onExit={exitProgressMode}
+          />
+        </div>
+      )
+    }
+
+    return (
+      <div className="app progress-mode-app">
+        <TournamentProgressMode
+          eventName={`${tournamentFormatLabels[tournamentSettings.format]} 대진`}
+          startTime={tournamentSettings.startTime}
+          lanes={tournamentProgressLanes}
+          results={tournamentResults}
+          completedCount={tournamentProgressCompletedCount}
+          totalCount={tournamentProgressTotalCount}
+          isFullscreen={isFullscreen}
+          fullscreenSupported={Boolean(
+            document.fullscreenEnabled && document.documentElement.requestFullscreen
+          )}
+          sideName={tournamentSideName}
+          phaseLabel={tournamentMatchPhaseLabel}
+          winnerName={(match) =>
+            tournamentWinnerLabel(match, tournamentResults[match.id])}
+          undoableMatchId={undoableTournamentMatchId}
+          onScoreChange={updateTournamentProgressScore}
+          onWinner={selectTournamentProgressWinner}
+          onComplete={completeTournamentProgressMatch}
+          onUndo={undoTournamentProgressMatch}
+          onToggleFullscreen={toggleProgressFullscreen}
+          onExit={exitProgressMode}
+        />
+      </div>
+    )
+  }
+
   return (
     <div className="app">
       {browserSaveToast ? (
@@ -4581,6 +4926,16 @@ function App() {
             <p>{meetingGenerationMessage}</p>
             {meetingOperationLabel === '대진 완료' ? (
               <div className="generation-review-summary">
+                <span>
+                  생성 방향 <strong>
+                    {generatedMeetingSettings.shuffleDirection === 'balanced'
+                      ? '기본 균형'
+                      : meetingShuffleDirections.find(
+                          (direction) =>
+                            direction.key === generatedMeetingSettings.shuffleDirection,
+                        )?.label ?? '기본 균형'}
+                  </strong>
+                </span>
                 <span>중복 <strong>0건</strong></span>
                 <span className={scheduleQualityAnalysis.standardGameSpread > 1 ? 'wait-warning' : ''}>
                   경기 <strong>{minimumParticipantGames}~{maximumParticipantGames}경기</strong>
@@ -4638,6 +4993,46 @@ function App() {
               </div>
             ) : null}
           </div>
+        </div>
+      ) : null}
+
+      {shuffleDirectionOpen ? (
+        <div
+          className="dialog-backdrop"
+          onClick={() => setShuffleDirectionOpen(false)}
+        >
+          <section
+            className="info-dialog shuffle-direction-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="shuffle-direction-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="dialog-heading">
+              <div>
+                <h2 id="shuffle-direction-title">어떻게 섞을까요?</h2>
+                <span>선택한 방향을 더 강하게 반영해 재생성합니다.</span>
+              </div>
+              <button type="button" onClick={() => setShuffleDirectionOpen(false)}>
+                닫기
+              </button>
+            </div>
+            <div className="shuffle-direction-list">
+              {meetingShuffleDirections.map((direction) => (
+                <button
+                  type="button"
+                  key={direction.key}
+                  onClick={() => reshuffle(direction.key)}
+                >
+                  <strong>{direction.label}</strong>
+                  <span>{direction.description}</span>
+                </button>
+              ))}
+            </div>
+            <p className="shuffle-direction-note">
+              경기 수·코트 충돌·최장 대기 등 필수 기준은 그대로 유지됩니다.
+            </p>
+          </section>
         </div>
       ) : null}
 
@@ -4856,8 +5251,32 @@ function App() {
                 </button>
                 <button
                   type="button"
-                  disabled={isMeetingGenerating}
-                  onClick={reshuffle}
+                  className="progress-entry-button"
+                  disabled={
+                    isMeetingGenerating ||
+                    hasMeetingDraftChanges ||
+                    totalMatches === 0
+                  }
+                  title={
+                    hasMeetingDraftChanges
+                      ? '변경사항을 반영해 대진을 다시 생성해 주세요.'
+                      : totalMatches === 0
+                        ? '먼저 대진을 생성해 주세요.'
+                        : '친목 진행 화면 열기'
+                  }
+                  onClick={enterProgressMode}
+                >
+                  진행
+                </button>
+                <button
+                  type="button"
+                  disabled={isMeetingGenerating || totalMatches === 0}
+                  title={
+                    totalMatches === 0
+                      ? '먼저 기본 대진을 생성해 주세요.'
+                      : '원하는 방향으로 대진 다시 섞기'
+                  }
+                  onClick={() => setShuffleDirectionOpen(true)}
                 >
                   섞기
                 </button>
@@ -4879,6 +5298,19 @@ function App() {
                   onClick={handleGenerateTournament}
                 >
                   생성
+                </button>
+                <button
+                  type="button"
+                  className="progress-entry-button"
+                  disabled={tournamentProgressTotalCount === 0}
+                  title={
+                    tournamentProgressTotalCount === 0
+                      ? '먼저 대진을 생성해 주세요.'
+                      : '경쟁 진행 화면 열기'
+                  }
+                  onClick={enterProgressMode}
+                >
+                  진행
                 </button>
                 <button
                   type="button"

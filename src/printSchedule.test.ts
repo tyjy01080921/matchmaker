@@ -218,4 +218,47 @@ describe('printable schedule', () => {
     expect(svg).toContain('결승')
     expect(svg).not.toContain('비시드')
   })
+
+  it('prints a selected tournament winner without inventing a score', () => {
+    const teams = [
+      makeTournamentTeam('winner-a', '승리팀', 1),
+      makeTournamentTeam('winner-b', '상대팀', null),
+    ]
+    const settings = {
+      ...defaultTournamentSettings,
+      courtCount: 1,
+      format: 'knockout' as const,
+      includeThirdPlace: false,
+    }
+    const schedule = generateTournamentSchedule(teams, settings, {})
+    const match = schedule.matches.find(
+      (item) => !item.isBye && item.teamAId && item.teamBId,
+    )
+    expect(match).toBeDefined()
+    if (!match) return
+
+    const results: TournamentResultsByMatch = {
+      [match.id]: {
+        teamAScore: '',
+        teamBScore: '',
+        completed: true,
+        note: '',
+        winnerSide: 'A',
+      },
+    }
+    const images = createTournamentPrintImages({
+      generatedAt: new Date('2026-07-01T00:00:00.000Z'),
+      results,
+      schedule,
+      settings,
+      teams,
+      title: '승패 전용 대진',
+    })
+    const svg = decodeURIComponent(
+      images[0].replace('data:image/svg+xml;charset=utf-8,', ''),
+    )
+
+    expect(svg).toContain('승리팀 (1번 시드) 승')
+    expect(svg).not.toContain('1-0 · 승리팀')
+  })
 })

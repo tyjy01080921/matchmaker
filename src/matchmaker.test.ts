@@ -26,6 +26,7 @@ import {
   validateMeetingSchedule,
   generateTournamentLineups,
   generateTournamentSchedule,
+  getTournamentMatchWinnerId,
   getPlayerMatchTier,
   getPlayerMatchScore,
   makeNumberedTournamentPlayers,
@@ -217,6 +218,40 @@ describe('samplePlayers', () => {
 })
 
 describe('generateSchedule', () => {
+  it.each(['variety', 'skill', 'wait'] as const)(
+    '%s shuffle direction keeps the schedule valid',
+    (shuffleDirection) => {
+      const levels: Level[] = ['A', 'B', 'C', 'D']
+      const players = Array.from({ length: 16 }, (_, index) =>
+        makeTestPlayer(
+          `shuffle-${index + 1}`,
+          levels[index % levels.length],
+          index % 3 === 0 ? 'female' : 'male',
+        ),
+      )
+      const settings = {
+        ...defaultSettings,
+        courtCount: 2,
+        startTime: '18:00',
+        endTime: '19:00',
+        normalGameMinutes: 10 as const,
+        targetRoundCount: 6,
+        pacingRoundCount: 6,
+        roundCountLocked: true,
+        shuffleDirection,
+      }
+
+      const schedule = generateScheduleWithWaitOptimization(
+        players,
+        settings,
+        5,
+      )
+
+      expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
+      expect(schedule.rounds.flatMap((round) => round.matches)).toHaveLength(12)
+    },
+  )
+
   it('moves an unavoidable skill warning to the latest safe match slot', () => {
     const high = { ...makeTestPlayer('late-A', 'A'), matchLevelTier: 1 }
     const low1 = { ...makeTestPlayer('late-E1', 'E'), matchLevelTier: 11 }
@@ -2494,6 +2529,84 @@ describe('generateTournamentSchedule', () => {
     expect(final?.teamBId).toBe(semifinals[1].teamBId)
     expect(thirdPlace?.teamAId).toBe(semifinals[0].teamBId)
     expect(thirdPlace?.teamBId).toBe(semifinals[1].teamAId)
+  })
+
+  it('advances a selected winner without requiring tournament scores', () => {
+    const teams = Array.from({ length: 4 }, (_, index) =>
+      makeTournamentTeam(`winner-only-${index + 1}`, index + 1),
+    )
+    const settings = {
+      ...defaultTournamentSettings,
+      format: 'knockout' as const,
+      includeThirdPlace: false,
+    }
+    const initial = generateTournamentSchedule(teams, settings, {})
+    const semifinals = initial.knockoutMatches.filter(
+      (match) => match.label !== '결승' && match.phase === 'knockout',
+    )
+    const results = {
+      [semifinals[0].id]: {
+        teamAScore: '',
+        teamBScore: '',
+        completed: true,
+        note: '',
+        winnerSide: 'A' as const,
+      },
+      [semifinals[1].id]: {
+        teamAScore: '',
+        teamBScore: '',
+        completed: true,
+        note: '',
+        winnerSide: 'B' as const,
+      },
+    }
+    const schedule = generateTournamentSchedule(teams, settings, results)
+    const final = schedule.knockoutMatches.find((match) => match.label === '결승')
+
+    expect(getTournamentMatchWinnerId(semifinals[0], results[semifinals[0].id]))
+      .toBe(semifinals[0].teamAId)
+    expect(getTournamentMatchWinnerId(semifinals[1], results[semifinals[1].id]))
+      .toBe(semifinals[1].teamBId)
+    expect(final?.teamAId).toBe(semifinals[0].teamAId)
+    expect(final?.teamBId).toBe(semifinals[1].teamBId)
+  })
+
+  it('records a selected group winner without inventing points', () => {
+    const teams = Array.from({ length: 4 }, (_, index) =>
+      makeTournamentTeam(`group-winner-${index + 1}`, index + 1),
+    )
+    const settings = {
+      ...defaultTournamentSettings,
+      format: 'group-knockout' as const,
+      groupCount: 2,
+      advancePerGroup: 1,
+      includeThirdPlace: false,
+    }
+    const initial = generateTournamentSchedule(teams, settings, {})
+    const groupMatch = initial.matches.find(
+      (match) => match.phase === 'group' && match.teamAId && match.teamBId,
+    )
+    expect(groupMatch).toBeDefined()
+    if (!groupMatch?.teamAId || !groupMatch.teamBId) return
+
+    const schedule = generateTournamentSchedule(teams, settings, {
+      [groupMatch.id]: {
+        teamAScore: '',
+        teamBScore: '',
+        completed: true,
+        note: '',
+        winnerSide: 'A',
+      },
+    })
+    const winner = schedule.standings.find(
+      (standing) => standing.team.id === groupMatch.teamAId,
+    )
+    const loser = schedule.standings.find(
+      (standing) => standing.team.id === groupMatch.teamBId,
+    )
+
+    expect(winner).toMatchObject({ wins: 1, pointsFor: 0, pointsAgainst: 0 })
+    expect(loser).toMatchObject({ losses: 1, pointsFor: 0, pointsAgainst: 0 })
   })
 
   it('ranks group teams by wins, point difference, points, head-to-head, then seed', () => {

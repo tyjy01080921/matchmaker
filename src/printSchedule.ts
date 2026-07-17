@@ -251,7 +251,12 @@ const tournamentWinnerTeamId = (
   if (!match.teamAId || !match.teamBId) return undefined
 
   const scores = completedTournamentScores(result)
-  if (!scores) return undefined
+  if (!scores) {
+    if (!result?.completed) return undefined
+    if (result.winnerSide === 'A') return match.teamAId
+    if (result.winnerSide === 'B') return match.teamBId
+    return undefined
+  }
 
   return scores.teamAScore > scores.teamBScore ? match.teamAId : match.teamBId
 }
@@ -284,7 +289,8 @@ const tournamentMatchResultText = (
   }
 
   const scores = completedTournamentScores(result)
-  if (!scores || !winnerId) return '대기'
+  if (!winnerId) return '대기'
+  if (!scores) return `${tournamentTeamPrintName(winnerId, teamsById)} 승`
 
   return `${scores.teamAScore}-${scores.teamBScore} · ${tournamentTeamPrintName(
     winnerId,
