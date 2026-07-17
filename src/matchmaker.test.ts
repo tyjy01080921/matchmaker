@@ -19,8 +19,10 @@ import {
   generateSchedule,
   generateScheduleWithWaitOptimization,
   getMeetingPhaseWeights,
+  getMatchGenderCompositionReview,
   getMatchIndividualSkillSpread,
   getMatchSkillWarningLevel,
+  isMatchGenderImbalanceReview,
   findScheduleOverlap,
   swapMeetingPlayers,
   validateMeetingSchedule,
@@ -217,6 +219,72 @@ describe('samplePlayers', () => {
   })
 })
 
+describe('getMatchGenderCompositionReview', () => {
+  const makeGenderMatch = (
+    genders: [Gender, Gender, Gender, Gender],
+    isSpecial = false,
+  ): Match => {
+    const players = genders.map((gender, index) =>
+      makeTestPlayer(`gender-${genders.join('-')}-${index}`, 'B', gender),
+    ) as [Player, Player, Player, Player]
+    return {
+      id: `gender-match-${genders.join('-')}`,
+      round: 1,
+      court: 1,
+      teamA: [players[0], players[1]],
+      teamB: [players[2], players[3]],
+      isSpecial,
+    }
+  }
+
+  it('labels the three mixed-gender combinations for review', () => {
+    expect(getMatchGenderCompositionReview(
+      makeGenderMatch(['female', 'male', 'male', 'male']),
+    )?.label).toBe('여1·남3')
+    expect(getMatchGenderCompositionReview(
+      makeGenderMatch(['female', 'female', 'female', 'male']),
+    )?.label).toBe('남1·여3')
+    expect(getMatchGenderCompositionReview(
+      makeGenderMatch(['female', 'male', 'female', 'male']),
+    )?.label).toBe('남2·여2')
+  })
+
+  it('excludes same-gender, unknown-gender, and special matches', () => {
+    expect(getMatchGenderCompositionReview(
+      makeGenderMatch(['male', 'male', 'male', 'male']),
+    )).toBeNull()
+    expect(getMatchGenderCompositionReview(
+      makeGenderMatch(['female', 'male', 'male', 'none']),
+    )).toBeNull()
+    expect(getMatchGenderCompositionReview(
+      makeGenderMatch(['female', 'male', 'male', 'male'], true),
+    )).toBeNull()
+  })
+
+  it('counts only reviewable general matches in schedule quality', () => {
+    const matches = [
+      makeGenderMatch(['female', 'male', 'male', 'male']),
+      makeGenderMatch(['female', 'male', 'female', 'male']),
+      makeGenderMatch(['female', 'female', 'female', 'female']),
+      makeGenderMatch(['female', 'male', 'male', 'male'], true),
+    ].map((match, index) => ({ ...match, id: `gender-count-${index}` }))
+    const players = [...new Map(
+      matches.flatMap((match) => [...match.teamA, ...match.teamB])
+        .map((player) => [player.id, player] as const),
+    ).values()]
+    const schedule: Schedule = {
+      rounds: [{ id: 'gender-round', number: 1, matches, resting: [] }],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+
+    const quality = analyzeScheduleQuality(schedule, players)
+    expect(quality.genderCompositionReviewMatches).toBe(2)
+    expect(quality.genderImbalanceReviewMatches).toBe(1)
+  })
+})
+
 describe('generateSchedule', () => {
   it.each(['variety', 'skill', 'wait'] as const)(
     '%s shuffle direction keeps the schedule valid',
@@ -251,6 +319,91 @@ describe('generateSchedule', () => {
       expect(schedule.rounds.flatMap((round) => round.matches)).toHaveLength(12)
     },
   )
+
+  it('avoids 1+3 gender groups when a 2+2 general match is possible', () => {
+    const players = [
+      makeTestPlayer('female-1', 'B', 'female'),
+      makeTestPlayer('female-2', 'B', 'female'),
+      ...Array.from({ length: 6 }, (_, index) =>
+        makeTestPlayer(`male-${index + 1}`, 'B', 'male'),
+      ),
+    ]
+    const settings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '19:00',
+      normalGameMinutes: 15 as const,
+      targetRoundCount: 4,
+      pacingRoundCount: 4,
+      roundCountLocked: true,
+    }
+
+    const schedule = generateScheduleWithWaitOptimization(players, settings, 5)
+    const matches = schedule.rounds.flatMap((round) => round.matches)
+
+    expect(matches).toHaveLength(8)
+    expect(matches.filter(isMatchGenderImbalanceReview)).toHaveLength(0)
+    expect(matches.map(getMatchGenderCompositionReview)
+      .filter((review) => review?.label === '남2·여2')).toHaveLength(4)
+    expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
+  })
+
+  it('coordinates simultaneous courts to avoid leaving a 1+3 gender group', () => {
+    const players = [
+      ...Array.from({ length: 3 }, (_, index) =>
+        makeTestPlayer(`batch-female-${index + 1}`, 'B', 'female'),
+      ),
+      ...Array.from({ length: 9 }, (_, index) =>
+        makeTestPlayer(`batch-male-${index + 1}`, 'B', 'male'),
+      ),
+    ]
+    const settings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '18:40',
+      normalGameMinutes: 10 as const,
+      targetRoundCount: 4,
+      pacingRoundCount: 4,
+      roundCountLocked: true,
+    }
+
+    const schedule = generateScheduleWithWaitOptimization(players, settings, 5)
+    const matches = schedule.rounds.flatMap((round) => round.matches)
+
+    expect(matches).toHaveLength(8)
+    expect(matches.filter(isMatchGenderImbalanceReview)).toHaveLength(0)
+    expect(matches.map(getMatchGenderCompositionReview)
+      .filter((review) => review?.label === '남2·여2')).toHaveLength(4)
+    expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
+  })
+
+  it('keeps an unavoidable 1+3 general match valid', () => {
+    const players = [
+      makeTestPlayer('only-female', 'B', 'female'),
+      ...Array.from({ length: 7 }, (_, index) =>
+        makeTestPlayer(`male-${index + 1}`, 'B', 'male'),
+      ),
+    ]
+    const settings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '18:15',
+      normalGameMinutes: 15 as const,
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
+      roundCountLocked: true,
+    }
+
+    const schedule = generateScheduleWithWaitOptimization(players, settings, 5)
+    const matches = schedule.rounds.flatMap((round) => round.matches)
+
+    expect(matches).toHaveLength(2)
+    expect(matches.filter(isMatchGenderImbalanceReview)).toHaveLength(1)
+    expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
+  })
 
   it('moves an unavoidable skill warning to the latest safe match slot', () => {
     const high = { ...makeTestPlayer('late-A', 'A'), matchLevelTier: 1 }

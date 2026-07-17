@@ -30,6 +30,7 @@ import {
   findMeetingPlayerTimeConflict,
   generateBalancedTournamentTeams,
   generateScheduleWithWaitOptimization,
+  getMatchGenderCompositionReview,
   getMatchSkillWarningLevel,
   generateTournamentLineups,
   generateTournamentSchedule,
@@ -1781,6 +1782,10 @@ function App() {
   const skillBalanceWarning = scheduleQualityAnalysis.teamSkillWarningMatches > 0
     ? `실력 차 주의 ${scheduleQualityAnalysis.teamSkillWarningMatches}경기 · 대진 카드 확인`
     : null
+  const genderCompositionReviewNotice =
+    scheduleQualityAnalysis.genderCompositionReviewMatches > 0
+      ? `성별 조합 확인 ${scheduleQualityAnalysis.genderCompositionReviewMatches}경기 · 보라색 카드 확인`
+      : null
   const gameSpreadWarning = scheduleQualityAnalysis.standardGameSpread > 1
     ? `일반 참가자 경기 수 차 ${scheduleQualityAnalysis.standardGameSpread}경기`
     : null
@@ -1803,11 +1808,13 @@ function App() {
       ...reconciledSpecialWarnings,
       ...(scheduleWaitAnalysis.warning ? [scheduleWaitAnalysis.warning] : []),
       ...(skillBalanceWarning ? [skillBalanceWarning] : []),
+      ...(genderCompositionReviewNotice ? [genderCompositionReviewNotice] : []),
       ...(gameSpreadWarning ? [gameSpreadWarning] : []),
       ...(groupRepeatWarning ? [groupRepeatWarning] : []),
     ],
     [
       gameSpreadWarning,
+      genderCompositionReviewNotice,
       groupRepeatWarning,
       reconciledSpecialWarnings,
       scheduleWaitAnalysis.warning,
@@ -1843,6 +1850,7 @@ function App() {
           gameSpreadWarning,
           groupRepeatWarning,
           skillBalanceWarning,
+          genderCompositionReviewNotice,
         ]
           .filter(Boolean)
           .join(' · ') ||
@@ -1862,6 +1870,7 @@ function App() {
     meetingOperationLabel,
     schedule,
     gameSpreadWarning,
+    genderCompositionReviewNotice,
     groupRepeatWarning,
     candidateQualityWarning,
     hasMeetingQualityWarning,
@@ -3582,6 +3591,7 @@ function App() {
         scheduleQualityAnalysis.standardGameSpread > 1,
         scheduleQualityAnalysis.maximumGroupMeetings > 2,
         scheduleQualityAnalysis.teamSkillWarningMatches > 0,
+        scheduleQualityAnalysis.genderCompositionReviewMatches > 0,
       ].filter(Boolean).length
       setIsMeetingStatusRefreshing(false)
       setNotice(
@@ -4946,6 +4956,15 @@ function App() {
                 </span>
                 <span className={scheduleQualityAnalysis.teamSkillWarningMatches > 0 ? 'wait-warning' : ''}>
                   실력 차 경고 <strong>{scheduleQualityAnalysis.teamSkillWarningMatches}경기</strong>
+                </span>
+                <span className={
+                  scheduleQualityAnalysis.genderCompositionReviewMatches > 0
+                    ? 'gender-review-summary'
+                    : ''
+                }>
+                  성별 조합 확인 <strong>
+                    {scheduleQualityAnalysis.genderCompositionReviewMatches}경기
+                  </strong>
                 </span>
                 <span>
                   스페셜 <strong>
@@ -6615,6 +6634,17 @@ function App() {
                 <span>총 경기</span>
                 <strong>{totalMatches}경기</strong>
               </div>
+              <div className={
+                scheduleQualityAnalysis.genderCompositionReviewMatches > 0
+                  ? 'gender-review-summary'
+                  : ''
+              }>
+                <span>성별 조합 확인</span>
+                <strong>
+                  {scheduleQualityAnalysis.genderCompositionReviewMatches}경기
+                </strong>
+                <small>여1·남3 · 남1·여3 · 남2·여2</small>
+              </div>
               <div>
                 <span>코트별 경기</span>
                 <strong>{minimumCourtGames}–{maximumCourtGames}경기</strong>
@@ -6788,10 +6818,15 @@ function App() {
                           : skillWarningLevel === 'caution'
                             ? 'skill-balance-caution'
                             : ''
+                        const genderCompositionReview =
+                          getMatchGenderCompositionReview(match)
+                        const genderReviewClass = genderCompositionReview
+                          ? 'gender-composition-review'
+                          : ''
                         if (collapsedMatchIds[match.id]) {
                           return (
                             <article
-                              className={`match-card collapsed-match-card ${skillWarningClass}`}
+                              className={`match-card collapsed-match-card ${skillWarningClass} ${genderReviewClass}`}
                               key={match.id}
                             >
                               <strong>{matchIndex + 1}번</strong>
@@ -6994,7 +7029,7 @@ function App() {
                           <article
                             className={`match-card ${
                               match.isSpecial ? 'special-match' : ''
-                            } ${skillWarningClass}`}
+                            } ${skillWarningClass} ${genderReviewClass}`}
                             key={match.id}
                           >
                             <header>
@@ -7042,6 +7077,11 @@ function App() {
                                 {match.isSpecial ? <strong>스페셜</strong> : null}
                               </div>
                             </header>
+                            {genderCompositionReview ? (
+                              <strong className="gender-composition-badge">
+                                성별 조합 확인 · {genderCompositionReview.label}
+                              </strong>
+                            ) : null}
                             {matchMission ? (
                               <div className="match-mission-box">
                                 <div>

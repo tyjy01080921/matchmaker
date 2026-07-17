@@ -97,8 +97,9 @@ const GLOBAL_LEVEL_COHESION_WEIGHT = 900000
 const MIDDLE_LEVEL_COHESION_WEIGHT = 1500000
 const GENERAL_GLOBAL_LEVEL_COHESION_WEIGHT = 2000000
 const GENERAL_MIDDLE_LEVEL_COHESION_WEIGHT = 2200000
-const MIDDLE_PARTNER_LEVEL_WEIGHT = 50000
 const GLOBAL_GENDER_COHESION_WEIGHT = 900
+const OPTIMIZED_GENDER_COMPOSITION_WEIGHT = 300000
+const MIDDLE_PARTNER_LEVEL_WEIGHT = 50000
 const WARMUP_PARTNER_DIVERSITY_WEIGHT = 3000
 const STRICT_WARMUP_PARTNER_DIVERSITY_WEIGHT = 150
 const SPECIAL_GENERAL_GAME_OFFSET = 1
@@ -233,6 +234,8 @@ export type ScheduleWaitAnalysis = {
 export type ScheduleQualityAnalysis = {
   standardGameSpread: number
   effectiveGameSpread: number
+  genderCompositionReviewMatches: number
+  genderImbalanceReviewMatches: number
   teamSkillWarningMatches: number
   teamSkillDangerMatches: number
   maximumTeamSkillGap: number
@@ -351,6 +354,39 @@ export const getMatchIndividualSkillSpread = (match: Match) => {
 const matchOverallSkillGap = (match: Match) =>
   Math.max(matchTeamSkillGap(match), getMatchIndividualSkillSpread(match))
 
+export type MatchGenderCompositionReview = {
+  maleCount: number
+  femaleCount: number
+  label: string
+}
+
+export const getMatchGenderCompositionReview = (
+  match: Match,
+): MatchGenderCompositionReview | null => {
+  if (match.isSpecial) return null
+  const players = [...match.teamA, ...match.teamB]
+  if (players.length !== 4 || players.some((player) => player.gender === 'none')) {
+    return null
+  }
+
+  const maleCount = players.filter((player) => player.gender === 'male').length
+  const femaleCount = players.filter((player) => player.gender === 'female').length
+  const label = femaleCount === 1 && maleCount === 3
+    ? '여1·남3'
+    : femaleCount === 3 && maleCount === 1
+      ? '남1·여3'
+      : femaleCount === 2 && maleCount === 2
+        ? '남2·여2'
+        : ''
+
+  return label ? { maleCount, femaleCount, label } : null
+}
+
+export const isMatchGenderImbalanceReview = (match: Match) => {
+  const review = getMatchGenderCompositionReview(match)
+  return review !== null && Math.min(review.maleCount, review.femaleCount) === 1
+}
+
 export type MatchSkillWarningLevel = 'none' | 'caution' | 'danger'
 
 export const getMatchSkillWarningLevel = (
@@ -392,6 +428,12 @@ export const analyzeScheduleQuality = (
   const teamSkillGaps = matches
     .filter((match) => !match.isSpecial)
     .map(matchOverallSkillGap)
+  const genderCompositionReviewMatches = matches.filter(
+    (match) => getMatchGenderCompositionReview(match) !== null,
+  ).length
+  const genderImbalanceReviewMatches = matches.filter(
+    isMatchGenderImbalanceReview,
+  ).length
   const individualSkillSpreads = matches
     .filter((match) => !match.isSpecial)
     .map(getMatchIndividualSkillSpread)
@@ -453,6 +495,8 @@ export const analyzeScheduleQuality = (
   return {
     standardGameSpread: spread(standardCounts),
     effectiveGameSpread: spread(effectiveCounts),
+    genderCompositionReviewMatches,
+    genderImbalanceReviewMatches,
     teamSkillWarningMatches: teamSkillGaps.filter(
       (gap) => gap >= TEAM_SKILL_PREFERRED_GAP,
     ).length,
@@ -1525,6 +1569,70 @@ const groupGenderMixPenalty = (players: Player[]) => {
   if (genderedCount < 2 || counts.men === 0 || counts.women === 0) return 0
 
   return Math.min(counts.men, counts.women) * 180
+}
+
+const optimizedGenderCompositionPenalty = (players: Player[]) => {
+  const counts = genderCounts(players)
+  const genderedCount = counts.men + counts.women
+  if (genderedCount !== 4 || counts.men === 0 || counts.women === 0) return 0
+
+  return Math.min(counts.men, counts.women) === 2 ? 1 : 4
+}
+
+type GenderBatchPlan = {
+  targetMen: number
+  targetWomen: number
+  selectedMen: number
+  selectedWomen: number
+  remainingMatches: number
+}
+
+const makeGenderBatchPlan = (
+  players: Player[],
+  maximumMatchCount: number,
+): GenderBatchPlan | null => {
+  const counts = genderCounts(players)
+  const genderedCount = counts.men + counts.women
+  const matchCount = Math.min(maximumMatchCount, Math.floor(genderedCount / 4))
+  const capacity = matchCount * 4
+  if (capacity === 0 || genderedCount !== players.length) return null
+
+  const minimumWomen = Math.max(0, capacity - counts.men)
+  const maximumWomen = Math.min(capacity, counts.women)
+  const targetWomen = Array.from(
+    { length: maximumWomen - minimumWomen + 1 },
+    (_, index) => minimumWomen + index,
+  ).sort((left, right) =>
+    Number(left % 2 !== 0) - Number(right % 2 !== 0) ||
+    Math.abs(left * genderedCount - capacity * counts.women) -
+      Math.abs(right * genderedCount - capacity * counts.women),
+  )[0]
+
+  return {
+    targetMen: capacity - targetWomen,
+    targetWomen,
+    selectedMen: 0,
+    selectedWomen: 0,
+    remainingMatches: matchCount,
+  }
+}
+
+const genderBatchReachabilityPenalty = (
+  players: Player[],
+  plan: GenderBatchPlan | null,
+) => {
+  if (plan === null) return 0
+  const counts = genderCounts(players)
+  const nextMen = plan.selectedMen + counts.men
+  const nextWomen = plan.selectedWomen + counts.women
+  const remainingSeats = Math.max(0, plan.remainingMatches - 1) * 4
+
+  return (
+    Math.max(0, nextMen - plan.targetMen) +
+    Math.max(0, nextWomen - plan.targetWomen) +
+    Math.max(0, plan.targetMen - nextMen - remainingSeats) +
+    Math.max(0, plan.targetWomen - nextWomen - remainingSeats)
+  )
 }
 
 const femaleMaleLevelPenalty = (female: Player, male: Player) => {
@@ -2783,6 +2891,7 @@ const scoreGroup = (
   random: () => number,
   conditions: MatchConditionOptions,
   pacing: RoundPacing,
+  preferBalancedGenderComposition = false,
 ) => {
   const pairing = bestPairing(group, history, random, conditions, pacing)
   const restStreaks = group.map((player) => history.restStreaks[player.id] ?? 0)
@@ -2822,7 +2931,10 @@ const scoreGroup = (
       ? restStreaks.reduce((sum, streak) => sum + streak, 0) * 8
       : 0) +
     (conditions.genderBalance
-      ? groupGenderMixPenalty(group) * GLOBAL_GENDER_COHESION_WEIGHT *
+      ? (preferBalancedGenderComposition
+          ? optimizedGenderCompositionPenalty(group) *
+            OPTIMIZED_GENDER_COMPOSITION_WEIGHT
+          : groupGenderMixPenalty(group) * GLOBAL_GENDER_COHESION_WEIGHT) *
         globalCompositionMultiplier
       : 0) +
     groupConsecutivePlayPenalty(group, history, conditions) +
@@ -2852,6 +2964,8 @@ const pickGeneralGroup = (
   settings: MatchSettings,
   conditions: MatchConditionOptions,
   pacing: RoundPacing,
+  preferBalancedGenderComposition = false,
+  genderBatchPlan: GenderBatchPlan | null = null,
 ): [Player, Player, Player, Player] | null => {
   const selectionConditions = conditions
   const phaseWeights = getPacedMeetingPhaseWeights(pacing)
@@ -3213,7 +3327,9 @@ const pickGeneralGroup = (
             random,
             selectionConditions,
             pacing,
-          )
+            preferBalancedGenderComposition,
+          ) + genderBatchReachabilityPenalty(group, genderBatchPlan) *
+            FAIR_GAME_MAX_WEIGHT
           if (score < bestScores[operationalTier][spreadTier]) {
             bestScores[operationalTier][spreadTier] = score
             bestGroups[operationalTier][spreadTier] = group
@@ -3301,7 +3417,9 @@ const pickGeneralGroup = (
       random,
       selectionConditions,
       pacing,
-    )
+      preferBalancedGenderComposition,
+    ) + genderBatchReachabilityPenalty(group, genderBatchPlan) *
+      FAIR_GAME_MAX_WEIGHT
     if (
       operationalTier < recoveryTier ||
       (operationalTier === recoveryTier && score < recoveryScore)
@@ -4523,6 +4641,7 @@ const generateSchedulePass = (
   players: Player[],
   settings: MatchSettings,
   plannedSpecialIds = new Set<string>(),
+  preferBalancedGenderComposition = false,
 ): Schedule => {
   const activePlayers = players
     .filter((player) => player.active)
@@ -4644,6 +4763,12 @@ const generateSchedulePass = (
     }
 
     const addGeneralMatches = (courts: number[]) => {
+      const genderBatchPlan = preferBalancedGenderComposition
+        ? makeGenderBatchPlan(
+            activeRegulars.filter((player) => !usedIds.has(player.id)),
+            courts.length,
+          )
+        : null
       for (const court of courts) {
         if (matches.some((match) => match.court === court)) continue
         if (startOffset + normalGameMinutes > schedulingMinutes) continue
@@ -4655,6 +4780,8 @@ const generateSchedulePass = (
           settings,
           conditions,
           pacing,
+          preferBalancedGenderComposition,
+          genderBatchPlan,
         )
         if (!group) break
 
@@ -4672,6 +4799,15 @@ const generateSchedulePass = (
         match.durationMinutes = normalGameMinutes
         matches.push(match)
         for (const player of group) usedIds.add(player.id)
+        if (genderBatchPlan) {
+          const counts = genderCounts(group)
+          genderBatchPlan.selectedMen += counts.men
+          genderBatchPlan.selectedWomen += counts.women
+          genderBatchPlan.remainingMatches = Math.max(
+            0,
+            genderBatchPlan.remainingMatches - 1,
+          )
+        }
         updateHistoryForMatch(history, match)
       }
     }
@@ -4804,11 +4940,17 @@ const generateSchedulePass = (
   }
 }
 
-export const generateSchedule = (
+const generateScheduleCandidate = (
   players: Player[],
   settings: MatchSettings,
+  preferBalancedGenderComposition: boolean,
 ): Schedule => {
-  const initialSchedule = generateSchedulePass(players, settings)
+  const initialSchedule = generateSchedulePass(
+    players,
+    settings,
+    new Set<string>(),
+    preferBalancedGenderComposition,
+  )
   const plannedSpecialIds = new Set(
     initialSchedule.rounds.flatMap((round) =>
       round.matches
@@ -4821,8 +4963,18 @@ export const generateSchedule = (
 
   return plannedSpecialIds.size === 0
     ? initialSchedule
-    : generateSchedulePass(players, settings, plannedSpecialIds)
+    : generateSchedulePass(
+        players,
+        settings,
+        plannedSpecialIds,
+        preferBalancedGenderComposition,
+      )
 }
+
+export const generateSchedule = (
+  players: Player[],
+  settings: MatchSettings,
+): Schedule => generateScheduleCandidate(players, settings, false)
 
 export const appendGeneralCourtGames = (
   schedule: Schedule,
@@ -4940,6 +5092,7 @@ export const appendGeneralCourtGames = (
           settings,
           conditions,
           pacing,
+          true,
         )
         if (group) break
       }
@@ -5181,6 +5334,450 @@ const compareNumberTuples = (left: number[], right: number[]) => {
     if (difference !== 0) return difference
   }
   return 0
+}
+
+type GenderImbalanceSwapCandidate = {
+  leftId: string
+  rightId: string
+  nextLeft: Match
+  nextRight: Match
+  score: number[]
+}
+
+const applyGenderImbalanceSwap = (
+  schedule: Schedule,
+  swap: GenderImbalanceSwapCandidate,
+): Schedule => ({
+  ...schedule,
+  rounds: schedule.rounds.map((round) => ({
+    ...round,
+    matches: round.matches.map((match) =>
+      match.id === swap.leftId
+        ? swap.nextLeft
+        : match.id === swap.rightId
+          ? swap.nextRight
+          : match,
+    ),
+  })),
+})
+
+const generalMatchTimeKey = (match: Match, settings: MatchSettings) => [
+  match.round,
+  match.startOffsetMinutes ?? (match.round - 1) * GAME_SLOT_MINUTES,
+  match.durationMinutes ?? settings.normalGameMinutes,
+].join(':')
+
+const matchGroupAssignmentKeys = (match: Match) => [
+  matchPlayers(match).map((player) => player.id).sort().join('__'),
+]
+
+const matchPartnerAssignmentKeys = (match: Match) => [
+  match.teamA.map((player) => player.id).sort().join('__'),
+  match.teamB.map((player) => player.id).sort().join('__'),
+]
+
+const matchOpponentAssignmentKeys = (match: Match) =>
+  match.teamA.flatMap((left) =>
+    match.teamB.map((right) => [left.id, right.id].sort().join('__')),
+  )
+
+const assignmentCounts = (keys: string[]) => {
+  const counts = new Map<string, number>()
+  for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1)
+  return counts
+}
+
+const projectedAssignmentStats = (
+  counts: Map<string, number>,
+  removedKeys: string[],
+  addedKeys: string[],
+) => {
+  const removed = assignmentCounts(removedKeys)
+  const added = assignmentCounts(addedKeys)
+  let maximum = Math.max(0, ...counts.values())
+  let repeated = [...counts.values()].reduce(
+    (sum, count) => sum + Math.max(0, count - 1),
+    0,
+  )
+  const affectedKeys = new Set([...removed.keys(), ...added.keys()])
+  for (const key of affectedKeys) {
+    const current = counts.get(key) ?? 0
+    const projected = Math.max(
+      0,
+      current -
+        (removed.get(key) ?? 0) +
+        (added.get(key) ?? 0),
+    )
+    maximum = Math.max(maximum, projected)
+    repeated +=
+      Math.max(0, projected - 1) - Math.max(0, current - 1)
+  }
+  return { maximum, repeated }
+}
+
+const matchSkillWarningCounts = (matches: Match[]) => ({
+  danger: matches.filter(
+    (match) => getMatchSkillWarningLevel(match) === 'danger',
+  ).length,
+  warning: matches.filter(
+    (match) => getMatchSkillWarningLevel(match) !== 'none',
+  ).length,
+  individualDanger: matches.filter(
+    (match) => getMatchIndividualSkillSpread(match) > TEAM_SKILL_WARNING_GAP,
+  ).length,
+  individualWarning: matches.filter(
+    (match) => getMatchIndividualSkillSpread(match) >= TEAM_SKILL_PREFERRED_GAP,
+  ).length,
+})
+
+const isSameLevelMatch = (match: Match) =>
+  new Set(matchPlayers(match).map((player) => player.level)).size === 1
+
+const sameLevelMatchCount = (matches: Match[]) =>
+  matches.filter(isSameLevelMatch).length
+
+const matchPartnerLevelGap = (match: Match) =>
+  [match.teamA, match.teamB].reduce(
+    (sum, team) =>
+      sum + Math.abs(
+        getPlayerMatchScore(team[0]) - getPlayerMatchScore(team[1]),
+      ),
+    0,
+  )
+
+const partnerLevelGapTotal = (matches: Match[]) => matches.reduce(
+  (sum, match) => sum + matchPartnerLevelGap(match),
+  0,
+)
+
+export const reduceGeneralGenderImbalanceMatches = (
+  schedule: Schedule,
+  players: Player[],
+  settings: MatchSettings,
+): Schedule => {
+  const conditions = matchConditions(settings)
+  if (!conditions.genderBalance) return schedule
+
+  let optimized = schedule
+  const timeKeys = [...new Set(
+    schedule.rounds.flatMap((round) =>
+      round.matches
+        .filter((match) => !match.isSpecial)
+        .map((match) => generalMatchTimeKey(match, settings)),
+    ),
+  )]
+
+  for (const timeKey of timeKeys) {
+    const maximumSwaps = Math.max(
+      1,
+      Math.floor(
+        optimized.rounds
+          .flatMap((round) => round.matches)
+          .filter(
+            (match) =>
+              !match.isSpecial &&
+              generalMatchTimeKey(match, settings) === timeKey,
+          ).length / 2,
+      ),
+    )
+
+    for (let step = 0; step < maximumSwaps; step += 1) {
+      const currentMatches = optimized.rounds
+        .flatMap((round) => round.matches)
+        .filter(
+          (match) =>
+            !match.isSpecial &&
+            generalMatchTimeKey(match, settings) === timeKey,
+        )
+      const imbalancedMatches = currentMatches.filter(
+        isMatchGenderImbalanceReview,
+      )
+      if (imbalancedMatches.length < 2) break
+
+      const allMatches = optimized.rounds.flatMap((round) => round.matches)
+      const groupCounts = assignmentCounts(
+        allMatches.flatMap(matchGroupAssignmentKeys),
+      )
+      const partnerCounts = assignmentCounts(
+        allMatches.flatMap(matchPartnerAssignmentKeys),
+      )
+      const opponentCounts = assignmentCounts(
+        allMatches.flatMap(matchOpponentAssignmentKeys),
+      )
+      let best: GenderImbalanceSwapCandidate | null = null
+
+      for (let leftIndex = 0; leftIndex < imbalancedMatches.length - 1; leftIndex += 1) {
+        for (
+          let rightIndex = leftIndex + 1;
+          rightIndex < imbalancedMatches.length;
+          rightIndex += 1
+        ) {
+          const left = imbalancedMatches[leftIndex]
+          const right = imbalancedMatches[rightIndex]
+          const originalMatches = [left, right]
+          const originalPairImbalance = Number(isMatchGenderImbalanceReview(left)) +
+            Number(isMatchGenderImbalanceReview(right))
+          const originalSkill = matchSkillWarningCounts(originalMatches)
+          const originalSameLevelCount = sameLevelMatchCount(originalMatches)
+          const originalPartnerLevelGap = partnerLevelGapTotal(originalMatches)
+          const removedGroupKeys = originalMatches.flatMap(matchGroupAssignmentKeys)
+          const removedPartnerKeys = originalMatches.flatMap(matchPartnerAssignmentKeys)
+          const removedOpponentKeys = originalMatches.flatMap(matchOpponentAssignmentKeys)
+
+          for (const leftPlayer of matchPlayers(left)) {
+            for (const rightPlayer of matchPlayers(right)) {
+              if (
+                leftPlayer.gender === 'none' ||
+                rightPlayer.gender === 'none' ||
+                leftPlayer.gender === rightPlayer.gender
+              ) {
+                continue
+              }
+              const nextLeft = replaceMatchPlayer(
+                left,
+                leftPlayer.id,
+                rightPlayer,
+              )
+              const nextRight = replaceMatchPlayer(
+                right,
+                rightPlayer.id,
+                leftPlayer,
+              )
+              const nextPairImbalance =
+                Number(isMatchGenderImbalanceReview(nextLeft)) +
+                Number(isMatchGenderImbalanceReview(nextRight))
+              if (nextPairImbalance >= originalPairImbalance) continue
+              const nextMatches = [nextLeft, nextRight]
+              const nextSkill = matchSkillWarningCounts(nextMatches)
+              if (
+                sameLevelMatchCount(nextMatches) < originalSameLevelCount ||
+                partnerLevelGapTotal(nextMatches) > originalPartnerLevelGap ||
+                nextSkill.warning - nextSkill.individualWarning !==
+                  originalSkill.warning - originalSkill.individualWarning ||
+                nextSkill.danger > originalSkill.danger ||
+                nextSkill.warning > originalSkill.warning ||
+                nextSkill.individualDanger > originalSkill.individualDanger ||
+                nextSkill.individualWarning > originalSkill.individualWarning
+              ) {
+                continue
+              }
+              const groupStats = projectedAssignmentStats(
+                groupCounts,
+                removedGroupKeys,
+                nextMatches.flatMap(matchGroupAssignmentKeys),
+              )
+              if (
+                conditions.groupRepeat &&
+                groupStats.maximum > MAX_GROUP_MEETINGS
+              ) {
+                continue
+              }
+              const partnerStats = projectedAssignmentStats(
+                partnerCounts,
+                removedPartnerKeys,
+                nextMatches.flatMap(matchPartnerAssignmentKeys),
+              )
+              const opponentStats = projectedAssignmentStats(
+                opponentCounts,
+                removedOpponentKeys,
+                nextMatches.flatMap(matchOpponentAssignmentKeys),
+              )
+              const score = [
+                nextPairImbalance,
+                groupStats.repeated,
+                partnerStats.maximum,
+                partnerStats.repeated,
+                opponentStats.maximum,
+                opponentStats.repeated,
+                matchOverallSkillGap(nextLeft) + matchOverallSkillGap(nextRight),
+              ]
+              if (best === null || compareNumberTuples(score, best.score) < 0) {
+                best = {
+                  leftId: left.id,
+                  rightId: right.id,
+                  nextLeft,
+                  nextRight,
+                  score,
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (best === null) break
+      optimized = applyGenderImbalanceSwap(optimized, best)
+    }
+  }
+
+  const remainingImbalanceCount = optimized.rounds
+    .flatMap((round) => round.matches)
+    .filter(isMatchGenderImbalanceReview).length
+  for (let step = 0; step < Math.floor(remainingImbalanceCount / 2); step += 1) {
+    const allMatches = optimized.rounds.flatMap((round) => round.matches)
+    const imbalancedMatches = allMatches.filter(isMatchGenderImbalanceReview)
+    if (imbalancedMatches.length < 2) break
+
+    const groupCounts = assignmentCounts(
+      allMatches.flatMap(matchGroupAssignmentKeys),
+    )
+    const partnerCounts = assignmentCounts(
+      allMatches.flatMap(matchPartnerAssignmentKeys),
+    )
+    const opponentCounts = assignmentCounts(
+      allMatches.flatMap(matchOpponentAssignmentKeys),
+    )
+    const maximumWaitMinutes = analyzeScheduleWait(
+      optimized,
+      players,
+      settings,
+    ).maximumWaitMinutes
+    const candidates: GenderImbalanceSwapCandidate[] = []
+
+    for (let leftIndex = 0; leftIndex < imbalancedMatches.length - 1; leftIndex += 1) {
+      for (
+        let rightIndex = leftIndex + 1;
+        rightIndex < imbalancedMatches.length;
+        rightIndex += 1
+      ) {
+        const left = imbalancedMatches[leftIndex]
+        const right = imbalancedMatches[rightIndex]
+        if (
+          generalMatchTimeKey(left, settings) ===
+            generalMatchTimeKey(right, settings) ||
+          (left.durationMinutes ?? settings.normalGameMinutes) !==
+            (right.durationMinutes ?? settings.normalGameMinutes)
+        ) {
+          continue
+        }
+        const originalMatches = [left, right]
+        const originalSkill = matchSkillWarningCounts(originalMatches)
+        const removedGroupKeys = originalMatches.flatMap(matchGroupAssignmentKeys)
+        const removedPartnerKeys = originalMatches.flatMap(matchPartnerAssignmentKeys)
+        const removedOpponentKeys = originalMatches.flatMap(matchOpponentAssignmentKeys)
+        const conflictsAtTarget = (playerId: string, target: Match) =>
+          allMatches.some(
+            (match) =>
+              match.id !== left.id &&
+              match.id !== right.id &&
+              windowsOverlap(match, target) &&
+              matchPlayers(match).some((player) => player.id === playerId),
+          )
+
+        for (const leftPlayer of matchPlayers(left)) {
+          for (const rightPlayer of matchPlayers(right)) {
+            if (
+              leftPlayer.gender === 'none' ||
+              rightPlayer.gender === 'none' ||
+              leftPlayer.gender === rightPlayer.gender ||
+              matchPlayers(left).some(
+                (player) => player.id === rightPlayer.id,
+              ) ||
+              matchPlayers(right).some(
+                (player) => player.id === leftPlayer.id,
+              ) ||
+              conflictsAtTarget(leftPlayer.id, right) ||
+              conflictsAtTarget(rightPlayer.id, left)
+            ) {
+              continue
+            }
+            const nextLeft = replaceMatchPlayer(
+              left,
+              leftPlayer.id,
+              rightPlayer,
+            )
+            const nextRight = replaceMatchPlayer(
+              right,
+              rightPlayer.id,
+              leftPlayer,
+            )
+            const nextMatches = [nextLeft, nextRight]
+            if (nextMatches.some(isMatchGenderImbalanceReview)) continue
+            const nextSkill = matchSkillWarningCounts(nextMatches)
+            if (
+              Number(isSameLevelMatch(nextLeft)) <
+                Number(isSameLevelMatch(left)) ||
+              Number(isSameLevelMatch(nextRight)) <
+                Number(isSameLevelMatch(right)) ||
+              matchPartnerLevelGap(nextLeft) > matchPartnerLevelGap(left) ||
+              matchPartnerLevelGap(nextRight) > matchPartnerLevelGap(right) ||
+              nextSkill.warning - nextSkill.individualWarning !==
+                originalSkill.warning - originalSkill.individualWarning ||
+              nextSkill.danger > originalSkill.danger ||
+              nextSkill.warning > originalSkill.warning ||
+              nextSkill.individualDanger > originalSkill.individualDanger ||
+              nextSkill.individualWarning > originalSkill.individualWarning
+            ) {
+              continue
+            }
+            const groupStats = projectedAssignmentStats(
+              groupCounts,
+              removedGroupKeys,
+              nextMatches.flatMap(matchGroupAssignmentKeys),
+            )
+            if (
+              conditions.groupRepeat &&
+              groupStats.maximum > MAX_GROUP_MEETINGS
+            ) {
+              continue
+            }
+            const partnerStats = projectedAssignmentStats(
+              partnerCounts,
+              removedPartnerKeys,
+              nextMatches.flatMap(matchPartnerAssignmentKeys),
+            )
+            const opponentStats = projectedAssignmentStats(
+              opponentCounts,
+              removedOpponentKeys,
+              nextMatches.flatMap(matchOpponentAssignmentKeys),
+            )
+            candidates.push({
+              leftId: left.id,
+              rightId: right.id,
+              nextLeft,
+              nextRight,
+              score: [
+                groupStats.repeated,
+                partnerStats.maximum,
+                partnerStats.repeated,
+                opponentStats.maximum,
+                opponentStats.repeated,
+                Math.abs(
+                  matchTimeWindow(left).start - matchTimeWindow(right).start,
+                ),
+                matchOverallSkillGap(nextLeft) + matchOverallSkillGap(nextRight),
+              ],
+            })
+          }
+        }
+      }
+    }
+
+    let best: GenderImbalanceSwapCandidate | null = null
+    for (const candidate of candidates
+      .sort((left, right) => compareNumberTuples(left.score, right.score))
+      .slice(0, 16)) {
+      const candidateSchedule = applyGenderImbalanceSwap(optimized, candidate)
+      if (
+        validateMeetingSchedule(candidateSchedule, players, settings).length > 0
+      ) {
+        continue
+      }
+      if (
+        analyzeScheduleWait(candidateSchedule, players, settings)
+          .maximumWaitMinutes > maximumWaitMinutes
+      ) {
+        continue
+      }
+      best = candidate
+      break
+    }
+
+    if (best === null) break
+    optimized = applyGenderImbalanceSwap(optimized, best)
+  }
+
+  return refreshScheduleRestingPlayers(optimized, players)
 }
 
 const candidateQualityFailure = (
@@ -5426,6 +6023,13 @@ const compareMultiObjectiveCandidates = (
   const qualityDifference = comparisons.find((difference) => difference !== 0)
   if (qualityDifference !== undefined) return qualityDifference
 
+  if (conditions.genderBalance) {
+    const genderImbalanceDifference =
+      left.quality.genderImbalanceReviewMatches -
+      right.quality.genderImbalanceReviewMatches
+    if (genderImbalanceDifference !== 0) return genderImbalanceDifference
+  }
+
   if (shuffleDirection === 'variety') {
     const varietyDifference = compareNumberTuples(
       [
@@ -5535,12 +6139,16 @@ export const generateScheduleWithWaitOptimization = (
   const candidates: ScheduleCandidate[] = []
   const strictSeeds = [17, 13, 12, 11, 15]
   for (let index = 0; index < maximumAttempts; index += 1) {
-    const generatedSchedule = generateSchedule(players, {
-      ...settings,
-      seed: strictSkillLimit
-        ? strictSeeds[index] ?? 17 + index
-        : settings.seed + index,
-    })
+    const generatedSchedule = generateScheduleCandidate(
+      players,
+      {
+        ...settings,
+        seed: strictSkillLimit
+          ? strictSeeds[index] ?? 17 + index
+          : settings.seed + index,
+      },
+      true,
+    )
     const schedule = rebalanceStandardGameCounts(
       generatedSchedule,
       players,
@@ -5588,9 +6196,14 @@ export const generateScheduleWithWaitOptimization = (
       shuffleDirection,
     ),
   )[0]
+  const genderOptimizedSchedule = reduceGeneralGenderImbalanceMatches(
+    selected.schedule,
+    players,
+    settings,
+  )
   const deferredSchedule = conditions.levelBalance
-    ? deferSkillWarningMatches(selected.schedule, players, settings)
-    : selected.schedule
+    ? deferSkillWarningMatches(genderOptimizedSchedule, players, settings)
+    : genderOptimizedSchedule
   const finalQuality = analyzeScheduleQuality(deferredSchedule, players)
   const finalScheduledMinutes = deferredSchedule.rounds
     .flatMap((round) => round.matches)

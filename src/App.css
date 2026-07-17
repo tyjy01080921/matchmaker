@@ -154,6 +154,16 @@
   color: #9a3412;
 }
 
+.generation-review-summary > span.gender-review-summary {
+  border-color: #a78bfa;
+  color: #6d28d9;
+  background: #f5f0ff;
+}
+
+.generation-review-summary > span.gender-review-summary strong {
+  color: #5b21b6;
+}
+
 .generation-review-summary > span:last-child {
   grid-column: 1 / -1;
 }
@@ -2306,6 +2316,17 @@ textarea {
   grid-column: span 2;
 }
 
+.schedule-summary-grid > div.gender-review-summary {
+  border-color: #a78bfa;
+  background: #f5f0ff;
+  box-shadow: inset 3px 0 0 #7c3aed;
+}
+
+.schedule-summary-grid > div.gender-review-summary span,
+.schedule-summary-grid > div.gender-review-summary strong {
+  color: #5b21b6;
+}
+
 .tournament-summary-bar {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr) minmax(150px, 0.45fr);
@@ -3040,6 +3061,31 @@ textarea {
   border-top-color: var(--red);
   background: #fff5f5;
   box-shadow: 0 0 0 1px rgba(177, 61, 61, 0.1);
+}
+
+.match-card.gender-composition-review {
+  border-color: #a78bfa;
+  border-top-color: #7c3aed;
+  background: #faf7ff;
+  box-shadow: 0 0 0 1px rgba(124, 58, 237, 0.12);
+}
+
+.match-card .gender-composition-badge,
+.match-card.gender-composition-review.collapsed-match-card > strong {
+  color: #5b21b6;
+  background: #ede9fe;
+}
+
+.match-card .gender-composition-badge {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border: 1px solid #c4b5fd;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1.2;
 }
 
 .match-card .skill-balance-badge.skill-balance-caution {

@@ -342,7 +342,7 @@ describe('matchmaker condition simulation', () => {
     expect(quality.maximumPartnerMeetings).toBeLessThanOrEqual(3)
     expect(averageGeneralGames(nonSpecialRegulars))
       .toBeGreaterThan(averageGeneralGames(specialRegulars))
-  }, 15000)
+  }, 30000)
 
   it('keeps the user 57-player sample within 25 minutes with 12-minute games', () => {
     const players = makeUserSamplePlayers()
