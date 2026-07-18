@@ -39,6 +39,7 @@ import {
   rankMeetingSwapCandidates,
   swapMeetingPlayers,
   tournamentParticipantsFromTeams,
+  validateMeetingFairness,
   validateMeetingSchedule,
 } from './matchmaker'
 import {
@@ -1810,6 +1811,12 @@ function App() {
   const groupRepeatWarning = scheduleQualityAnalysis.maximumGroupMeetings > 2
     ? `동일 4인 최대 ${scheduleQualityAnalysis.maximumGroupMeetings}경기`
     : null
+  const partnerRepeatWarning = scheduleQualityAnalysis.maximumPartnerMeetings > 3
+    ? `같은 파트너 최대 ${scheduleQualityAnalysis.maximumPartnerMeetings}회`
+    : null
+  const opponentRepeatWarning = scheduleQualityAnalysis.maximumOpponentMeetings > 6
+    ? `같은 상대 최대 ${scheduleQualityAnalysis.maximumOpponentMeetings}회`
+    : null
   const candidateQualityWarning = scheduleWarningsForStatus.find((warning) =>
     warning.startsWith('동시 품질조건 후보 없음'),
   ) ?? null
@@ -1817,6 +1824,8 @@ function App() {
     scheduleWaitAnalysis.exceedsLimit ||
     gameSpreadWarning ||
     groupRepeatWarning ||
+    partnerRepeatWarning ||
+    opponentRepeatWarning ||
     skillBalanceWarning ||
     candidateQualityWarning,
   )
@@ -1829,11 +1838,15 @@ function App() {
       ...(genderCompositionReviewNotice ? [genderCompositionReviewNotice] : []),
       ...(gameSpreadWarning ? [gameSpreadWarning] : []),
       ...(groupRepeatWarning ? [groupRepeatWarning] : []),
+      ...(partnerRepeatWarning ? [partnerRepeatWarning] : []),
+      ...(opponentRepeatWarning ? [opponentRepeatWarning] : []),
     ],
     [
       gameSpreadWarning,
       genderCompositionReviewNotice,
       groupRepeatWarning,
+      opponentRepeatWarning,
+      partnerRepeatWarning,
       reconciledSpecialWarnings,
       scheduleWaitAnalysis.warning,
       scheduleWarningsForStatus,
@@ -1847,11 +1860,14 @@ function App() {
     }
 
     meetingGenerationEndTimerRef.current = window.setTimeout(() => {
-      const issues = validateMeetingSchedule(
-        schedule,
-        generatedMeetingPlayers,
-        generatedMeetingSettings,
-      )
+      const issues = [
+        ...validateMeetingSchedule(
+          schedule,
+          generatedMeetingPlayers,
+          generatedMeetingSettings,
+        ),
+        ...validateMeetingFairness(schedule, generatedMeetingPlayers),
+      ]
       if (issues.length > 0) {
         setMeetingOperationLabel('대진 검증 실패')
         setMeetingGenerationMessage(issues.join(' · '))
@@ -1867,12 +1883,14 @@ function App() {
           scheduleWaitAnalysis.warning,
           gameSpreadWarning,
           groupRepeatWarning,
+          partnerRepeatWarning,
+          opponentRepeatWarning,
           skillBalanceWarning,
           genderCompositionReviewNotice,
         ]
           .filter(Boolean)
           .join(' · ') ||
-        '중복과 최장 대기 25분 검증을 마쳤습니다.',
+        '중복·0경기·경기 수 균형 검증을 마쳤습니다.',
       )
       setNotice(
         hasMeetingQualityWarning
@@ -1890,6 +1908,8 @@ function App() {
     gameSpreadWarning,
     genderCompositionReviewNotice,
     groupRepeatWarning,
+    opponentRepeatWarning,
+    partnerRepeatWarning,
     candidateQualityWarning,
     hasMeetingQualityWarning,
     skillBalanceWarning,
@@ -3599,15 +3619,20 @@ function App() {
       }
       setPrintImageUrls([])
       setMeetingWarningsReconciled(true)
-      const issues = validateMeetingSchedule(
-        schedule,
-        generatedMeetingPlayers,
-        generatedMeetingSettings,
-      )
+      const issues = [
+        ...validateMeetingSchedule(
+          schedule,
+          generatedMeetingPlayers,
+          generatedMeetingSettings,
+        ),
+        ...validateMeetingFairness(schedule, generatedMeetingPlayers),
+      ]
       const qualityWarningCount = [
         scheduleWaitAnalysis.exceedsLimit,
         scheduleQualityAnalysis.standardGameSpread > 1,
         scheduleQualityAnalysis.maximumGroupMeetings > 2,
+        scheduleQualityAnalysis.maximumPartnerMeetings > 3,
+        scheduleQualityAnalysis.maximumOpponentMeetings > 6,
         scheduleQualityAnalysis.teamSkillWarningMatches > 0,
         scheduleQualityAnalysis.genderCompositionReviewMatches > 0,
       ].filter(Boolean).length
@@ -5112,6 +5137,9 @@ function App() {
                 <span className={scheduleQualityAnalysis.maximumPartnerMeetings > 2 ? 'wait-warning' : ''}>
                   파트너 반복 최대 <strong>{scheduleQualityAnalysis.maximumPartnerMeetings}회</strong>
                 </span>
+                <span className={scheduleQualityAnalysis.maximumOpponentMeetings > 6 ? 'wait-warning' : ''}>
+                  상대 반복 최대 <strong>{scheduleQualityAnalysis.maximumOpponentMeetings}회</strong>
+                </span>
                 <span className={scheduleQualityAnalysis.teamSkillWarningMatches > 0 ? 'wait-warning' : ''}>
                   실력 차 경고 <strong>{scheduleQualityAnalysis.teamSkillWarningMatches}경기</strong>
                 </span>
@@ -5138,6 +5166,12 @@ function App() {
                 <span>평균 대기 <strong>{meetingAverageWaitMinutes}분</strong></span>
                 <span className={scheduleWaitAnalysis.exceedsLimit ? 'wait-warning' : ''}>
                   최장 대기 <strong>{meetingMaximumWaitMinutes}분</strong>
+                </span>
+                <span>
+                  첫 경기 대기 <strong>{scheduleWaitAnalysis.maximumInitialWaitMinutes}분</strong>
+                </span>
+                <span>
+                  마지막 경기 후 여유 <strong>{scheduleWaitAnalysis.maximumFinalIdleMinutes}분</strong>
                 </span>
                 <span className={scheduleQualityAnalysis.participantsOverWaitLimit > 0 ? 'wait-warning' : ''}>
                   25분 초과 <strong>{scheduleQualityAnalysis.participantsOverWaitLimit}명</strong>
@@ -5207,7 +5241,7 @@ function App() {
               ))}
             </div>
             <p className="shuffle-direction-note">
-              경기 수·코트 충돌·최장 대기 등 필수 기준은 그대로 유지됩니다.
+              경기 수·코트 충돌 기준은 유지하고, 대기시간은 다시 계산합니다.
             </p>
           </section>
         </div>
@@ -7471,7 +7505,7 @@ function App() {
                       <th>연령대</th>
                       <th>성별</th>
                       <th>경기</th>
-                      <th>평균 대기</th>
+                      <th>대기</th>
                       <th>승</th>
                       <th>패</th>
                       <th>승률</th>
@@ -7500,9 +7534,13 @@ function App() {
                           </td>
                           <td>{stat.games}</td>
                           <td>
-                            {stat.averageWaitMinutes === null || stat.maxWaitMinutes === null
+                            {stat.firstWaitMinutes === null
                               ? '-'
-                              : `${Math.round(stat.averageWaitMinutes)}분 · 최장 ${stat.maxWaitMinutes}분`}
+                              : `첫 ${stat.firstWaitMinutes}분${
+                                  stat.averageWaitMinutes === null || stat.maxWaitMinutes === null
+                                    ? ''
+                                    : ` · 평균 ${Math.round(stat.averageWaitMinutes)}분 · 최장 ${stat.maxWaitMinutes}분`
+                                }`}
                           </td>
                           <td>{stat.wins}</td>
                           <td>{stat.losses}</td>

@@ -285,6 +285,8 @@ export type PlayerStat = {
   games: number
   averageWaitMinutes: number | null
   maxWaitMinutes: number | null
+  firstWaitMinutes: number | null
+  lastMatchEndMinutes: number | null
   wins: number
   losses: number
   pointsFor: number

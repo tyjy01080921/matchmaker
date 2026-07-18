@@ -25,6 +25,7 @@ import {
   isMatchGenderImbalanceReview,
   findScheduleOverlap,
   swapMeetingPlayers,
+  validateMeetingFairness,
   validateMeetingSchedule,
   generateTournamentLineups,
   generateTournamentSchedule,
@@ -989,6 +990,88 @@ describe('generateSchedule', () => {
       recommendedParticipantCount: 6,
     })
     expect(analysis.warning).toContain('권장 참가 6명 이하')
+  })
+
+  it('reports first-game and final idle time separately from between-game waits', () => {
+    const players = Array.from({ length: 8 }, (_, index) =>
+      makeTestPlayer(`wait-range-${index + 1}`, 'B'),
+    )
+    const settings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '20:00',
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
+      roundCountLocked: true,
+    }
+    const schedule = generateSchedule(players, settings)
+    for (const match of schedule.rounds[0].matches) {
+      match.startOffsetMinutes = 45
+      match.durationMinutes = 15
+    }
+
+    const analysis = analyzeScheduleWait(schedule, players, settings)
+
+    expect(analysis.maximumWaitMinutes).toBe(0)
+    expect(analysis.maximumInitialWaitMinutes).toBe(45)
+    expect(analysis.maximumFinalIdleMinutes).toBe(60)
+    expect(analysis.zeroGameParticipantCount).toBe(0)
+  })
+
+  it('blocks zero-game participants and a standard game spread over one', () => {
+    const players = Array.from({ length: 8 }, (_, index) =>
+      makeTestPlayer(`fairness-validation-${index + 1}`, 'B'),
+    )
+    const settings = {
+      ...defaultSettings,
+      courtCount: 1,
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
+      roundCountLocked: true,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        groupRepeat: false,
+      },
+    }
+    const schedule = generateSchedule(players, settings)
+    const first = schedule.rounds[0].matches[0]
+    schedule.rounds.push({
+      id: 'fairness-validation-round-2',
+      number: 2,
+      matches: [{
+        ...first,
+        id: `${first.id}-repeat`,
+        round: 2,
+        startOffsetMinutes: 15,
+      }],
+      resting: schedule.rounds[0].resting,
+    })
+
+    expect(validateMeetingFairness(schedule, players)).toEqual([
+      '0경기 일반 참가자 4명',
+      '일반 참가자 경기 수 차 2경기',
+    ])
+  })
+
+  it('keeps booking-time overflow as an operational warning, not a failure', () => {
+    const players = Array.from({ length: 4 }, (_, index) =>
+      makeTestPlayer(`overflow-${index + 1}`, 'B'),
+    )
+    const settings = {
+      ...defaultSettings,
+      courtCount: 1,
+      startTime: '18:00',
+      endTime: '18:15',
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
+      roundCountLocked: true,
+    }
+    const schedule = generateSchedule(players, settings)
+    schedule.rounds[0].matches[0].startOffsetMinutes = 30
+
+    expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
+    expect(validateMeetingFairness(schedule, players)).toEqual([])
   })
 
   it.each([10, 12, 15] as const)('applies a %d-minute duration to regular matches', (minutes) => {
@@ -2587,6 +2670,93 @@ describe('generateTournamentSchedule', () => {
     expect(final?.round).toBeGreaterThan(
       Math.max(...semifinals.map((match) => match.round)),
     )
+  })
+
+  it('keeps reserved knockout slots fixed while results are entered', () => {
+    const teams = Array.from({ length: 8 }, (_, index) =>
+      makeTournamentTeam(`stable-team-${index + 1}`, index + 1),
+    )
+    const settings = {
+      ...defaultTournamentSettings,
+      format: 'knockout' as const,
+      courtCount: 4,
+      includeThirdPlace: true,
+    }
+    const initial = generateTournamentSchedule(teams, settings, {})
+    const initialSlots = new Map(
+      initial.knockoutMatches.map((match) => [
+        match.id,
+        { round: match.round, court: match.court, order: match.order },
+      ]),
+    )
+    const quarterfinalResults = Object.fromEntries(
+      initial.knockoutMatches
+        .filter((match) => match.bracketRound === 1 && !match.isBye)
+        .map((match) => [
+          match.id,
+          {
+            teamAScore: '21',
+            teamBScore: '10',
+            completed: true,
+            note: '',
+            winnerSide: 'A' as const,
+          },
+        ]),
+    )
+    const afterQuarterfinals = generateTournamentSchedule(
+      teams,
+      settings,
+      quarterfinalResults,
+    )
+    const semifinalResults = Object.fromEntries(
+      afterQuarterfinals.knockoutMatches
+        .filter((match) => match.bracketRound === 2 && !match.isBye)
+        .map((match) => [
+          match.id,
+          {
+            teamAScore: '21',
+            teamBScore: '15',
+            completed: true,
+            note: '',
+            winnerSide: 'A' as const,
+          },
+        ]),
+    )
+    const completed = generateTournamentSchedule(teams, settings, {
+      ...quarterfinalResults,
+      ...semifinalResults,
+    })
+
+    for (const schedule of [afterQuarterfinals, completed]) {
+      expect(
+        schedule.knockoutMatches.map((match) => [
+          match.id,
+          { round: match.round, court: match.court, order: match.order },
+        ]),
+      ).toEqual(
+        initial.knockoutMatches.map((match) => [
+          match.id,
+          initialSlots.get(match.id),
+        ]),
+      )
+    }
+    const quarterfinalRound = Math.max(
+      ...initial.knockoutMatches
+        .filter((match) => match.bracketRound === 1)
+        .map((match) => match.round),
+    )
+    const semifinalRound = Math.min(
+      ...initial.knockoutMatches
+        .filter((match) => match.bracketRound === 2)
+        .map((match) => match.round),
+    )
+    const finalRound = Math.min(
+      ...initial.knockoutMatches
+        .filter((match) => match.bracketRound === 3)
+        .map((match) => match.round),
+    )
+    expect(semifinalRound - quarterfinalRound).toBeGreaterThanOrEqual(2)
+    expect(finalRound - semifinalRound).toBeGreaterThanOrEqual(2)
   })
 
   it('advances a bye team into the next knockout round', () => {

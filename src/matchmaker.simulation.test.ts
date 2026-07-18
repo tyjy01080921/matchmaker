@@ -9,6 +9,7 @@ import {
   generateScheduleWithWaitOptimization,
   getMatchSkillWarningLevel,
   getPlayerMatchScore,
+  validateMeetingFairness,
   validateMeetingSchedule,
 } from './matchmaker'
 import { getBookingDurationMinutes } from './scheduleTime'
@@ -342,6 +343,104 @@ describe('matchmaker condition simulation', () => {
     expect(quality.maximumPartnerMeetings).toBeLessThanOrEqual(3)
     expect(averageGeneralGames(nonSpecialRegulars))
       .toBeGreaterThan(averageGeneralGames(specialRegulars))
+  }, 30000)
+
+  it.each([
+    { participantCount: 36, courtCount: 4 },
+    { participantCount: 40, courtCount: 4 },
+  ])(
+    'gives every one of $participantCount general participants a balanced game count',
+    ({ participantCount, courtCount }) => {
+      const levels: Player['level'][] = ['A', 'B', 'C', 'D', 'E']
+      const players = Array.from({ length: participantCount }, (_, index): Player => ({
+        id: `fairness-${participantCount}-${index + 1}`,
+        name: `${index + 1}번`,
+        level: levels[index % levels.length],
+        ageGroup: index % 2 === 0 ? '30대' : '40대',
+        gender: index % 3 === 0 ? 'female' : 'male',
+        active: true,
+        specialRequired: false,
+        isGuest: false,
+        guestGameLimit: 0,
+      }))
+      const settings: MatchSettings = {
+        ...defaultSettings,
+        courtCount,
+        startTime: '18:00',
+        endTime: '21:00',
+        normalGameMinutes: 15,
+        targetRoundCount: 12,
+        pacingRoundCount: 12,
+        roundCountLocked: true,
+        seed: 11,
+      }
+      const schedule = generateScheduleWithWaitOptimization(players, settings, 3)
+      const quality = analyzeScheduleQuality(schedule, players)
+
+      expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
+      expect(validateMeetingFairness(schedule, players)).toEqual([])
+      expect(quality.zeroGameStandardParticipants).toBe(0)
+      expect(quality.standardGameSpread).toBeLessThanOrEqual(1)
+    },
+    30000,
+  )
+
+  it('limits repeated partners and opponents in a 16-person meeting', () => {
+    const levels: Player['level'][] = ['A', 'B', 'C', 'D']
+    const players = Array.from({ length: 16 }, (_, index): Player => ({
+      id: `variety-${index + 1}`,
+      name: `${index + 1}번`,
+      level: levels[index % levels.length],
+      ageGroup: index % 2 === 0 ? '30대' : '40대',
+      gender: index % 4 === 0 ? 'female' : 'male',
+      active: true,
+      specialRequired: false,
+      isGuest: false,
+      guestGameLimit: 0,
+    }))
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 3,
+      startTime: '18:00',
+      endTime: '21:00',
+      normalGameMinutes: 15,
+      targetRoundCount: 12,
+      pacingRoundCount: 12,
+      roundCountLocked: true,
+      seed: 11,
+      shuffleDirection: 'balanced',
+    }
+    const schedule = generateScheduleWithWaitOptimization(players, settings, 5)
+    const quality = analyzeScheduleQuality(schedule, players)
+
+    expect(validateMeetingFairness(schedule, players)).toEqual([])
+    expect(quality.maximumPartnerMeetings).toBeLessThanOrEqual(3)
+    expect(quality.maximumOpponentMeetings).toBeLessThanOrEqual(6)
+  }, 30000)
+
+  it('limits repeated opponents when a 16-person meeting includes a special guest', () => {
+    const players = makeSimulationPlayers()
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 3,
+      startTime: '18:00',
+      endTime: '21:00',
+      normalGameMinutes: 15,
+      targetRoundCount: 12,
+      pacingRoundCount: 12,
+      roundCountLocked: true,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 8,
+      specialTimeLimitEnabled: false,
+      seed: 11,
+    }
+    const schedule = generateScheduleWithWaitOptimization(players, settings, 5)
+    const quality = analyzeScheduleQuality(schedule, players)
+
+    expect(validateMeetingFairness(schedule, players)).toEqual([])
+    expect(quality.maximumPartnerMeetings).toBeLessThanOrEqual(3)
+    expect(quality.maximumOpponentMeetings).toBeLessThanOrEqual(6)
   }, 30000)
 
   it('keeps the user 57-player sample within 25 minutes with 12-minute games', () => {

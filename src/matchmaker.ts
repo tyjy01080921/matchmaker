@@ -194,13 +194,16 @@ const refreshScheduleRestingPlayers = (
   }
 }
 
-const playerWaitGaps = (matches: Match[], playerId: string) => {
-  const windows = matches
+const playerMatchWindows = (matches: Match[], playerId: string) =>
+  matches
     .filter((match) =>
       [...match.teamA, ...match.teamB].some((player) => player.id === playerId),
     )
     .map(matchTimeWindow)
     .sort((left, right) => left.start - right.start)
+
+const playerWaitGaps = (matches: Match[], playerId: string) => {
+  const windows = playerMatchWindows(matches, playerId)
   const gaps: number[] = []
   for (let index = 1; index < windows.length; index += 1) {
     gaps.push(Math.max(0, windows[index].start - windows[index - 1].end))
@@ -208,8 +211,10 @@ const playerWaitGaps = (matches: Match[], playerId: string) => {
   return gaps
 }
 
-const playerMaximumWaitMinutes = (matches: Match[], playerId: string) =>
-  Math.max(0, ...playerWaitGaps(matches, playerId))
+const playerMaximumWaitMinutes = (
+  matches: Match[],
+  playerId: string,
+) => Math.max(0, ...playerWaitGaps(matches, playerId))
 
 export const getScheduleMaximumWaitMinutes = (
   schedule: Schedule,
@@ -226,6 +231,9 @@ export const getScheduleMaximumWaitMinutes = (
 
 export type ScheduleWaitAnalysis = {
   maximumWaitMinutes: number
+  maximumInitialWaitMinutes: number
+  maximumFinalIdleMinutes: number
+  zeroGameParticipantCount: number
   exceedsLimit: boolean
   recommendedParticipantCount: number
   warning: string | null
@@ -234,6 +242,8 @@ export type ScheduleWaitAnalysis = {
 export type ScheduleQualityAnalysis = {
   standardGameSpread: number
   effectiveGameSpread: number
+  zeroGameStandardParticipants: number
+  maximumInitialWaitMinutes: number
   genderCompositionReviewMatches: number
   genderImbalanceReviewMatches: number
   teamSkillWarningMatches: number
@@ -263,6 +273,29 @@ export const analyzeScheduleWait = (
   settings: MatchSettings,
 ): ScheduleWaitAnalysis => {
   const activePlayers = players.filter((player) => player.active)
+  const matches = schedule.rounds.flatMap((round) => round.matches)
+  const bookingMinutes = getBookingDurationMinutes(
+    settings.startTime,
+    settings.endTime,
+  )
+  const windowsByPlayer = activePlayers.map((player) =>
+    playerMatchWindows(matches, player.id),
+  )
+  const zeroGameParticipantCount = windowsByPlayer.filter(
+    (windows) => windows.length === 0,
+  ).length
+  const maximumInitialWaitMinutes = Math.max(
+    0,
+    ...windowsByPlayer.map((windows) => windows[0]?.start ?? bookingMinutes),
+  )
+  const maximumFinalIdleMinutes = Math.max(
+    0,
+    ...windowsByPlayer.map((windows) =>
+      windows.length > 0
+        ? Math.max(0, bookingMinutes - windows[windows.length - 1].end)
+        : bookingMinutes,
+    ),
+  )
   const maximumWaitMinutes = getScheduleMaximumWaitMinutes(schedule, players)
   const exceedsLimit = maximumWaitMinutes > WAIT_PRIORITY_MINUTES
   const normalGameMinutes = [10, 12, 15].includes(settings.normalGameMinutes)
@@ -296,12 +329,17 @@ export const analyzeScheduleWait = (
   const recommendedParticipantCount = exceedsLimit
     ? Math.min(capacityParticipantCount, waitRatioParticipantCount)
     : capacityParticipantCount
-  const warning = exceedsLimit
-    ? `최장 대기 ${maximumWaitMinutes}분 · 권장 참가 ${recommendedParticipantCount}명 이하`
+  const warning = zeroGameParticipantCount > 0
+    ? `0경기 참가자 ${zeroGameParticipantCount}명 · 대진을 다시 생성해 주세요.`
+    : exceedsLimit
+      ? `최장 대기 ${maximumWaitMinutes}분 · 권장 참가 ${recommendedParticipantCount}명 이하`
     : null
 
   return {
     maximumWaitMinutes,
+    maximumInitialWaitMinutes,
+    maximumFinalIdleMinutes,
+    zeroGameParticipantCount,
     exceedsLimit,
     recommendedParticipantCount,
     warning,
@@ -447,6 +485,13 @@ export const analyzeScheduleQuality = (
   const waitsByPlayer = activePlayers.map((player) =>
     playerWaitGaps(matches, player.id),
   )
+  const scheduleEndMinutes = Math.max(
+    0,
+    ...matches.map((match) => matchTimeWindow(match).end),
+  )
+  const windowsByPlayer = activePlayers.map((player) =>
+    playerMatchWindows(matches, player.id),
+  )
   const participantAverageWaits = waitsByPlayer
     .filter((gaps) => gaps.length > 0)
     .map((gaps) => gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length)
@@ -495,6 +540,13 @@ export const analyzeScheduleQuality = (
   return {
     standardGameSpread: spread(standardCounts),
     effectiveGameSpread: spread(effectiveCounts),
+    zeroGameStandardParticipants: standardCounts.filter((count) => count === 0).length,
+    maximumInitialWaitMinutes: Math.max(
+      0,
+      ...windowsByPlayer.map(
+        (windows) => windows[0]?.start ?? scheduleEndMinutes,
+      ),
+    ),
     genderCompositionReviewMatches,
     genderImbalanceReviewMatches,
     teamSkillWarningMatches: teamSkillGaps.filter(
@@ -511,8 +563,9 @@ export const analyzeScheduleQuality = (
       (spread) => spread > TEAM_SKILL_WARNING_GAP,
     ).length,
     maximumIndividualSkillSpread: Math.max(0, ...individualSkillSpreads),
-    participantsOverWaitLimit: waitsByPlayer.filter(
-      (gaps) => Math.max(0, ...gaps) > WAIT_PRIORITY_MINUTES,
+    participantsOverWaitLimit: activePlayers.filter(
+      (player) =>
+        playerMaximumWaitMinutes(matches, player.id) > WAIT_PRIORITY_MINUTES,
     ).length,
     maximumPartnerMeetings: Math.max(0, ...partnerCounts),
     averageWaitMinutes: participantAverageWaits.length > 0
@@ -722,6 +775,43 @@ export const validateMeetingSchedule = (
   }
 
   return [...issues]
+}
+
+export const validateMeetingFairness = (
+  schedule: Schedule,
+  players: Player[],
+): string[] => {
+  const matches = schedule.rounds.flatMap((round) => round.matches)
+  const gameCountByPlayer = new Map(
+    players
+      .filter((player) => player.active && !player.isGuest)
+      .map((player) => [
+        player.id,
+        matches.filter((match) =>
+          [...match.teamA, ...match.teamB].some(
+            (matchPlayer) => matchPlayer.id === player.id,
+          ),
+        ).length,
+      ]),
+  )
+  const zeroGameCount = [...gameCountByPlayer.values()].filter(
+    (count) => count === 0,
+  ).length
+  const standardCounts = players
+    .filter(
+      (player) =>
+        player.active && !player.isGuest && !player.gameCountFlexible,
+    )
+    .map((player) => gameCountByPlayer.get(player.id) ?? 0)
+  const standardSpread = standardCounts.length > 0
+    ? Math.max(...standardCounts) - Math.min(...standardCounts)
+    : 0
+  const issues: string[] = []
+  if (zeroGameCount > 0) issues.push(`0경기 일반 참가자 ${zeroGameCount}명`)
+  if (standardSpread > 1) {
+    issues.push(`일반 참가자 경기 수 차 ${standardSpread}경기`)
+  }
+  return issues
 }
 
 export const swapMeetingPlayers = (
@@ -3919,10 +4009,6 @@ const assignTournamentOrder = (
   startOrder = 1,
 ) => {
   const courtCount = normalizeTournamentCourtCount(settings)
-  const bookingRoundCount = getBookingRoundCount(
-    settings.startTime,
-    settings.endTime,
-  )
   const firstRound = Math.max(1, Math.ceil(startOrder / courtCount))
   const matchesByRound = new Map<number, TournamentMatch[]>()
   const lastRoundByTeam = new Map<string, number>()
@@ -3955,7 +4041,10 @@ const assignTournamentOrder = (
       const previousStageRound = lastRoundByBracketStage.get(
         (match.bracketRound ?? 1) - 1,
       )
-      if (previousStageRound !== undefined && round <= previousStageRound) {
+      // 결과가 아직 없어 진출 팀을 알 수 없는 경우에도 앞 단계 뒤에
+      // 한 타임을 비워 둔다. 이렇게 예약한 시간은 결과 입력 후에도 같아서
+      // 공유된 토너먼트 일정이 진행 중에 뒤로 밀리지 않는다.
+      if (previousStageRound !== undefined && round <= previousStageRound + 1) {
         return false
       }
     }
@@ -3970,10 +4059,9 @@ const assignTournamentOrder = (
       return firstRound + matches.length * 2
     }
     const preferredRound = findRound(true)
-    const earliestRound = findRound(false)
-    const round = preferredRound <= bookingRoundCount
-      ? preferredRound
-      : earliestRound
+    // 대관시간을 넘더라도 휴식·의존 관계를 깨지 않는다. 초과 시간은
+    // 현장에서 조정할 운영 경고이며, 대진 안정성을 훼손하는 실패 조건이 아니다.
+    const round = preferredRound
     const placed = matchesByRound.get(round) ?? []
     const scheduled = {
       ...match,
@@ -5811,6 +5899,7 @@ const candidateQualityFailure = (
       : Math.max(0, quality.teamSkillDangerMatches - 10) +
         Math.max(0, quality.teamSkillWarningMatches - 20)
   const failures = [
+    quality.zeroGameStandardParticipants,
     Math.max(0, quality.standardGameSpread - 1),
     Math.max(0, wait.maximumWaitMinutes - WAIT_PRIORITY_MINUTES) /
       normalGameMinutes,
@@ -5887,7 +5976,8 @@ const rebalanceStandardGameCounts = (
   if (standardPlayers.length < 2) return schedule
 
   let balancedSchedule = schedule
-  for (let pass = 0; pass < 4; pass += 1) {
+  const maximumPasses = Math.min(32, standardPlayers.length * 2)
+  for (let pass = 0; pass < maximumPasses; pass += 1) {
     const matches = balancedSchedule.rounds.flatMap((round) => round.matches)
     const gameCounts = new Map(
       standardPlayers.map((player) => [
@@ -5911,6 +6001,7 @@ const rebalanceStandardGameCounts = (
       (player) => gameCounts.get(player.id) === maximum,
     )
     const baseQuality = analyzeScheduleQuality(balancedSchedule, players)
+    const baseWait = analyzeScheduleWait(balancedSchedule, players, settings)
     let bestCandidate: {
       schedule: Schedule
       score: number[]
@@ -5973,11 +6064,25 @@ const rebalanceStandardGameCounts = (
               continue
             }
             const wait = analyzeScheduleWait(candidateSchedule, players, settings)
-            if (wait.maximumWaitMinutes > WAIT_PRIORITY_MINUTES) {
+            if (
+              wait.maximumWaitMinutes > Math.max(
+                WAIT_PRIORITY_MINUTES,
+                baseWait.maximumWaitMinutes,
+              ) ||
+              wait.zeroGameParticipantCount > baseWait.zeroGameParticipantCount
+            ) {
               continue
             }
 
             const score = [
+              quality.zeroGameStandardParticipants,
+              quality.standardGameSpread,
+              Math.max(
+                0,
+                new Set(replacementGroup.map((player) => player.level)).size -
+                  new Set(matchPlayers.map((player) => player.level)).size,
+              ),
+              new Set(replacementGroup.map((player) => player.level)).size,
               quality.teamSkillDangerMatches,
               quality.teamSkillWarningMatches,
               quality.repeatedGroupAssignments,
@@ -6285,6 +6390,8 @@ export const calculateStats = (
       games: 0,
       averageWaitMinutes: null,
       maxWaitMinutes: null,
+      firstWaitMinutes: null,
+      lastMatchEndMinutes: null,
       wins: 0,
       losses: 0,
       pointsFor: 0,
@@ -6347,16 +6454,18 @@ export const calculateStats = (
   }
 
   for (const [playerId, windows] of matchWindowsByPlayer) {
-    if (windows.length < 2) continue
     const ordered = [...windows].sort((a, b) => a.start - b.start || a.end - b.end)
+    const stat = stats.get(playerId)
+    if (!stat || ordered.length === 0) continue
+    stat.firstWaitMinutes = ordered[0].start
+    stat.lastMatchEndMinutes = Math.max(...ordered.map((window) => window.end))
+    if (ordered.length < 2) continue
     const waits: number[] = []
     let previousEnd = ordered[0].end
     for (const window of ordered.slice(1)) {
       waits.push(Math.max(0, window.start - previousEnd))
       previousEnd = Math.max(previousEnd, window.end)
     }
-    const stat = stats.get(playerId)
-    if (!stat) continue
     stat.averageWaitMinutes = waits.reduce((sum, wait) => sum + wait, 0) / waits.length
     stat.maxWaitMinutes = Math.max(...waits)
   }
