@@ -6,6 +6,7 @@ import {
   getProgressWinnerSide,
   getMeetingCourtMatchNumber,
   getTournamentCourtMatchNumber,
+  getProgressCourtPageSize,
   hasTournamentWinner,
   hasProgressScorePair,
   toggleProgressWinner,
@@ -63,6 +64,13 @@ const tournamentMatch = (
 })
 
 describe('progress mode helpers', () => {
+  it('shows four courts on a mobile landscape viewport', () => {
+    expect(getProgressCourtPageSize(915, 412)).toBe(4)
+    expect(getProgressCourtPageSize(1200, 540)).toBe(4)
+    expect(getProgressCourtPageSize(390, 844)).toBe(1)
+    expect(getProgressCourtPageSize(1440, 900)).toBe(6)
+  })
+
   it('keeps score entry pending and derives the winner without completing', () => {
     const withTeamA = updateProgressScore(undefined, 'A', '21')
     const withBoth = updateProgressScore(withTeamA, 'B', '17')

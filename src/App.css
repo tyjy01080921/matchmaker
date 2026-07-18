@@ -2043,6 +2043,309 @@ textarea {
   margin: 0 auto;
 }
 
+.shared-schedule-finder {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid rgba(12, 143, 127, 0.3);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(47, 208, 180, 0.1), transparent 48%),
+    #fff;
+  box-shadow: 0 12px 30px rgba(7, 31, 61, 0.09);
+}
+
+.shared-schedule-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.shared-schedule-heading span,
+.personal-schedule header span {
+  display: block;
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 950;
+}
+
+.shared-schedule-heading h2,
+.personal-schedule h3 {
+  margin: 2px 0 0;
+  color: var(--navy);
+}
+
+.shared-schedule-heading h2 {
+  font-size: 22px;
+}
+
+.shared-schedule-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.shared-schedule-search {
+  display: grid;
+  grid-template-columns: auto minmax(160px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.shared-schedule-search label {
+  color: var(--navy);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.shared-schedule-search input {
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid #aebfbb;
+  border-radius: 8px;
+  color: var(--navy);
+  background: #fff;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.shared-schedule-search button {
+  min-height: 44px;
+  padding-inline: 22px;
+}
+
+.shared-schedule-feedback {
+  margin: 0;
+  padding: 11px 12px;
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--paper);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.shared-schedule-candidates {
+  display: grid;
+  gap: 7px;
+}
+
+.shared-schedule-candidates > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.shared-schedule-candidates > div {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.shared-schedule-candidates button {
+  display: grid;
+  min-width: 110px;
+  gap: 2px;
+  text-align: left;
+}
+
+.shared-schedule-candidates small {
+  color: var(--muted);
+}
+
+.personal-schedule {
+  overflow: hidden;
+  border: 1px solid rgba(7, 31, 61, 0.16);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.personal-schedule > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--navy), #113a63);
+}
+
+.personal-schedule h3 {
+  color: #fff;
+  font-size: 20px;
+}
+
+.personal-schedule header small {
+  color: #c7fff3;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.personal-schedule header > strong {
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: var(--navy);
+  background: #c7fff3;
+  font-size: 12px;
+}
+
+.personal-schedule-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  padding: 8px;
+}
+
+.personal-schedule-list article {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 9px;
+  padding: 9px 52px 9px 9px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--mint);
+  border-radius: 8px;
+  background: var(--paper);
+}
+
+.personal-schedule-order {
+  display: grid;
+  grid-row: 1 / span 2;
+  align-content: start;
+  justify-items: center;
+}
+
+.personal-schedule-order > span {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--green);
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.personal-schedule-location time {
+  flex: 0 0 100%;
+  color: var(--navy);
+  font-size: 11px;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.personal-schedule-location {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.personal-schedule-location strong {
+  color: var(--navy);
+  font-size: 16px;
+}
+
+.personal-schedule-location span,
+.personal-schedule-location small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.personal-schedule-teams {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.personal-schedule-teams span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--navy);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.personal-schedule-teams b {
+  display: inline-block;
+  width: 34px;
+  color: var(--green);
+  font-size: 9px;
+}
+
+.personal-schedule-list article > em {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: #7a4b00;
+  background: #fff2cd;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 950;
+}
+
+.personal-schedule-list article > em.completed {
+  color: var(--green);
+  background: var(--soft-green);
+}
+
+.personal-schedule > footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  background: #f5f8f8;
+  font-size: 10px;
+  font-weight: 800;
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .shared-schedule-finder {
+    gap: 9px;
+    margin-bottom: 12px;
+    padding: 11px;
+    border-radius: 11px;
+  }
+
+  .shared-schedule-heading {
+    align-items: start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .shared-schedule-heading h2 {
+    font-size: 19px;
+  }
+
+  .shared-schedule-search {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .shared-schedule-search label {
+    grid-column: 1 / -1;
+  }
+
+  .shared-schedule-search button {
+    padding-inline: 16px;
+  }
+
+  .personal-schedule-list {
+    grid-template-columns: 1fr;
+  }
+
+  .personal-schedule-list article {
+    padding-right: 46px;
+  }
+}
+
 #meeting-prizes,
 #meeting-progress,
 #meeting-schedule,
@@ -3510,6 +3813,30 @@ textarea {
 
   .header-actions {
     justify-content: flex-start;
+    width: 100%;
+    gap: 5px;
+  }
+
+  .header-actions button {
+    min-width: 0;
+    flex: 1 1 0;
+    padding-inline: 6px;
+    white-space: nowrap;
+  }
+
+  .header-actions.operator-actions button:nth-of-type(-n + 3) {
+    flex-grow: 1.15;
+  }
+
+  .header-actions.operator-actions button:nth-of-type(n + 4) {
+    flex-grow: 0.72;
+    padding-inline: 4px;
+    font-size: 11px;
+  }
+
+  .header-actions .header-status {
+    flex: 0 0 100%;
+    justify-content: center;
   }
 
   .mode-switch {
@@ -3619,7 +3946,13 @@ textarea {
 
   .header-actions {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .header-actions.operator-actions {
+    grid-template-columns:
+      repeat(3, minmax(0, 1.15fr))
+      repeat(2, minmax(0, 0.72fr));
   }
 
   .shortcut-row {
@@ -3647,6 +3980,21 @@ textarea {
     min-width: 0;
     width: 100%;
     padding-inline: 4px;
+  }
+
+  .header-actions button {
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .header-actions.operator-actions button:nth-of-type(-n + 3) {
+    font-size: 11.5px;
+    font-weight: 950;
+  }
+
+  .header-actions.operator-actions button:nth-of-type(n + 4) {
+    padding-inline: 2px;
+    font-size: 10px;
   }
 
   .header-status {
@@ -4851,12 +5199,30 @@ textarea {
 }
 
 .progress-court-pagination {
-  display: flex;
+  display: grid;
   flex: 0 0 auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  justify-content: center;
-  gap: 8px;
+  gap: 6px 10px;
   padding: 6px 12px 0;
+}
+
+.progress-court-page-controls,
+.progress-court-jump-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.progress-court-page-controls {
+  justify-content: center;
+}
+
+.progress-court-jump-list {
+  min-width: 0;
+  justify-content: center;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .progress-court-pagination button {
@@ -4875,6 +5241,19 @@ textarea {
   color: var(--muted);
   font-size: 11px;
   font-weight: 900;
+}
+
+.progress-court-jump-list button {
+  min-width: 50px;
+  border-color: rgba(12, 143, 127, 0.3);
+  background: #fff;
+}
+
+.progress-court-jump-list button.active {
+  border-color: var(--green);
+  color: #fff;
+  background: var(--green);
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.14);
 }
 
 .progress-court-board {
@@ -4905,6 +5284,11 @@ textarea {
   grid-template-rows: auto minmax(0, 1fr);
   border-radius: 10px;
   scroll-snap-align: none;
+}
+
+.progress-court-lane.selected {
+  border-color: rgba(12, 143, 127, 0.62);
+  box-shadow: 0 0 0 2px rgba(47, 208, 180, 0.16);
 }
 
 .progress-court-lane > header {
@@ -5316,7 +5700,12 @@ textarea {
   }
 
   .progress-court-pagination {
-    justify-content: space-between;
+    grid-template-columns: 1fr;
+  }
+
+  .progress-court-page-controls,
+  .progress-court-jump-list {
+    justify-content: flex-start;
   }
 
   .progress-court-pagination button {
@@ -5421,8 +5810,14 @@ textarea {
   }
 
   .progress-court-pagination {
-    gap: 4px;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 3px 6px;
     padding: 3px 8px 0;
+  }
+
+  .progress-court-page-controls,
+  .progress-court-jump-list {
+    gap: 3px;
   }
 
   .progress-court-pagination button {
@@ -5437,5 +5832,120 @@ textarea {
 
   .progress-court-pagination span {
     font-size: 9px;
+  }
+
+  .progress-court-jump-list button {
+    min-width: 40px;
+  }
+
+  .progress-court-board[data-court-columns='4'] {
+    gap: 4px;
+    padding: 4px 5px 8px;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-court-lane > header {
+    padding-inline: 6px;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-court-lane > header h2 {
+    font-size: 15px;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-court-lane > header span {
+    font-size: 9px;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-court-matches {
+    gap: 4px;
+    padding: 3px;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-match-card {
+    gap: 4px;
+    padding: 4px;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-card-heading {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 3px;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-card-identity {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-card-identity > strong,
+  .progress-court-board[data-court-columns='4']
+    .progress-match-card.current
+    .progress-card-identity > strong {
+    font-size: 13px;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-card-heading time {
+    justify-self: start;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-card-heading time > strong {
+    font-size: 15px;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-card-heading time > span {
+    font-size: 8px;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-result-team {
+    min-height: 0;
+    grid-template-columns: 23px minmax(0, 1fr) 43px 30px;
+    grid-template-rows: auto auto;
+    align-items: center;
+    gap: 3px;
+    padding: 4px;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-result-team > span {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-result-team > strong {
+    grid-column: 2 / -1;
+    grid-row: 1;
+    font-size: 12px;
+    line-height: 1.25;
+    overflow-wrap: normal;
+    word-break: keep-all;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-result-team input {
+    grid-column: 3;
+    grid-row: 2;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-result-team button {
+    grid-column: 4;
+    grid-row: 2;
+  }
+
+  .progress-court-board[data-court-columns='4']
+    .progress-upcoming-teams
+    .progress-team-row strong,
+  .progress-court-board[data-court-columns='4'] .progress-team-preview strong {
+    overflow-wrap: normal;
+    word-break: keep-all;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-team-preview {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .progress-court-board[data-court-columns='4']
+    .progress-team-preview strong:last-child {
+    text-align: left;
+  }
+
+  .progress-court-board[data-court-columns='4'] .progress-team-preview span {
+    justify-self: start;
   }
 }

@@ -56,6 +56,8 @@ import {
   MeetingProgressMode,
   TournamentProgressMode,
 } from './ProgressModeView'
+import { SharedScheduleFinder } from './SharedScheduleFinder'
+import type { SharedScheduleCandidate } from './sharedSchedule'
 import {
   buildMeetingCourtLanes,
   buildTournamentCourtLanes,
@@ -4798,6 +4800,146 @@ function App() {
     )
   }
 
+  const meetingSharedScheduleCandidates: SharedScheduleCandidate[] =
+    isSharedMode ? generatedMeetingPlayers
+      .filter((player) => player.active)
+      .map((player) => {
+        const playerMatches = allScheduledMatches
+          .filter((match) =>
+            [...match.teamA, ...match.teamB].some(
+              (matchPlayer) => matchPlayer.id === player.id,
+            ),
+          )
+          .sort((left, right) =>
+            matchStartOffset(left) - matchStartOffset(right) ||
+            left.court - right.court,
+          )
+        const aliases = playerMatches
+          .map((match) => {
+            const matchPlayer = [...match.teamA, ...match.teamB].find(
+              (candidate) => candidate.id === player.id,
+            )
+            return matchPlayer ? matchPlayerName(match, matchPlayer) : ''
+          })
+          .filter(Boolean)
+
+        return {
+          id: `meeting-${player.id}`,
+          name: playerDisplayName(player, scheduleDisplayNames),
+          searchTerms: aliases,
+          subtitle: `${playerMatches.length}경기 배정`,
+          items: playerMatches.map((match) => {
+            const isTeamA = match.teamA.some(
+              (matchPlayer) => matchPlayer.id === player.id,
+            )
+            const ownTeam = isTeamA ? match.teamA : match.teamB
+            const opponentTeam = isTeamA ? match.teamB : match.teamA
+            const startsAt = matchStartOffset(match)
+            const courtMatches = courtSchedules.find(
+              (court) => court.number === match.court,
+            )?.matches ?? []
+            const courtMatchNumber = courtMatches.findIndex(
+              (courtMatch) => courtMatch.id === match.id,
+            ) + 1
+
+            return {
+              id: match.id,
+              time: `${clockTimeAtOffset(
+                generatedMeetingSettings.startTime,
+                startsAt,
+              )}–${clockTimeAtOffset(
+                generatedMeetingSettings.startTime,
+                startsAt + (match.durationMinutes ?? GAME_SLOT_MINUTES),
+              )}`,
+              court: match.court,
+              label: `${courtMatchNumber}경기`,
+              detail: match.isSpecial ? '스페셜' : undefined,
+              team: ownTeam
+                .filter((matchPlayer) => matchPlayer.id !== player.id)
+                .map((matchPlayer) => matchPlayerName(match, matchPlayer))
+                .join(' + ') || '파트너 확인',
+              opponent: matchTeamName(match, opponentTeam),
+              status: results[match.id]?.completed ? '완료' as const : '예정' as const,
+            }
+          }),
+        }
+      }) : []
+
+  const tournamentSharedScheduleCandidates: SharedScheduleCandidate[] =
+    isSharedMode ? tournamentParticipants.map((participant) => {
+      const playerMatches = tournamentSchedule.matches
+        .filter((match) => {
+          if (match.isBye) return false
+          if (
+            isFriendlyTournamentFormat(tournamentSettings.format) &&
+            match.phase === 'team-battle'
+          ) {
+            const lineup = tournamentLineupForMatch(match)
+            return [
+              ...lineup.teamAPlayerIds,
+              ...lineup.teamBPlayerIds,
+            ].includes(participant.id)
+          }
+          return match.teamAId === participant.teamId ||
+            match.teamBId === participant.teamId
+        })
+        .sort((left, right) => left.round - right.round || left.order - right.order)
+
+      return {
+        id: `tournament-${participant.id}`,
+        name: participant.name,
+        subtitle: participant.teamName,
+        items: playerMatches.map((match) => {
+          const lineup = tournamentLineupForMatch(match)
+          const participantInA = lineup.teamAPlayerIds.includes(participant.id)
+          const participantInB = lineup.teamBPlayerIds.includes(participant.id)
+          const isFriendlyLineup =
+            isFriendlyTournamentFormat(tournamentSettings.format) &&
+            match.phase === 'team-battle' &&
+            (participantInA || participantInB)
+          const isTeamA = isFriendlyLineup
+            ? participantInA
+            : match.teamAId === participant.teamId
+          const ownSide = isTeamA ? 'A' as const : 'B' as const
+          const opponentSide = isTeamA ? 'B' as const : 'A' as const
+          const ownPlayerIds = ownSide === 'A'
+            ? lineup.teamAPlayerIds
+            : lineup.teamBPlayerIds
+          const partnerNames = isFriendlyLineup
+            ? ownPlayerIds
+                .filter((playerId) => playerId && playerId !== participant.id)
+                .map((playerId) => tournamentLineupPlayerLabel(
+                  playerId,
+                  ownSide === 'A' ? match.teamAId : match.teamBId,
+                ))
+                .filter(Boolean)
+            : []
+          const opponentLineup = isFriendlyLineup
+            ? tournamentLineupText(match, opponentSide)
+            : ''
+
+          return {
+            id: match.id,
+            time: roundTimeRange(tournamentSettings.startTime, match.round),
+            court: match.court,
+            label: match.label,
+            detail: [
+              tournamentMatchPhaseLabel(match),
+              match.teamBattleSlot,
+            ].filter(Boolean).join(' · '),
+            team: partnerNames.join(' + ') || tournamentSideName(match, ownSide),
+            opponent: [
+              tournamentSideName(match, opponentSide),
+              opponentLineup,
+            ].filter(Boolean).join(' · '),
+            status: tournamentResults[match.id]?.completed
+              ? '완료' as const
+              : '예정' as const,
+          }
+        }),
+      }
+    }) : []
+
   if (progressMode && !isSharedMode) {
     if (appMode === 'meeting') {
       return (
@@ -5238,7 +5380,7 @@ function App() {
             </button>
           </div>
 
-          <div className="header-actions">
+          <div className={`header-actions ${isSharedMode ? '' : 'operator-actions'}`}>
             {isSharedMode ? (
               <>
                 <button type="button" className="primary-action" onClick={useSharedCopy}>
@@ -6548,6 +6690,9 @@ function App() {
         ) : null}
 
         <section className="workspace">
+          {isSharedMode ? (
+            <SharedScheduleFinder candidates={meetingSharedScheduleCandidates} />
+          ) : null}
           {hasScheduledActiveGuests ? (
             <section className="special-bar">
               <div>
@@ -7764,6 +7909,9 @@ function App() {
           ) : null}
 
           <section className="workspace tournament-workspace">
+            {isSharedMode ? (
+              <SharedScheduleFinder candidates={tournamentSharedScheduleCandidates} />
+            ) : null}
             <section className="tournament-summary-bar" id="tournament-progress">
               <div>
                 <span className="eyebrow">경쟁 진행</span>

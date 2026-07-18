@@ -18,6 +18,7 @@ import type {
 } from './progressMode'
 import {
   getMeetingCourtMatchNumber,
+  getProgressCourtPageSize,
   getProgressScoreWinnerSide,
   getProgressWinnerSide,
   getTournamentCourtMatchNumber,
@@ -107,37 +108,55 @@ const ProgressHeader = ({
 
 const getCourtPageSize = () => {
   if (typeof window === 'undefined') return 6
-  if (window.matchMedia('(min-width: 1100px) and (orientation: landscape)').matches) {
-    return 6
-  }
-  if (window.matchMedia('(min-width: 620px)').matches) return 2
-  return 1
+  return getProgressCourtPageSize(window.innerWidth, window.innerHeight)
 }
 
 const useCourtPage = <Lane extends { court: number }>(lanes: Lane[]) => {
   const [pageSize, setPageSize] = useState(getCourtPageSize)
-  const [page, setPage] = useState(0)
+  const [page, setPageState] = useState(0)
+  const [selectedCourt, setSelectedCourt] = useState<number | undefined>(
+    lanes[0]?.court,
+  )
 
   useEffect(() => {
-    const desktopQuery = window.matchMedia(
-      '(min-width: 1100px) and (orientation: landscape)',
-    )
-    const mediumQuery = window.matchMedia('(min-width: 620px)')
     const updatePageSize = () => setPageSize(getCourtPageSize())
-    desktopQuery.addEventListener('change', updatePageSize)
-    mediumQuery.addEventListener('change', updatePageSize)
+    window.addEventListener('resize', updatePageSize)
+    window.addEventListener('orientationchange', updatePageSize)
     return () => {
-      desktopQuery.removeEventListener('change', updatePageSize)
-      mediumQuery.removeEventListener('change', updatePageSize)
+      window.removeEventListener('resize', updatePageSize)
+      window.removeEventListener('orientationchange', updatePageSize)
     }
   }, [])
+
+  useEffect(() => {
+    if (selectedCourt && lanes.some((lane) => lane.court === selectedCourt)) return
+    setSelectedCourt(lanes[0]?.court)
+  }, [lanes, selectedCourt])
 
   const pageCount = Math.max(1, Math.ceil(lanes.length / pageSize))
   const safePage = Math.min(page, pageCount - 1)
 
   useEffect(() => {
-    if (page !== safePage) setPage(safePage)
+    if (page !== safePage) setPageState(safePage)
   }, [page, safePage])
+
+  useEffect(() => {
+    const selectedIndex = lanes.findIndex((lane) => lane.court === selectedCourt)
+    if (selectedIndex >= 0) setPageState(Math.floor(selectedIndex / pageSize))
+  }, [lanes, pageSize, selectedCourt])
+
+  const setPage = (nextPage: number) => {
+    const boundedPage = Math.min(pageCount - 1, Math.max(0, nextPage))
+    setPageState(boundedPage)
+    setSelectedCourt(lanes[boundedPage * pageSize]?.court)
+  }
+
+  const selectCourt = (court: number) => {
+    const courtIndex = lanes.findIndex((lane) => lane.court === court)
+    if (courtIndex < 0) return
+    setSelectedCourt(court)
+    setPageState(Math.floor(courtIndex / pageSize))
+  }
 
   const visibleLanes = lanes.slice(
     safePage * pageSize,
@@ -154,7 +173,10 @@ const useCourtPage = <Lane extends { court: number }>(lanes: Lane[]) => {
     page: safePage,
     pageCount,
     pageSize,
+    columns,
     setPage,
+    selectedCourt,
+    selectCourt,
     visibleLanes,
     boardStyle: {
       '--progress-court-columns': columns,
@@ -166,42 +188,65 @@ const useCourtPage = <Lane extends { court: number }>(lanes: Lane[]) => {
 type CourtPageNavigationProps = {
   page: number
   pageCount: number
+  pageSize: number
   lanes: Array<{ court: number }>
+  selectedCourt: number | undefined
   onPage: (page: number) => void
+  onCourt: (court: number) => void
 }
 
 const CourtPageNavigation = ({
   page,
   pageCount,
+  pageSize,
   lanes,
+  selectedCourt,
   onPage,
+  onCourt,
 }: CourtPageNavigationProps) => {
-  if (pageCount <= 1) return null
-  const firstCourt = lanes[0]?.court
-  const lastCourt = lanes.at(-1)?.court
+  if (lanes.length <= 1) return null
+  const visibleLanes = lanes.slice(page * pageSize, page * pageSize + pageSize)
+  const firstCourt = visibleLanes[0]?.court
+  const lastCourt = visibleLanes.at(-1)?.court
 
   return (
-    <nav className="progress-court-pagination" aria-label="코트 페이지">
-      <button
-        type="button"
-        disabled={page === 0}
-        onClick={() => onPage(page - 1)}
-      >
-        이전 코트
-      </button>
-      <strong>
-        {firstCourt === lastCourt
-          ? `${firstCourt ?? '-'}코트`
-          : `${firstCourt ?? '-'}–${lastCourt ?? '-'}코트`}
-      </strong>
-      <span>{page + 1}/{pageCount}</span>
-      <button
-        type="button"
-        disabled={page >= pageCount - 1}
-        onClick={() => onPage(page + 1)}
-      >
-        다음 코트
-      </button>
+    <nav className="progress-court-pagination" aria-label="코트 바로가기">
+      <div className="progress-court-page-controls">
+        <button
+          type="button"
+          disabled={page === 0}
+          onClick={() => onPage(page - 1)}
+        >
+          이전
+        </button>
+        <strong>
+          {firstCourt === lastCourt
+            ? `${firstCourt ?? '-'}코트`
+            : `${firstCourt ?? '-'}–${lastCourt ?? '-'}코트`}
+        </strong>
+        <span>{page + 1}/{pageCount}</span>
+        <button
+          type="button"
+          disabled={page >= pageCount - 1}
+          onClick={() => onPage(page + 1)}
+        >
+          다음
+        </button>
+      </div>
+      <div className="progress-court-jump-list">
+        {lanes.map((lane) => (
+          <button
+            type="button"
+            className={selectedCourt === lane.court ? 'active' : ''}
+            aria-label={`${lane.court}코트 보기`}
+            aria-pressed={selectedCourt === lane.court}
+            key={lane.court}
+            onClick={() => onCourt(lane.court)}
+          >
+            {lane.court}코트
+          </button>
+        ))}
+      </div>
     </nav>
   )
 }
@@ -440,18 +485,30 @@ export const MeetingProgressMode = ({
       <CourtPageNavigation
         page={courtPage.page}
         pageCount={courtPage.pageCount}
-        lanes={courtPage.visibleLanes}
+        pageSize={courtPage.pageSize}
+        lanes={lanes}
+        selectedCourt={courtPage.selectedCourt}
         onPage={courtPage.setPage}
+        onCourt={courtPage.selectCourt}
       />
-      <div className="progress-court-board" style={courtPage.boardStyle}>
+      <div
+        className="progress-court-board"
+        data-court-columns={courtPage.columns}
+        style={courtPage.boardStyle}
+      >
         {courtPage.visibleLanes.map((lane) => (
-          <section className="progress-court-lane" key={lane.court}>
+          <section
+            className={`progress-court-lane ${
+              lane.court === courtPage.selectedCourt ? 'selected' : ''
+            }`}
+            key={lane.court}
+          >
             <header>
               <h2>{lane.court}코트</h2>
               <span>남음 {lane.pending.length}경기</span>
             </header>
             <div className="progress-court-matches">
-              {lane.pending.length > 0 ? lane.pending.slice(0, 3).map((match, index) => {
+              {lane.pending.length > 0 ? lane.pending.map((match, index) => {
                 const stageClass = index === 0
                   ? 'current'
                   : index === 1
@@ -473,7 +530,9 @@ export const MeetingProgressMode = ({
                           ? '현재'
                           : index === 1
                             ? '바로 다음'
-                            : '그다음'
+                            : index === 2
+                              ? '그다음'
+                              : '대기'
                       }
                       startsAt={times.start}
                       endsAt={times.end}
@@ -494,7 +553,7 @@ export const MeetingProgressMode = ({
                       <UpcomingTeams
                         teamAName={teamAName}
                         teamBName={teamBName}
-                        compact={index === 2}
+                        compact={index >= 2}
                       />
                     )}
                   </article>
@@ -599,10 +658,17 @@ export const TournamentProgressMode = ({
       <CourtPageNavigation
         page={courtPage.page}
         pageCount={courtPage.pageCount}
-        lanes={courtPage.visibleLanes}
+        pageSize={courtPage.pageSize}
+        lanes={lanes}
+        selectedCourt={courtPage.selectedCourt}
         onPage={courtPage.setPage}
+        onCourt={courtPage.selectCourt}
       />
-      <div className="progress-court-board" style={courtPage.boardStyle}>
+      <div
+        className="progress-court-board"
+        data-court-columns={courtPage.columns}
+        style={courtPage.boardStyle}
+      >
         {courtPage.visibleLanes.map((lane) => {
           const currentMatch = lane.ready[0]
           const remaining = [
@@ -613,11 +679,16 @@ export const TournamentProgressMode = ({
             ? [
                 { match: currentMatch, waiting: false },
                 ...remaining.filter(({ match }) => match.id !== currentMatch.id),
-              ].slice(0, 3)
-            : remaining.slice(0, 3)
+              ]
+            : remaining
 
           return (
-            <section className="progress-court-lane" key={lane.court}>
+            <section
+              className={`progress-court-lane ${
+                lane.court === courtPage.selectedCourt ? 'selected' : ''
+              }`}
+              key={lane.court}
+            >
               <header>
                 <h2>{lane.court}코트</h2>
                 <span>남음 {remaining.length}경기</span>
@@ -657,7 +728,9 @@ export const TournamentProgressMode = ({
                                 ? '현재'
                                 : index === 1
                                   ? '바로 다음'
-                                  : '그다음'
+                                  : index === 2
+                                    ? '그다음'
+                                    : '대기'
                           }
                           startsAt={startsAt}
                           endsAt={endsAt}

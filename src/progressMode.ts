@@ -81,6 +81,17 @@ export type TournamentCourtLane = {
   completed: TournamentMatch[]
 }
 
+export const getProgressCourtPageSize = (
+  viewportWidth: number,
+  viewportHeight: number,
+) => {
+  const isLandscape = viewportWidth > viewportHeight
+  if (isLandscape && viewportHeight <= 620) return 4
+  if (isLandscape && viewportWidth >= 1100) return 6
+  if (viewportWidth >= 620) return 2
+  return 1
+}
+
 const meetingStartOffset = (match: Match) =>
   match.startOffsetMinutes ?? (match.round - 1) * 15
 
