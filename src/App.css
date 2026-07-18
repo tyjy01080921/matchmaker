@@ -393,6 +393,39 @@
   font-weight: 900;
 }
 
+.header-action-with-help,
+.browser-save-action {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.header-action-with-help > button:first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.round-help-button,
+.header-actions .round-help-button,
+.tab-row .round-help-button {
+  display: inline-grid;
+  width: 23px;
+  min-width: 23px;
+  height: 23px;
+  min-height: 23px;
+  flex: 0 0 23px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(12, 143, 127, 0.48);
+  border-radius: 50%;
+  color: var(--green);
+  background: #fff;
+  font-size: 13px;
+  font-weight: 950;
+  line-height: 1;
+}
+
 button {
   min-height: 38px;
   padding: 8px 12px;
@@ -628,12 +661,19 @@ h2 {
 
 .level-help-list p,
 .contact-dialog p,
+.feature-help-dialog p,
 .copy-status {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
   font-weight: 800;
   line-height: 1.45;
+}
+
+.feature-help-dialog p {
+  padding: 12px;
+  border-radius: 7px;
+  background: var(--paper);
 }
 
 .level-tier-dialog {
@@ -2158,6 +2198,7 @@ textarea {
 
 .personal-schedule {
   overflow: hidden;
+  scroll-margin-top: 12px;
   border: 1px solid rgba(7, 31, 61, 0.16);
   border-radius: 12px;
   background: #fff;
@@ -2184,7 +2225,13 @@ textarea {
   font-weight: 800;
 }
 
-.personal-schedule header > strong {
+.personal-schedule-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.personal-schedule-actions > strong {
   padding: 5px 9px;
   border-radius: 999px;
   color: var(--navy);
@@ -2192,19 +2239,35 @@ textarea {
   font-size: 12px;
 }
 
+.personal-schedule-actions button {
+  min-height: 28px;
+  padding: 4px 7px;
+  border-color: rgba(255, 255, 255, 0.45);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.personal-schedule-actions .personal-schedule-save {
+  border-color: #c7fff3;
+  color: var(--navy);
+  background: #c7fff3;
+}
+
 .personal-schedule-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-  padding: 8px;
+  gap: 5px;
+  padding: 6px;
 }
 
 .personal-schedule-list article {
-  position: relative;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 5px 9px;
-  padding: 9px 52px 9px 9px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 6px 7px;
   border: 1px solid var(--line);
   border-left: 4px solid var(--mint);
   border-radius: 8px;
@@ -2212,77 +2275,91 @@ textarea {
 }
 
 .personal-schedule-order {
-  display: grid;
-  grid-row: 1 / span 2;
-  align-content: start;
-  justify-items: center;
+  display: flex;
+  align-items: center;
 }
 
 .personal-schedule-order > span {
-  display: grid;
-  width: 25px;
-  height: 25px;
-  place-items: center;
-  border-radius: 50%;
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  padding: 3px 6px;
+  border-radius: 5px;
   color: #fff;
   background: var(--green);
-  font-size: 11px;
+  font-size: 9px;
   font-weight: 950;
+  white-space: nowrap;
 }
 
 .personal-schedule-location time {
-  flex: 0 0 100%;
-  color: var(--navy);
+  color: var(--muted);
   font-size: 11px;
-  font-weight: 950;
+  font-weight: 900;
   white-space: nowrap;
 }
 
 .personal-schedule-location {
   display: flex;
   min-width: 0;
-  align-items: baseline;
-  gap: 5px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: nowrap;
 }
 
 .personal-schedule-location strong {
   color: var(--navy);
-  font-size: 16px;
+  font-size: 21px;
+  font-weight: 950;
+  line-height: 1;
+  white-space: nowrap;
 }
 
-.personal-schedule-location span,
+.personal-schedule-location span {
+  color: var(--green);
+  font-size: 17px;
+  font-weight: 950;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .personal-schedule-location small {
+  overflow: hidden;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .personal-schedule-teams {
   display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
   min-width: 0;
-  gap: 3px;
+  align-items: center;
+  gap: 8px;
 }
 
 .personal-schedule-teams span {
   min-width: 0;
-  overflow-wrap: anywhere;
   color: var(--navy);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 850;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .personal-schedule-teams b {
   display: inline-block;
-  width: 34px;
+  width: 28px;
   color: var(--green);
   font-size: 9px;
 }
 
 .personal-schedule-list article > em {
-  position: absolute;
-  top: 9px;
-  right: 9px;
+  grid-column: 3;
+  grid-row: 1;
   padding: 3px 6px;
   border-radius: 999px;
   color: #7a4b00;
@@ -2308,6 +2385,10 @@ textarea {
 }
 
 @media (max-width: 640px) {
+  .shared-app .app-header {
+    position: static;
+  }
+
   .shared-schedule-finder {
     gap: 9px;
     margin-bottom: 12px;
@@ -2337,12 +2418,68 @@ textarea {
     padding-inline: 16px;
   }
 
+  .shared-schedule-finder.has-result {
+    gap: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .shared-schedule-finder.has-result > .shared-schedule-heading,
+  .shared-schedule-finder.has-result > .shared-schedule-search {
+    display: none;
+  }
+
   .personal-schedule-list {
     grid-template-columns: 1fr;
   }
 
   .personal-schedule-list article {
-    padding-right: 46px;
+    padding: 5px 6px;
+  }
+
+  .personal-schedule > header {
+    padding: 8px 10px;
+  }
+
+  .personal-schedule h3 {
+    font-size: 18px;
+  }
+
+  .personal-schedule header > div:first-child > span,
+  .personal-schedule header > div:first-child > small,
+  .personal-schedule > footer {
+    display: none;
+  }
+
+  .personal-schedule-location {
+    gap: 5px;
+  }
+
+  .personal-schedule-location strong {
+    font-size: 20px;
+  }
+
+  .personal-schedule-location span {
+    font-size: 16px;
+  }
+
+  .personal-schedule-location time {
+    margin-left: auto;
+    font-size: 10px;
+  }
+
+  .personal-schedule-location small {
+    display: none;
+  }
+
+  .personal-schedule-teams {
+    gap: 6px;
+  }
+
+  .personal-schedule-teams span {
+    font-size: clamp(9px, 2.8vw, 11px);
   }
 }
 
@@ -2713,6 +2850,21 @@ textarea {
 .tab-row button.active {
   border-bottom-color: var(--mint);
   color: var(--navy);
+}
+
+.browser-save-action {
+  padding: 3px 5px;
+  border: 1px solid rgba(12, 143, 127, 0.42);
+  border-radius: 7px;
+  background: var(--soft-green);
+}
+
+.tab-row .browser-save-action .browser-save-button {
+  min-height: 30px;
+  padding: 4px 7px;
+  border: 0;
+  color: var(--navy);
+  font-weight: 900;
 }
 
 .tab-row span {
@@ -3824,6 +3976,17 @@ textarea {
     white-space: nowrap;
   }
 
+  .header-actions > .header-action-with-help {
+    flex: 1 1 0;
+  }
+
+  .header-actions .header-action-with-help .round-help-button {
+    width: 22px;
+    min-width: 22px;
+    flex: 0 0 22px;
+    padding: 0;
+  }
+
   .header-actions.operator-actions button:nth-of-type(-n + 3) {
     flex-grow: 1.15;
   }
@@ -3980,6 +4143,11 @@ textarea {
     min-width: 0;
     width: 100%;
     padding-inline: 4px;
+  }
+
+  .header-actions .round-help-button {
+    width: 22px;
+    min-width: 22px;
   }
 
   .header-actions button {
@@ -4489,6 +4657,16 @@ textarea {
 
   .tab-row .browser-save-button {
     grid-column: 1 / -1;
+  }
+
+  .tab-row .browser-save-action {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .tab-row .browser-save-action .browser-save-button {
+    min-width: 0;
+    flex: 1 1 auto;
   }
 
   .tab-row span {

@@ -138,6 +138,21 @@ const CONTACT_EMAIL = 'ama_official@naver.com'
 const APP_VERSION = '0.0.1'
 const LAST_UPDATED = '2026.07.17'
 const SHARE_LINK_SAVED_MESSAGE = '현재 생성된 이벤트의 링크를 저장하였습니다.'
+type FeatureHelpKey = 'shared-edit' | 'shared-new' | 'browser-save'
+const featureHelpContent: Record<FeatureHelpKey, { title: string; body: string }> = {
+  'shared-edit': {
+    title: '편집 기능',
+    body: '공유받은 대진을 이 브라우저에 복사하고 편집 모드로 전환합니다. 수정 내용은 원본 공유 대진에 영향을 주지 않습니다.',
+  },
+  'shared-new': {
+    title: '새로 기능',
+    body: '공유본을 닫고 앱 기본 화면으로 이동합니다. 이 브라우저에 저장된 대진이 있으면 해당 대진이 다시 열릴 수 있습니다.',
+  },
+  'browser-save': {
+    title: '브라우저 저장',
+    body: '현재 친목 대진을 이 기기와 이 브라우저에 최신 1개만 보관합니다. 계정이나 클라우드에 저장되지 않으며, 브라우저 데이터를 삭제하면 함께 사라집니다.',
+  },
+}
 const MEETING_GENERATION_MESSAGES = [
   '고성현이 만든 첫번째 라켓, 마티라',
   '신백철의 라켓 시리즈 스매셔',
@@ -1574,6 +1589,7 @@ function App() {
     () => normalizeLevelTiers(initialState.settings.levelTiers),
   )
   const [contactOpen, setContactOpen] = useState(false)
+  const [featureHelpOpen, setFeatureHelpOpen] = useState<FeatureHelpKey | null>(null)
   const [contactCopied, setContactCopied] = useState(false)
   const [playerDetailsOpen, setPlayerDetailsOpen] = useState(
     initialState.players.length > 0,
@@ -4998,7 +5014,7 @@ function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app ${isSharedMode ? 'shared-app' : ''}`}>
       {browserSaveToast ? (
         <div
           className={`browser-save-toast ${browserSaveToast.error ? 'error' : ''}`}
@@ -5354,6 +5370,28 @@ function App() {
         </div>
       ) : null}
 
+      {featureHelpOpen ? (
+        <div className="dialog-backdrop" onClick={() => setFeatureHelpOpen(null)}>
+          <section
+            className="info-dialog feature-help-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="feature-help-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="dialog-heading">
+              <h2 id="feature-help-title">
+                {featureHelpContent[featureHelpOpen].title}
+              </h2>
+              <button type="button" onClick={() => setFeatureHelpOpen(null)}>
+                닫기
+              </button>
+            </div>
+            <p>{featureHelpContent[featureHelpOpen].body}</p>
+          </section>
+        </div>
+      ) : null}
+
       <header className="app-header">
         <div className="header-main">
           <div className="brand-block">
@@ -5383,12 +5421,32 @@ function App() {
           <div className={`header-actions ${isSharedMode ? '' : 'operator-actions'}`}>
             {isSharedMode ? (
               <>
-                <button type="button" className="primary-action" onClick={useSharedCopy}>
-                  편집
-                </button>
-                <button type="button" onClick={openMySchedule}>
-                  새로
-                </button>
+                <div className="header-action-with-help">
+                  <button type="button" className="primary-action" onClick={useSharedCopy}>
+                    편집
+                  </button>
+                  <button
+                    type="button"
+                    className="round-help-button"
+                    aria-label="편집 기능 설명"
+                    onClick={() => setFeatureHelpOpen('shared-edit')}
+                  >
+                    ?
+                  </button>
+                </div>
+                <div className="header-action-with-help">
+                  <button type="button" onClick={openMySchedule}>
+                    새로
+                  </button>
+                  <button
+                    type="button"
+                    className="round-help-button"
+                    aria-label="새로 기능 설명"
+                    onClick={() => setFeatureHelpOpen('shared-new')}
+                  >
+                    ?
+                  </button>
+                </div>
                 <button type="button" onClick={handleCopyShareLink}>
                   공유
                 </button>
@@ -6910,13 +6968,23 @@ function App() {
               저장
             </button>
             {!isSharedMode ? (
-              <button
-                type="button"
-                className="browser-save-button"
-                onClick={saveMeetingScheduleToBrowser}
-              >
-                브라우저에 저장
-              </button>
+              <div className="browser-save-action">
+                <button
+                  type="button"
+                  className="browser-save-button"
+                  onClick={saveMeetingScheduleToBrowser}
+                >
+                  브라우저에 저장
+                </button>
+                <button
+                  type="button"
+                  className="round-help-button"
+                  aria-label="브라우저 저장 설명"
+                  onClick={() => setFeatureHelpOpen('browser-save')}
+                >
+                  ?
+                </button>
+              </div>
             ) : null}
             <span>
               {completedMatches}/{totalMatches} 경기 완료

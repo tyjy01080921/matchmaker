@@ -1,6 +1,7 @@
 import {
   useEffect,
   useId,
+  useRef,
   useState,
   type FormEvent,
 } from 'react'
@@ -8,6 +9,7 @@ import {
   findSharedScheduleCandidates,
   type SharedScheduleCandidate,
 } from './sharedSchedule'
+import { createPersonalScheduleImage } from './personalScheduleImage'
 
 type SharedScheduleFinderProps = {
   candidates: SharedScheduleCandidate[]
@@ -18,6 +20,7 @@ export const SharedScheduleFinder = ({
 }: SharedScheduleFinderProps) => {
   const inputId = useId()
   const listId = useId()
+  const resultRef = useRef<HTMLElement | null>(null)
   const [query, setQuery] = useState('')
   const [searched, setSearched] = useState(false)
   const [matches, setMatches] = useState<SharedScheduleCandidate[]>([])
@@ -39,8 +42,37 @@ export const SharedScheduleFinder = ({
   const selected = candidates.find((candidate) => candidate.id === selectedId)
   const uniqueNames = [...new Set(candidates.map((candidate) => candidate.name))]
 
+  useEffect(() => {
+    if (!selectedId) return
+    const frame = window.requestAnimationFrame(() => {
+      resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [selectedId])
+
+  const resetSearch = () => {
+    setSelectedId('')
+    setMatches([])
+    setSearched(false)
+  }
+
+  const saveScheduleImage = () => {
+    if (!selected) return
+    const imageUrl = createPersonalScheduleImage(selected)
+    const download = document.createElement('a')
+    const safeName = selected.name.replace(/[\\/:*?"<>|]/g, '-') || '참가자'
+    download.href = imageUrl
+    download.download = `${safeName}-경기일정.png`
+    document.body.append(download)
+    download.click()
+    download.remove()
+  }
+
   return (
-    <section className="shared-schedule-finder" aria-labelledby={`${inputId}-title`}>
+    <section
+      className={`shared-schedule-finder ${selected ? 'has-result' : ''}`}
+      aria-labelledby={`${inputId}-title`}
+    >
       <div className="shared-schedule-heading">
         <div>
           <span>공유 대진표</span>
@@ -90,26 +122,40 @@ export const SharedScheduleFinder = ({
       ) : null}
 
       {selected ? (
-        <section className="personal-schedule" aria-label={`${selected.name} 경기 일정`}>
+        <section
+          className="personal-schedule"
+          ref={resultRef}
+          aria-label={`${selected.name} 경기 일정`}
+        >
           <header>
             <div>
               <span>나의 경기</span>
               <h3>{selected.name}</h3>
               {selected.subtitle ? <small>{selected.subtitle}</small> : null}
             </div>
-            <strong>{selected.items.length}경기</strong>
+            <div className="personal-schedule-actions">
+              <strong>{selected.items.length}경기</strong>
+              <button
+                type="button"
+                className="personal-schedule-save"
+                onClick={saveScheduleImage}
+              >
+                이미지 저장
+              </button>
+              <button type="button" onClick={resetSearch}>다시 찾기</button>
+            </div>
           </header>
           {selected.items.length > 0 ? (
             <div className="personal-schedule-list">
               {selected.items.map((item, index) => (
                 <article key={item.id}>
                   <div className="personal-schedule-order">
-                    <span>{index + 1}</span>
+                    <span>일정 {index + 1}</span>
                   </div>
                   <div className="personal-schedule-location">
-                    <time>{item.time}</time>
                     <strong>{item.court}코트</strong>
                     <span>{item.label}</span>
+                    <time>{item.time}</time>
                     {item.detail ? <small>{item.detail}</small> : null}
                   </div>
                   <div className="personal-schedule-teams">
