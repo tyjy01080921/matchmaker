@@ -321,6 +321,35 @@ describe('generateSchedule', () => {
     },
   )
 
+  it('gives everyone a first game within the first two court games when capacity allows', () => {
+    const players = Array.from({ length: 16 }, (_, index) =>
+      makeTestPlayer(`first-game-${index + 1}`, 'B'),
+    )
+    const settings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '19:00',
+      targetRoundCount: 4,
+      pacingRoundCount: 4,
+      roundCountLocked: true,
+    }
+
+    const schedule = generateSchedule(players, settings)
+    const firstTwoCourtGames = schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) => (match.startOffsetMinutes ?? 0) < 30)
+    const firstGameCounts = new Map(players.map((player) => [player.id, 0]))
+    for (const match of firstTwoCourtGames) {
+      for (const player of [...match.teamA, ...match.teamB]) {
+        firstGameCounts.set(player.id, (firstGameCounts.get(player.id) ?? 0) + 1)
+      }
+    }
+
+    expect(firstTwoCourtGames).toHaveLength(4)
+    expect([...firstGameCounts.values()].every((count) => count === 1)).toBe(true)
+  })
+
   it('avoids 1+3 gender groups when a 2+2 general match is possible', () => {
     const players = [
       makeTestPlayer('female-1', 'B', 'female'),
@@ -974,12 +1003,16 @@ describe('generateSchedule', () => {
     const settings = {
       ...defaultSettings,
       courtCount: 2,
+      startTime: '18:00',
+      endTime: '19:00',
       targetRoundCount: 2,
       pacingRoundCount: 2,
       roundCountLocked: true,
     }
     const schedule = generateSchedule(players, settings)
-    schedule.rounds[1].matches[0].startOffsetMinutes = 45
+    for (const match of schedule.rounds[1].matches) {
+      match.startOffsetMinutes = 45
+    }
 
     const analysis = analyzeScheduleWait(schedule, players, settings)
 
@@ -992,7 +1025,7 @@ describe('generateSchedule', () => {
     expect(analysis.warning).toContain('권장 참가 6명 이하')
   })
 
-  it('reports first-game and final idle time separately from between-game waits', () => {
+  it('includes first-game and final idle time in the 25-minute wait limit', () => {
     const players = Array.from({ length: 8 }, (_, index) =>
       makeTestPlayer(`wait-range-${index + 1}`, 'B'),
     )
@@ -1012,11 +1045,14 @@ describe('generateSchedule', () => {
     }
 
     const analysis = analyzeScheduleWait(schedule, players, settings)
+    const quality = analyzeScheduleQuality(schedule, players, settings)
 
-    expect(analysis.maximumWaitMinutes).toBe(0)
+    expect(analysis.maximumWaitMinutes).toBe(60)
     expect(analysis.maximumInitialWaitMinutes).toBe(45)
     expect(analysis.maximumFinalIdleMinutes).toBe(60)
     expect(analysis.zeroGameParticipantCount).toBe(0)
+    expect(analysis.exceedsLimit).toBe(true)
+    expect(quality.participantsOverWaitLimit).toBe(8)
   })
 
   it('blocks zero-game participants and a standard game spread over one', () => {
@@ -1513,7 +1549,7 @@ describe('generateSchedule', () => {
     )
 
     expect(schedule.warnings).toHaveLength(0)
-    expect(roundGaps.every((gap) => gap < 30)).toBe(true)
+    expect(roundGaps.every((gap) => gap <= 30)).toBe(true)
     expect(Math.max(...roundSpreads.slice(3, 5))).toBeLessThanOrEqual(
       Math.max(...roundSpreads.slice(-2)),
     )
@@ -1944,7 +1980,7 @@ describe('generateSchedule', () => {
 
     expect(schedule.rounds).toHaveLength(10)
     expect(schedule.guestGameCounts[guest.id]).toBe(4)
-    expect(guestRounds).toEqual([1, 2, 3, 4])
+    expect(guestRounds).toEqual([2, 4, 6, 8])
   })
 
   it('removes a special after the time limit', () => {

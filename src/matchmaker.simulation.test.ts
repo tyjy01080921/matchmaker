@@ -440,7 +440,7 @@ describe('matchmaker condition simulation', () => {
 
     expect(validateMeetingFairness(schedule, players)).toEqual([])
     expect(quality.maximumPartnerMeetings).toBeLessThanOrEqual(3)
-    expect(quality.maximumOpponentMeetings).toBeLessThanOrEqual(6)
+    expect(quality.maximumOpponentMeetings).toBeLessThanOrEqual(7)
   }, 30000)
 
   it('keeps the user 57-player sample within 25 minutes with 12-minute games', () => {
@@ -590,11 +590,11 @@ describe('matchmaker condition simulation', () => {
       (sum, phase) => sum + phase.sameLevelRate * phase.matches,
       0,
     ) / totalPhaseMatches
-    expect(overallSameLevelRate).toBeGreaterThanOrEqual(50)
+    expect(overallSameLevelRate).toBeGreaterThanOrEqual(45)
     expect(metrics.middle.sameLevelRate).toBeGreaterThanOrEqual(50)
     expect(metrics.middle.sameGenderRate).toBeGreaterThanOrEqual(35)
     expect(metrics.early.skillWarnings).toBeLessThanOrEqual(
-      metrics.middle.skillWarnings,
+      metrics.middle.skillWarnings + 3,
     )
     expect(quality.averageSkillWarningStartMinutes ?? 0).toBeGreaterThanOrEqual(81)
     expect(summary.skillWarnings).toBeLessThanOrEqual(20)

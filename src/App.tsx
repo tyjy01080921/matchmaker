@@ -188,7 +188,7 @@ const meetingShuffleDirections: Array<{
   {
     key: 'wait',
     label: '대기 더 고르게',
-    description: '최장 대기와 참가자 평균 대기가 짧은 대진을 우선합니다.',
+    description: '첫 경기 전과 마지막 경기 후를 포함해 대기가 짧은 대진을 우선합니다.',
   },
 ]
 
@@ -311,7 +311,7 @@ const matchConditionLabels: Record<MatchConditionKey, string> = {
   genderBalance: '동일 성별 우선',
   fairGames: '경기 수 1경기 이내 (필수)',
   restBalance: '연속 경기 방지',
-  waitPriority: '최장 대기 25분 제한 (필수)',
+  waitPriority: '전체 대기 25분 제한 (필수)',
   partnerRepeat: '파트너 반복 최소',
   opponentRepeat: '상대 반복 최소',
   groupRepeat: '같은 4인 최대 2경기',
@@ -1697,8 +1697,12 @@ function App() {
     [generatedMeetingPlayers, generatedMeetingSettings, schedule],
   )
   const scheduleQualityAnalysis = useMemo(
-    () => analyzeScheduleQuality(schedule, generatedMeetingPlayers),
-    [generatedMeetingPlayers, schedule],
+    () => analyzeScheduleQuality(
+      schedule,
+      generatedMeetingPlayers,
+      generatedMeetingSettings,
+    ),
+    [generatedMeetingPlayers, generatedMeetingSettings, schedule],
   )
   const meetingSwapRecommendations = useMemo(() => {
     const recommendations = new Map<
@@ -2354,17 +2358,9 @@ function App() {
   const minimumParticipantCount = scheduleParticipantStats.filter(
     (stat) => stat.games === minimumParticipantGames,
   ).length
-  const participantWaitStats = scheduleParticipantStats.filter(
-    (stat) => stat.averageWaitMinutes !== null && stat.maxWaitMinutes !== null,
+  const meetingAverageWaitMinutes = Math.round(
+    scheduleQualityAnalysis.averageWaitMinutes,
   )
-  const meetingAverageWaitMinutes = participantWaitStats.length
-    ? Math.round(
-        participantWaitStats.reduce(
-          (sum, stat) => sum + (stat.averageWaitMinutes ?? 0),
-          0,
-        ) / participantWaitStats.length,
-      )
-    : 0
   const meetingMaximumWaitMinutes = scheduleWaitAnalysis.maximumWaitMinutes
   const gameCountFlexibleParticipantCount = scheduledActiveMembers.filter(
     (player) => player.gameCountFlexible,
@@ -3486,10 +3482,15 @@ function App() {
       showEditorError(`교체 불가 · ${blockingValidationIssues.join(' · ')}`)
       return
     }
-    const baseQuality = analyzeScheduleQuality(schedule, generatedMeetingPlayers)
+    const baseQuality = analyzeScheduleQuality(
+      schedule,
+      generatedMeetingPlayers,
+      generatedMeetingSettings,
+    )
     const nextQuality = analyzeScheduleQuality(
       swapped.schedule,
       generatedMeetingPlayers,
+      generatedMeetingSettings,
     )
     const baseWait = analyzeScheduleWait(
       schedule,
@@ -3789,7 +3790,7 @@ function App() {
       setScheduleOverride(null)
       clearMeetingScheduleState()
       setMeetingOperationLabel('대진 검증 중')
-      setMeetingGenerationMessage('참가자 중복, 코트, 25분 대기를 확인하고 있습니다.')
+      setMeetingGenerationMessage('참가자 중복, 코트, 전체 대기 25분을 확인하고 있습니다.')
       meetingGenerationStartTimerRef.current = null
     }, 60)
   }
@@ -5167,10 +5168,18 @@ function App() {
                 <span className={scheduleWaitAnalysis.exceedsLimit ? 'wait-warning' : ''}>
                   최장 대기 <strong>{meetingMaximumWaitMinutes}분</strong>
                 </span>
-                <span>
+                <span className={
+                  scheduleWaitAnalysis.maximumInitialWaitMinutes > 25
+                    ? 'wait-warning'
+                    : ''
+                }>
                   첫 경기 대기 <strong>{scheduleWaitAnalysis.maximumInitialWaitMinutes}분</strong>
                 </span>
-                <span>
+                <span className={
+                  scheduleWaitAnalysis.maximumFinalIdleMinutes > 25
+                    ? 'wait-warning'
+                    : ''
+                }>
                   마지막 경기 후 여유 <strong>{scheduleWaitAnalysis.maximumFinalIdleMinutes}분</strong>
                 </span>
                 <span className={scheduleQualityAnalysis.participantsOverWaitLimit > 0 ? 'wait-warning' : ''}>

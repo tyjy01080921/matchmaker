@@ -211,21 +211,45 @@ const playerWaitGaps = (matches: Match[], playerId: string) => {
   return gaps
 }
 
+const scheduleEndMinutes = (matches: Match[]) => Math.max(
+  0,
+  ...matches.map((match) => matchTimeWindow(match).end),
+)
+
+const playerCompleteWaitGaps = (
+  matches: Match[],
+  playerId: string,
+  endMinutes: number,
+) => {
+  const windows = playerMatchWindows(matches, playerId)
+  if (windows.length === 0) return [Math.max(0, endMinutes)]
+  return [
+    Math.max(0, windows[0].start),
+    ...playerWaitGaps(matches, playerId),
+    Math.max(0, endMinutes - windows[windows.length - 1].end),
+  ]
+}
+
 const playerMaximumWaitMinutes = (
   matches: Match[],
   playerId: string,
-) => Math.max(0, ...playerWaitGaps(matches, playerId))
+  endMinutes = scheduleEndMinutes(matches),
+) => Math.max(0, ...playerCompleteWaitGaps(matches, playerId, endMinutes))
 
 export const getScheduleMaximumWaitMinutes = (
   schedule: Schedule,
   players: Player[],
+  endMinutes?: number,
 ) => {
   const matches = schedule.rounds.flatMap((round) => round.matches)
+  const effectiveEndMinutes = endMinutes ?? scheduleEndMinutes(matches)
   return Math.max(
     0,
     ...players
       .filter((player) => player.active)
-      .map((player) => playerMaximumWaitMinutes(matches, player.id)),
+      .map((player) =>
+        playerMaximumWaitMinutes(matches, player.id, effectiveEndMinutes),
+      ),
   )
 }
 
@@ -296,7 +320,11 @@ export const analyzeScheduleWait = (
         : bookingMinutes,
     ),
   )
-  const maximumWaitMinutes = getScheduleMaximumWaitMinutes(schedule, players)
+  const maximumWaitMinutes = getScheduleMaximumWaitMinutes(
+    schedule,
+    players,
+    bookingMinutes,
+  )
   const exceedsLimit = maximumWaitMinutes > WAIT_PRIORITY_MINUTES
   const normalGameMinutes = [10, 12, 15].includes(settings.normalGameMinutes)
     ? settings.normalGameMinutes
@@ -440,6 +468,7 @@ export const getMatchSkillWarningLevel = (
 export const analyzeScheduleQuality = (
   schedule: Schedule,
   players: Player[],
+  settings?: MatchSettings,
 ): ScheduleQualityAnalysis => {
   const matches = schedule.rounds.flatMap((round) => round.matches)
   const activePlayers = players.filter((player) => player.active)
@@ -482,12 +511,11 @@ export const analyzeScheduleQuality = (
         matchOverallSkillGap(match) >= TEAM_SKILL_PREFERRED_GAP,
     )
     .map((match) => match.startOffsetMinutes ?? 0)
+  const analysisEndMinutes = settings
+    ? getBookingDurationMinutes(settings.startTime, settings.endTime)
+    : scheduleEndMinutes(matches)
   const waitsByPlayer = activePlayers.map((player) =>
-    playerWaitGaps(matches, player.id),
-  )
-  const scheduleEndMinutes = Math.max(
-    0,
-    ...matches.map((match) => matchTimeWindow(match).end),
+    playerCompleteWaitGaps(matches, player.id, analysisEndMinutes),
   )
   const windowsByPlayer = activePlayers.map((player) =>
     playerMatchWindows(matches, player.id),
@@ -544,7 +572,7 @@ export const analyzeScheduleQuality = (
     maximumInitialWaitMinutes: Math.max(
       0,
       ...windowsByPlayer.map(
-        (windows) => windows[0]?.start ?? scheduleEndMinutes,
+        (windows) => windows[0]?.start ?? analysisEndMinutes,
       ),
     ),
     genderCompositionReviewMatches,
@@ -565,7 +593,8 @@ export const analyzeScheduleQuality = (
     maximumIndividualSkillSpread: Math.max(0, ...individualSkillSpreads),
     participantsOverWaitLimit: activePlayers.filter(
       (player) =>
-        playerMaximumWaitMinutes(matches, player.id) > WAIT_PRIORITY_MINUTES,
+        playerMaximumWaitMinutes(matches, player.id, analysisEndMinutes) >
+          WAIT_PRIORITY_MINUTES,
     ).length,
     maximumPartnerMeetings: Math.max(0, ...partnerCounts),
     averageWaitMinutes: participantAverageWaits.length > 0
@@ -898,7 +927,7 @@ export const rankMeetingSwapCandidates = (
   const sourcePlayerIds = new Set(
     [...sourceMatch.teamA, ...sourceMatch.teamB].map((player) => player.id),
   )
-  const baseQuality = analyzeScheduleQuality(schedule, players)
+  const baseQuality = analyzeScheduleQuality(schedule, players, settings)
   const baseWait = analyzeScheduleWait(schedule, players, settings)
   const baseValidationIssues = new Set(
     validateMeetingSchedule(schedule, players, settings),
@@ -936,7 +965,7 @@ export const rankMeetingSwapCandidates = (
         return []
       }
 
-      const quality = analyzeScheduleQuality(swapped.schedule, players)
+      const quality = analyzeScheduleQuality(swapped.schedule, players, settings)
       const wait = analyzeScheduleWait(swapped.schedule, players, settings)
       if (
         quality.standardGameSpread > Math.max(1, baseQuality.standardGameSpread) ||
@@ -1227,9 +1256,10 @@ const guestWithinSpecialLimit = (
   roundNumber: number,
 ) => {
   if (!settings.specialLimitEnabled) return true
+  const completedGames = history.guestGameCounts[guest.id] ?? 0
   if (
     settings.specialGameLimitEnabled &&
-    (history.guestGameCounts[guest.id] ?? 0) >= settings.specialGameLimit
+    completedGames >= settings.specialGameLimit
   ) {
     return false
   }
@@ -1238,6 +1268,37 @@ const guestWithinSpecialLimit = (
     (roundNumber - 1) * GAME_SLOT_MINUTES >= settings.specialTimeLimitMinutes
   ) {
     return false
+  }
+  if (settings.specialGameLimitEnabled) {
+    const bookingMinutes = getBookingDurationMinutes(
+      settings.startTime,
+      settings.endTime,
+    )
+    const scheduledBookingMinutes =
+      settings.roundCountLocked && settings.normalGameMinutes === GAME_SLOT_MINUTES
+        ? Math.min(
+            bookingMinutes,
+            normalizeTargetRoundCount(settings.targetRoundCount) *
+              GAME_SLOT_MINUTES,
+          )
+        : bookingMinutes
+    const allocationMinutes = settings.specialTimeLimitEnabled
+      ? Math.min(scheduledBookingMinutes, settings.specialTimeLimitMinutes)
+      : scheduledBookingMinutes
+    const targetGames = Math.min(
+      Math.max(1, Math.floor(allocationMinutes / GAME_SLOT_MINUTES)),
+      Math.max(1, Math.floor(settings.specialGameLimit)),
+    )
+    const nextGameNumber = completedGames + 1
+    const idleMinutes = Math.max(
+      0,
+      allocationMinutes - targetGames * GAME_SLOT_MINUTES,
+    )
+    const plannedStart = Math.round(
+      nextGameNumber * idleMinutes / (targetGames + 1) +
+        (nextGameNumber - 1) * GAME_SLOT_MINUTES,
+    )
+    if (history.currentStartOffset < plannedStart) return false
   }
   return true
 }
@@ -2185,7 +2246,7 @@ const consecutivePlayPenalty = (player: Player, history: HistoryState) => {
 
 const playerWaitMinutes = (player: Player, history: HistoryState) => {
   const lastMatchEnd = history.lastMatchEnd[player.id]
-  if (lastMatchEnd === undefined) return 0
+  if (lastMatchEnd === undefined) return Math.max(0, history.currentStartOffset)
   return Math.max(0, history.currentStartOffset - lastMatchEnd)
 }
 
@@ -2330,6 +2391,7 @@ const isValidGuestGroup = (
 }
 
 type SpecialRegularScore = {
+  firstGameCount: number
   waitDeadlineCount: number
   waitPriorityTotal: number
   genderPenalty: number
@@ -2375,6 +2437,9 @@ const scoreSpecialRegulars = (
     : 0
 
   return {
+    firstGameCount: regulars.filter(
+      (player) => (history.games[player.id] ?? 0) === 0,
+    ).length,
     waitDeadlineCount: conditions.waitPriority
       ? regulars.filter((player) => hasWaitDeadline(player, history)).length
       : 0,
@@ -2448,6 +2513,7 @@ const compareSpecialRegularScores = (
   prioritizeWait: boolean,
 ) => {
   const commonComparisons = [
+    right.firstGameCount - left.firstGameCount,
     ...(prioritizeWait
       ? [
           right.waitDeadlineCount - left.waitDeadlineCount,
@@ -3240,6 +3306,12 @@ const pickGeneralGroup = (
       .map((player) => player.id),
   )
   const requiredMinimumStandardCount = Math.min(2, minimumStandardIds.size)
+  const firstGameIds = new Set(
+    availablePlayers
+      .filter((player) => (history.games[player.id] ?? 0) === 0)
+      .map((player) => player.id),
+  )
+  const requiredFirstGameCount = Math.min(4, firstGameIds.size)
 
   for (const anchor of anchorCandidates) {
     const preferredCompanions = uniquePlayers([
@@ -3398,6 +3470,11 @@ const pickGeneralGroup = (
             requiredMinimumStandardCount -
               group.filter((player) => minimumStandardIds.has(player.id)).length,
           )
+          const missedFirstGameCount = Math.max(
+            0,
+            requiredFirstGameCount -
+              group.filter((player) => firstGameIds.has(player.id)).length,
+          )
           let worsensFairGameSpread = false
           if (conditions.fairGames && standardPlayers.length > 0) {
             worsensFairGameSpread =
@@ -3406,7 +3483,8 @@ const pickGeneralGroup = (
           }
           const operationalTier = Math.min(
             9,
-            missedWaitDeadlineCount * 4 +
+            missedFirstGameCount * 3 +
+              missedWaitDeadlineCount * 4 +
               missedMinimumStandardCount * 2 +
               Number(worsensFairGameSpread),
           )
@@ -3493,11 +3571,17 @@ const pickGeneralGroup = (
       requiredMinimumStandardCount -
         group.filter((player) => minimumStandardIds.has(player.id)).length,
     )
+    const missedFirstGameCount = Math.max(
+      0,
+      requiredFirstGameCount -
+        group.filter((player) => firstGameIds.has(player.id)).length,
+    )
     const worsensFairGameSpread =
       projectedStandardSpread(group) > Math.max(1, currentStandardSpread)
     const operationalTier = Math.min(
       9,
-      missedWaitDeadlineCount * 4 +
+      missedFirstGameCount * 3 +
+        missedWaitDeadlineCount * 4 +
         missedMinimumStandardCount * 2 +
         Number(worsensFairGameSpread),
     )
@@ -4777,6 +4861,31 @@ const generateSchedulePass = (
   const normalGameMinutes = [10, 12, 15].includes(settings.normalGameMinutes)
     ? settings.normalGameMinutes
     : GAME_SLOT_MINUTES
+  const greatestCommonDivisor = (left: number, right: number) => {
+    let a = Math.abs(Math.floor(left))
+    let b = Math.abs(Math.floor(right))
+    while (b > 0) [a, b] = [b, a % b]
+    return Math.max(1, a)
+  }
+  const specialGamesPerCourt = normalGameMinutes /
+    greatestCommonDivisor(normalGameMinutes, GAME_SLOT_MINUTES)
+  const plannedSpecialMatchCount = specialMatchesEnabled
+    ? activeGuests.reduce(
+        (sum, guest) => sum + specialPlannedGameTarget(
+          guest,
+          activePlayers,
+          settings,
+        ),
+        0,
+      )
+    : 0
+  const specialCourtCount = Math.min(
+    settings.courtCount,
+    Math.max(1, Math.ceil(plannedSpecialMatchCount / specialGamesPerCourt)),
+  )
+  const specialCourtIds = new Set(
+    Array.from({ length: specialCourtCount }, (_, index) => index + 1),
+  )
   const schedulingMinutes = normalGameMinutes === GAME_SLOT_MINUTES
     ? Math.max(bookingMinutes, targetRoundCount * GAME_SLOT_MINUTES)
     : bookingMinutes
@@ -4818,6 +4927,7 @@ const generateSchedulePass = (
 
     const addSpecialMatches = (courts: number[]) => {
       for (const court of courts) {
+        if (!specialCourtIds.has(court)) continue
         if (matches.some((match) => match.court === court)) continue
         if (startOffset + GAME_SLOT_MINUTES > schedulingMinutes) continue
         const group = pickSpecialGroup(
@@ -4912,13 +5022,21 @@ const generateSchedulePass = (
           !usedIds.has(guest.id) &&
           guestWithinSpecialLimit(guest, history, settings, pacing.roundNumber),
       ).length
-      const reservedCourtCount = Math.min(openCourtIds.length, availableGuestCount)
-      const generalCourtIds = reservedCourtCount > 0
-        ? openCourtIds.slice(0, -reservedCourtCount)
-        : openCourtIds
-      const reservedCourtIds = reservedCourtCount > 0
-        ? openCourtIds.slice(-reservedCourtCount)
-        : []
+      const eligibleSpecialCourtIds = openCourtIds.filter((court) =>
+        specialCourtIds.has(court),
+      )
+      const reservedCourtCount = Math.min(
+        eligibleSpecialCourtIds.length,
+        availableGuestCount,
+      )
+      const reservedCourtIds = eligibleSpecialCourtIds.slice(
+        0,
+        reservedCourtCount,
+      )
+      const reservedCourtSet = new Set(reservedCourtIds)
+      const generalCourtIds = openCourtIds.filter(
+        (court) => !reservedCourtSet.has(court),
+      )
       addGeneralMatches(generalCourtIds)
       addSpecialMatches(reservedCourtIds)
       addGeneralMatches(reservedCourtIds)
@@ -6000,7 +6118,7 @@ const rebalanceStandardGameCounts = (
     const overplayed = standardPlayers.filter(
       (player) => gameCounts.get(player.id) === maximum,
     )
-    const baseQuality = analyzeScheduleQuality(balancedSchedule, players)
+    const baseQuality = analyzeScheduleQuality(balancedSchedule, players, settings)
     const baseWait = analyzeScheduleWait(balancedSchedule, players, settings)
     let bestCandidate: {
       schedule: Schedule
@@ -6046,7 +6164,7 @@ const rebalanceStandardGameCounts = (
             if (validateMeetingSchedule(candidateSchedule, players, settings).length > 0) {
               continue
             }
-            const quality = analyzeScheduleQuality(candidateSchedule, players)
+            const quality = analyzeScheduleQuality(candidateSchedule, players, settings)
             if (quality.standardGameSpread > baseQuality.standardGameSpread) {
               continue
             }
@@ -6260,7 +6378,7 @@ export const generateScheduleWithWaitOptimization = (
       settings,
     )
     const wait = analyzeScheduleWait(schedule, players, settings)
-    const quality = analyzeScheduleQuality(schedule, players)
+    const quality = analyzeScheduleQuality(schedule, players, settings)
     const failure = candidateQualityFailure(schedule, wait, quality, settings)
     candidates.push({
       schedule,
@@ -6309,7 +6427,7 @@ export const generateScheduleWithWaitOptimization = (
   const deferredSchedule = conditions.levelBalance
     ? deferSkillWarningMatches(genderOptimizedSchedule, players, settings)
     : genderOptimizedSchedule
-  const finalQuality = analyzeScheduleQuality(deferredSchedule, players)
+  const finalQuality = analyzeScheduleQuality(deferredSchedule, players, settings)
   const finalScheduledMinutes = deferredSchedule.rounds
     .flatMap((round) => round.matches)
     .reduce(
