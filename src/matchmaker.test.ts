@@ -41,6 +41,7 @@ import type {
   Gender,
   Level,
   Match,
+  MatchSettings,
   Player,
   Schedule,
   TournamentParticipant,
@@ -2131,6 +2132,147 @@ describe('generateSchedule', () => {
     })
 
     expect(schedule.guestGameCounts[guest.id]).toBe(3)
+  })
+
+  it('completes an eight-game, 24-participant focused special block within two hours', () => {
+    const guest = makeTestPlayer('focused-guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 37 }, (_, index) =>
+      makeTestPlayer(
+        `focused-regular-${index + 1}`,
+        index < 19 ? 'B' : 'C',
+        index % 2 === 0 ? 'male' : 'female',
+      ),
+    )
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 6,
+      startTime: '18:00',
+      endTime: '21:00',
+      normalGameMinutes: 12,
+      targetRoundCount: 12,
+      pacingRoundCount: 12,
+      roundCountLocked: true,
+      specialLimitEnabled: true,
+      specialScheduleMode: 'continuous',
+      specialGameLimitEnabled: true,
+      specialGameLimit: 8,
+      specialParticipantTarget: 24,
+      specialTimeLimitEnabled: true,
+      specialTimeLimitMinutes: 120,
+    }
+
+    const schedule = generateSchedule([guest, ...regulars], settings)
+    const specialMatches = schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) => match.isSpecial)
+    const specialParticipantIds = new Set(
+      specialMatches.flatMap((match) =>
+        [...match.teamA, ...match.teamB]
+          .filter((player) => !player.isGuest)
+          .map((player) => player.id),
+      ),
+    )
+    const lastSpecialEnd = Math.max(
+      ...specialMatches.map(
+        (match) =>
+          (match.startOffsetMinutes ?? 0) +
+          (match.durationMinutes ?? 15),
+      ),
+    )
+    const wait = analyzeScheduleWait(schedule, [guest, ...regulars], settings)
+
+    expect(specialMatches).toHaveLength(8)
+    expect(specialParticipantIds.size).toBe(24)
+    expect(lastSpecialEnd).toBeLessThanOrEqual(120)
+    expect(wait.maximumFinalIdleMinutes).toBeLessThan(60)
+    expect(
+      schedule.rounds
+        .flatMap((round) => round.matches)
+        .filter((match) => (match.startOffsetMinutes ?? 0) >= 120)
+        .every((match) => !match.isSpecial),
+    ).toBe(true)
+  })
+
+  it('spreads the same special target across the full booking when requested', () => {
+    const guest = makeTestPlayer('spread-guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 30 }, (_, index) =>
+      makeTestPlayer(`spread-regular-${index + 1}`, index < 15 ? 'B' : 'C'),
+    )
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 6,
+      startTime: '18:00',
+      endTime: '21:00',
+      normalGameMinutes: 12,
+      targetRoundCount: 12,
+      pacingRoundCount: 12,
+      roundCountLocked: true,
+      specialLimitEnabled: true,
+      specialScheduleMode: 'spread',
+      specialGameLimitEnabled: true,
+      specialGameLimit: 8,
+      specialParticipantTarget: 24,
+      specialTimeLimitEnabled: false,
+    })
+    const specialMatches = schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) => match.isSpecial)
+    const specialParticipantIds = new Set(
+      specialMatches.flatMap((match) =>
+        [...match.teamA, ...match.teamB]
+          .filter((player) => !player.isGuest)
+          .map((player) => player.id),
+      ),
+    )
+    const lastSpecialEnd = Math.max(
+      ...specialMatches.map(
+        (match) =>
+          (match.startOffsetMinutes ?? 0) +
+          (match.durationMinutes ?? 15),
+      ),
+    )
+
+    expect(specialMatches).toHaveLength(8)
+    expect(specialParticipantIds.size).toBe(24)
+    expect(lastSpecialEnd).toBeGreaterThan(120)
+    expect(lastSpecialEnd).toBeLessThanOrEqual(180)
+  })
+
+  it('caps unique special participants while completing the match target', () => {
+    const guest = makeTestPlayer('coverage-guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 12 }, (_, index) =>
+      makeTestPlayer(`coverage-regular-${index + 1}`, 'B'),
+    )
+    const schedule = generateSchedule([guest, ...regulars], {
+      ...defaultSettings,
+      courtCount: 3,
+      startTime: '18:00',
+      endTime: '19:00',
+      targetRoundCount: 4,
+      pacingRoundCount: 4,
+      roundCountLocked: true,
+      specialLimitEnabled: true,
+      specialScheduleMode: 'continuous',
+      specialGameLimitEnabled: true,
+      specialGameLimit: 3,
+      specialParticipantTarget: 6,
+      specialTimeLimitEnabled: true,
+      specialTimeLimitMinutes: 45,
+    })
+    const specialMatches = schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) => match.isSpecial)
+    const participantIds = new Set(
+      specialMatches.flatMap((match) =>
+        [...match.teamA, ...match.teamB]
+          .filter((player) => !player.isGuest)
+          .map((player) => player.id),
+      ),
+    )
+
+    expect(specialMatches).toHaveLength(3)
+    expect(participantIds.size).toBe(6)
+    expect(schedule.specialCompletedIds).toHaveLength(6)
   })
 
   it('keeps creating special matches when only special-first placement is off', () => {

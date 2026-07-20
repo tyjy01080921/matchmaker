@@ -27,6 +27,8 @@ export type MeetingShuffleDirection =
   | 'skill'
   | 'wait'
 
+export type SpecialScheduleMode = 'continuous' | 'spread'
+
 export type TournamentFormat =
   | 'group-knockout'
   | 'knockout'
@@ -78,8 +80,10 @@ export type MatchSettings = {
   shuffleDirection: MeetingShuffleDirection
   singleGuestPerMatch: boolean
   specialLimitEnabled: boolean
+  specialScheduleMode: SpecialScheduleMode
   specialGameLimitEnabled: boolean
   specialGameLimit: number
+  specialParticipantTarget: number
   specialTimeLimitEnabled: boolean
   specialTimeLimitMinutes: number
   specialLowPriorityEnabled: boolean

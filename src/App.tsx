@@ -685,6 +685,22 @@ const normalizeMatchSettings = (
     settings?.earlyPhaseEndPercent,
     settings?.middlePhaseEndPercent,
   )
+  const specialGameLimit = normalizePositiveInteger(
+    settings?.specialGameLimit,
+    defaultSettings.specialGameLimit,
+    1,
+    99,
+  )
+  const rawSpecialParticipantTarget = normalizePositiveInteger(
+    settings?.specialParticipantTarget,
+    specialGameLimit * 3,
+    3,
+    297,
+  )
+  const specialParticipantTarget = Math.max(
+    3,
+    Math.floor(rawSpecialParticipantTarget / 3) * 3,
+  )
 
   return {
     ...defaultSettings,
@@ -706,13 +722,13 @@ const normalizeMatchSettings = (
     ),
     singleGuestPerMatch: settings?.singleGuestPerMatch ?? true,
     specialLimitEnabled: settings?.specialLimitEnabled ?? false,
+    specialScheduleMode: settings?.specialScheduleMode === 'spread' ||
+      (!settings?.specialScheduleMode && settings?.specialTimeLimitEnabled === false)
+      ? 'spread'
+      : 'continuous',
     specialGameLimitEnabled: settings?.specialGameLimitEnabled ?? true,
-    specialGameLimit: normalizePositiveInteger(
-      settings?.specialGameLimit,
-      defaultSettings.specialGameLimit,
-      1,
-      99,
-    ),
+    specialGameLimit,
+    specialParticipantTarget,
     specialTimeLimitEnabled: settings?.specialTimeLimitEnabled ?? true,
     specialTimeLimitMinutes: Math.min(
       booking.durationMinutes,
@@ -2150,9 +2166,14 @@ function App() {
   )
   const specialLimitLabels = generatedMeetingSettings.specialLimitEnabled
     ? [
+        generatedMeetingSettings.specialScheduleMode === 'spread'
+          ? '전체 시간 분산'
+          : '초반 집중',
         generatedMeetingSettings.specialGameLimitEnabled
-          ? `${generatedMeetingSettings.specialGameLimit}경기`
+          ? `목표 ${generatedMeetingSettings.specialGameLimit}경기`
           : '',
+        `참가 ${generatedMeetingSettings.specialParticipantTarget}명`,
+        generatedMeetingSettings.specialScheduleMode === 'continuous' &&
         generatedMeetingSettings.specialTimeLimitEnabled
           ? `${generatedMeetingSettings.specialTimeLimitMinutes}분`
           : '',
@@ -2160,7 +2181,7 @@ function App() {
     : []
   const specialLimitText = generatedMeetingSettings.specialLimitEnabled
     ? specialLimitLabels.length > 0
-      ? `제한 ${specialLimitLabels.join('·')}`
+      ? specialLimitLabels.join(' · ')
       : '제한 조건 선택 필요'
     : '제한 없음'
   const specialLowPriorityPercent = settings.specialLowPriorityEnabled
@@ -2250,10 +2271,12 @@ function App() {
   )
   const specialCutoffTime = clockTimeAtOffset(
     generatedMeetingSettings.startTime,
-    Math.min(
-      generatedMeetingSettings.specialTimeLimitMinutes,
-      scheduledBookingMinutes,
-    ),
+    generatedMeetingSettings.specialScheduleMode === 'continuous'
+      ? Math.min(
+          generatedMeetingSettings.specialTimeLimitMinutes,
+          scheduledBookingMinutes,
+        )
+      : scheduledBookingMinutes,
   )
   const actualSpecialEndOffset = allScheduledMatches
     .filter((match) => match.isSpecial)
@@ -2266,6 +2289,7 @@ function App() {
     : ''
   const generalOnlyAfterLimitMatches =
     generatedMeetingSettings.specialLimitEnabled &&
+    generatedMeetingSettings.specialScheduleMode === 'continuous' &&
     generatedMeetingSettings.specialTimeLimitEnabled
     ? allScheduledMatches.filter(
         (match) =>
@@ -2292,7 +2316,8 @@ function App() {
       : 0
   const specialMinimumMinutes = specialMinimumRoundCount * GAME_SLOT_MINUTES
   const specialLimitRoundCount = generatedMeetingSettings.specialLimitEnabled
-    ? generatedMeetingSettings.specialTimeLimitEnabled
+    ? generatedMeetingSettings.specialScheduleMode === 'continuous' &&
+      generatedMeetingSettings.specialTimeLimitEnabled
       ? Math.min(
           scheduledBookingRoundCount,
           Math.floor(
@@ -2312,6 +2337,9 @@ function App() {
   const specialLimitParticipantCapacity = Math.min(
     scheduledSpecialEligibleMembers.length,
     specialLimitMatchCapacity * 3,
+    generatedMeetingSettings.specialLimitEnabled
+      ? generatedMeetingSettings.specialParticipantTarget
+      : Number.POSITIVE_INFINITY,
   )
   const scheduledSpecialParticipantIds = new Set(
     schedule.rounds
@@ -5986,29 +6014,52 @@ function App() {
                       {settings.specialLimitEnabled ? (
                         <div className="special-limit-options">
                           <div className="special-limit-row">
-                            <label>
-                              <input
-                                type="checkbox"
-                                checked={settings.specialGameLimitEnabled}
-                                disabled={!settings.specialTimeLimitEnabled}
-                                onChange={(event) => {
-                                  setSettings((current) => ({
-                                    ...current,
-                                    specialGameLimitEnabled: event.target.checked,
-                                  }))
-                                }}
-                              />
-                              경기 수
-                            </label>
+                            <label htmlFor="special-schedule-mode">운영 방식</label>
+                            <select
+                              id="special-schedule-mode"
+                              aria-label="스페셜 운영 방식"
+                              value={settings.specialScheduleMode}
+                              onChange={(event) => {
+                                const specialScheduleMode = event.target.value === 'spread'
+                                  ? 'spread'
+                                  : 'continuous'
+                                setSettings((current) => ({
+                                  ...current,
+                                  specialScheduleMode,
+                                  specialGameLimitEnabled: true,
+                                  specialTimeLimitEnabled:
+                                    specialScheduleMode === 'continuous',
+                                }))
+                              }}
+                            >
+                              <option value="continuous">초반 집중 운영</option>
+                              <option value="spread">전체 시간 분산 운영</option>
+                            </select>
+                          </div>
+                          <div className="special-limit-row">
+                            <span>목표 경기</span>
                             <div className="limit-stepper">
                               <button
                                 type="button"
                                 aria-label="스페셜 경기 수 줄이기"
-                                disabled={!settings.specialGameLimitEnabled || settings.specialGameLimit <= 1}
-                                onClick={() => setSettings((current) => ({
-                                  ...current,
-                                  specialGameLimit: Math.max(1, current.specialGameLimit - 1),
-                                }))}
+                                disabled={settings.specialGameLimit <= 1}
+                                onClick={() => setSettings((current) => {
+                                  const specialGameLimit = Math.max(
+                                    1,
+                                    current.specialGameLimit - 1,
+                                  )
+                                  const participantCapacity =
+                                    specialGameLimit * Math.max(1, activeGuests.length) * 3
+                                  return {
+                                    ...current,
+                                    specialGameLimit,
+                                    specialGameLimitEnabled: true,
+                                    specialParticipantTarget: Math.min(
+                                      current.specialParticipantTarget,
+                                      participantCapacity,
+                                    ),
+                                  }
+                                })}
                               >
                                 −
                               </button>
@@ -6017,8 +6068,7 @@ function App() {
                                 inputMode="numeric"
                                 min="1"
                                 max="99"
-                                aria-label="스페셜 최대 경기 수"
-                                disabled={!settings.specialGameLimitEnabled}
+                                aria-label="스페셜 목표 경기 수"
                                 value={settings.specialGameLimit}
                                 onChange={(event) => {
                                   const specialGameLimit = normalizePositiveInteger(
@@ -6030,16 +6080,22 @@ function App() {
                                   setSettings((current) => ({
                                     ...current,
                                     specialGameLimit,
+                                    specialGameLimitEnabled: true,
+                                    specialParticipantTarget: Math.min(
+                                      current.specialParticipantTarget,
+                                      specialGameLimit * Math.max(1, activeGuests.length) * 3,
+                                    ),
                                   }))
                                 }}
                               />
                               <button
                                 type="button"
                                 aria-label="스페셜 경기 수 늘리기"
-                                disabled={!settings.specialGameLimitEnabled || settings.specialGameLimit >= 99}
+                                disabled={settings.specialGameLimit >= 99}
                                 onClick={() => setSettings((current) => ({
                                   ...current,
                                   specialGameLimit: Math.min(99, current.specialGameLimit + 1),
+                                  specialGameLimitEnabled: true,
                                 }))}
                               >
                                 +
@@ -6048,41 +6104,99 @@ function App() {
                             </div>
                           </div>
                           <div className="special-limit-row">
-                            <label>
+                            <span>참가 목표</span>
+                            <div className="limit-stepper">
+                              <button
+                                type="button"
+                                aria-label="스페셜 참가 목표 줄이기"
+                                disabled={settings.specialParticipantTarget <= 3}
+                                onClick={() => setSettings((current) => ({
+                                  ...current,
+                                  specialParticipantTarget: Math.max(
+                                    3,
+                                    current.specialParticipantTarget - 3,
+                                  ),
+                                }))}
+                              >
+                                −
+                              </button>
                               <input
-                                type="checkbox"
-                                checked={settings.specialTimeLimitEnabled}
-                                disabled={!settings.specialGameLimitEnabled}
+                                type="number"
+                                inputMode="numeric"
+                                min="3"
+                                max={settings.specialGameLimit * Math.max(1, activeGuests.length) * 3}
+                                step="3"
+                                aria-label="스페셜 참가 목표 인원"
+                                value={settings.specialParticipantTarget}
                                 onChange={(event) => {
+                                  const capacity =
+                                    settings.specialGameLimit * Math.max(1, activeGuests.length) * 3
+                                  const requested = normalizePositiveInteger(
+                                    event.target.value,
+                                    settings.specialParticipantTarget,
+                                    3,
+                                    capacity,
+                                  )
+                                  const specialParticipantTarget = Math.max(
+                                    3,
+                                    Math.floor(requested / 3) * 3,
+                                  )
                                   setSettings((current) => ({
                                     ...current,
-                                    specialTimeLimitEnabled: event.target.checked,
+                                    specialParticipantTarget,
                                   }))
                                 }}
                               />
-                              시간
-                            </label>
-                            <select
-                              aria-label="스페셜 최대 시간"
-                              disabled={!settings.specialTimeLimitEnabled}
-                              value={settings.specialTimeLimitMinutes}
-                              onChange={(event) => {
-                                setSettings((current) => ({
+                              <button
+                                type="button"
+                                aria-label="스페셜 참가 목표 늘리기"
+                                disabled={
+                                  settings.specialParticipantTarget >=
+                                  settings.specialGameLimit * Math.max(1, activeGuests.length) * 3
+                                }
+                                onClick={() => setSettings((current) => ({
                                   ...current,
-                                  specialTimeLimitMinutes: Number(event.target.value),
-                                }))
-                              }}
-                            >
-                              {Array.from(
-                                { length: bookingRoundCount },
-                                (_, index) => (index + 1) * GAME_SLOT_MINUTES,
-                              ).map((minutes) => (
-                                <option value={minutes} key={minutes}>
-                                  {minutes}분 · {clockTimeAtOffset(settings.startTime, minutes)}까지
-                                </option>
-                              ))}
-                            </select>
+                                  specialParticipantTarget: Math.min(
+                                    current.specialGameLimit * Math.max(1, activeGuests.length) * 3,
+                                    current.specialParticipantTarget + 3,
+                                  ),
+                                }))}
+                              >
+                                +
+                              </button>
+                              <span>명</span>
+                            </div>
                           </div>
+                          {settings.specialScheduleMode === 'continuous' ? (
+                            <div className="special-limit-row">
+                              <label htmlFor="special-time-limit">운영 상한</label>
+                              <select
+                                id="special-time-limit"
+                                aria-label="스페셜 운영 상한"
+                                value={settings.specialTimeLimitMinutes}
+                                onChange={(event) => {
+                                  setSettings((current) => ({
+                                    ...current,
+                                    specialTimeLimitEnabled: true,
+                                    specialTimeLimitMinutes: Number(event.target.value),
+                                  }))
+                                }}
+                              >
+                                {Array.from(
+                                  { length: bookingRoundCount },
+                                  (_, index) => (index + 1) * GAME_SLOT_MINUTES,
+                                ).map((minutes) => (
+                                  <option value={minutes} key={minutes}>
+                                    {minutes}분 · {clockTimeAtOffset(settings.startTime, minutes)}까지
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          ) : (
+                            <span className="special-allocation-summary">
+                              대관 시간 전체에 목표 경기를 나눠 배치합니다.
+                            </span>
+                          )}
                         </div>
                       ) : null}
                     </div>
@@ -6800,12 +6914,12 @@ function App() {
                 <span className="eyebrow">스페셜 현황</span>
                 <h2>
                   {generatedMeetingSettings.specialLimitEnabled
-                    ? `배정 ${assignedSpecialParticipantCount}/${scheduledActiveMembers.length}명`
+                    ? `배정 ${assignedSpecialParticipantCount}/${specialLimitParticipantCapacity}명`
                     : `최소 ${specialMinimumMatchCount}경기`}
                 </h2>
                 <p className="metric-subtext">
                   {generatedMeetingSettings.specialLimitEnabled
-                    ? `제한 내 최대 ${specialLimitMatchCapacity}경기 · 최대 ${specialLimitParticipantCapacity}명`
+                    ? `목표 ${specialLimitMatchCapacity}경기 · 참가 ${specialLimitParticipantCapacity}명`
                     : `예상 ${formatDuration(specialMinimumMinutes)}`}
                 </p>
               </div>
@@ -6817,16 +6931,19 @@ function App() {
                 <span>{specialLimitText}</span>
                 <span>배정 {specialAllocationText}</span>
                 {generatedMeetingSettings.specialLimitEnabled &&
+                generatedMeetingSettings.specialScheduleMode === 'continuous' &&
                 generatedMeetingSettings.specialTimeLimitEnabled ? (
                   <span>{specialCutoffTime}부터 일반 대진</span>
                 ) : null}
                 {actualSpecialEndTime ? <span>마지막 배정 {actualSpecialEndTime}</span> : null}
                 <span>
                   {generatedMeetingSettings.specialLimitEnabled
-                    ? `스페셜 운영 ${formatDuration(Math.min(
-                        generatedMeetingSettings.specialTimeLimitMinutes,
-                        scheduledBookingMinutes,
-                      ))}`
+                    ? generatedMeetingSettings.specialScheduleMode === 'continuous'
+                      ? `집중 운영 ${formatDuration(Math.min(
+                          generatedMeetingSettings.specialTimeLimitMinutes,
+                          scheduledBookingMinutes,
+                        ))}`
+                      : `전체 시간 분산 ${formatDuration(scheduledBookingMinutes)}`
                     : `최소 필요 ${specialMinimumMatchCount}경기`}
                 </span>
                 {scheduledActiveGuests.map((guest) => (
@@ -6911,6 +7028,7 @@ function App() {
                 <small>{minimumParticipants || '해당 참가자 없음'}</small>
               </div>
               {generatedMeetingSettings.specialLimitEnabled &&
+              generatedMeetingSettings.specialScheduleMode === 'continuous' &&
               generatedMeetingSettings.specialTimeLimitEnabled ? (
                 <div className="schedule-summary-wide">
                   <span>스페셜 운영 종료 후</span>

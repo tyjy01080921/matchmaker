@@ -236,6 +236,23 @@ const playerMaximumWaitMinutes = (
   endMinutes = scheduleEndMinutes(matches),
 ) => Math.max(0, ...playerCompleteWaitGaps(matches, playerId, endMinutes))
 
+const playerWaitAnalysisEndMinutes = (
+  player: Player,
+  matches: Match[],
+  bookingMinutes: number,
+  settings?: MatchSettings,
+) => {
+  if (!player.isGuest) return bookingMinutes
+  const continuousSpecialWindow = Boolean(
+    settings?.specialLimitEnabled &&
+    settings.specialScheduleMode !== 'spread' &&
+    settings.specialTimeLimitEnabled,
+  )
+  if (!continuousSpecialWindow) return bookingMinutes
+  const windows = playerMatchWindows(matches, player.id)
+  return windows.length > 0 ? windows[windows.length - 1].end : 0
+}
+
 export const getScheduleMaximumWaitMinutes = (
   schedule: Schedule,
   players: Player[],
@@ -305,25 +322,42 @@ export const analyzeScheduleWait = (
   const windowsByPlayer = activePlayers.map((player) =>
     playerMatchWindows(matches, player.id),
   )
+  const analysisEndByPlayer = new Map(
+    activePlayers.map((player) => [
+      player.id,
+      playerWaitAnalysisEndMinutes(player, matches, bookingMinutes, settings),
+    ]),
+  )
   const zeroGameParticipantCount = windowsByPlayer.filter(
     (windows) => windows.length === 0,
   ).length
   const maximumInitialWaitMinutes = Math.max(
     0,
-    ...windowsByPlayer.map((windows) => windows[0]?.start ?? bookingMinutes),
+    ...activePlayers.map((player, index) =>
+      windowsByPlayer[index][0]?.start ??
+        (analysisEndByPlayer.get(player.id) ?? bookingMinutes),
+    ),
   )
   const maximumFinalIdleMinutes = Math.max(
     0,
-    ...windowsByPlayer.map((windows) =>
-      windows.length > 0
-        ? Math.max(0, bookingMinutes - windows[windows.length - 1].end)
-        : bookingMinutes,
-    ),
+    ...activePlayers.map((player, index) => {
+      const windows = windowsByPlayer[index]
+      const analysisEndMinutes =
+        analysisEndByPlayer.get(player.id) ?? bookingMinutes
+      return windows.length > 0
+        ? Math.max(0, analysisEndMinutes - windows[windows.length - 1].end)
+        : analysisEndMinutes
+    }),
   )
-  const maximumWaitMinutes = getScheduleMaximumWaitMinutes(
-    schedule,
-    players,
-    bookingMinutes,
+  const maximumWaitMinutes = Math.max(
+    0,
+    ...activePlayers.map((player) =>
+      playerMaximumWaitMinutes(
+        matches,
+        player.id,
+        analysisEndByPlayer.get(player.id) ?? bookingMinutes,
+      ),
+    ),
   )
   const exceedsLimit = maximumWaitMinutes > WAIT_PRIORITY_MINUTES
   const normalGameMinutes = [10, 12, 15].includes(settings.normalGameMinutes)
@@ -514,8 +548,23 @@ export const analyzeScheduleQuality = (
   const analysisEndMinutes = settings
     ? getBookingDurationMinutes(settings.startTime, settings.endTime)
     : scheduleEndMinutes(matches)
+  const analysisEndByPlayer = new Map(
+    activePlayers.map((player) => [
+      player.id,
+      playerWaitAnalysisEndMinutes(
+        player,
+        matches,
+        analysisEndMinutes,
+        settings,
+      ),
+    ]),
+  )
   const waitsByPlayer = activePlayers.map((player) =>
-    playerCompleteWaitGaps(matches, player.id, analysisEndMinutes),
+    playerCompleteWaitGaps(
+      matches,
+      player.id,
+      analysisEndByPlayer.get(player.id) ?? analysisEndMinutes,
+    ),
   )
   const windowsByPlayer = activePlayers.map((player) =>
     playerMatchWindows(matches, player.id),
@@ -571,8 +620,9 @@ export const analyzeScheduleQuality = (
     zeroGameStandardParticipants: standardCounts.filter((count) => count === 0).length,
     maximumInitialWaitMinutes: Math.max(
       0,
-      ...windowsByPlayer.map(
-        (windows) => windows[0]?.start ?? analysisEndMinutes,
+      ...activePlayers.map(
+        (player, index) => windowsByPlayer[index][0]?.start ??
+          (analysisEndByPlayer.get(player.id) ?? analysisEndMinutes),
       ),
     ),
     genderCompositionReviewMatches,
@@ -593,7 +643,11 @@ export const analyzeScheduleQuality = (
     maximumIndividualSkillSpread: Math.max(0, ...individualSkillSpreads),
     participantsOverWaitLimit: activePlayers.filter(
       (player) =>
-        playerMaximumWaitMinutes(matches, player.id, analysisEndMinutes) >
+        playerMaximumWaitMinutes(
+          matches,
+          player.id,
+          analysisEndByPlayer.get(player.id) ?? analysisEndMinutes,
+        ) >
           WAIT_PRIORITY_MINUTES,
     ).length,
     maximumPartnerMeetings: Math.max(0, ...partnerCounts),
@@ -1140,12 +1194,71 @@ const guestHasRemainingExtraGames = (guest: Player, history: HistoryState) => {
   return limit <= 0 || (history.guestGameCounts[guest.id] ?? 0) < limit
 }
 
+const usesContinuousSpecialWindow = (settings: MatchSettings) =>
+  settings.specialScheduleMode !== 'spread' &&
+  settings.specialTimeLimitEnabled
+
+const configuredSpecialParticipantTarget = (settings: MatchSettings) => {
+  const numeric = Math.floor(Number(settings.specialParticipantTarget) || 0)
+  return Math.max(3, Math.floor(numeric / 3) * 3)
+}
+
+const specialParticipantCoverageTarget = (
+  activePlayers: Player[],
+  settings: MatchSettings,
+) => {
+  const eligibleCount = activePlayers.filter(
+    (player) =>
+      !player.isGuest &&
+      (player.specialMatchEligible ?? true),
+  ).length
+  return settings.specialLimitEnabled
+    ? Math.min(eligibleCount, configuredSpecialParticipantTarget(settings))
+    : eligibleCount
+}
+
+const hasReachedSpecialParticipantTarget = (
+  activePlayers: Player[],
+  history: HistoryState,
+  settings: MatchSettings,
+) => history.specialCompleted.size >=
+  specialParticipantCoverageTarget(activePlayers, settings)
+
+const remainingSpecialParticipantTarget = (
+  activePlayers: Player[],
+  history: HistoryState,
+  settings: MatchSettings,
+) => Math.max(
+  0,
+  specialParticipantCoverageTarget(activePlayers, settings) -
+    history.specialCompleted.size,
+)
+
+const specialParticipantTargetRequiresCap = (
+  activePlayers: Player[],
+  settings: MatchSettings,
+) => {
+  if (!settings.specialLimitEnabled) return false
+  const maximumParticipantCapacity = activePlayers
+    .filter((player) => player.isGuest)
+    .reduce(
+      (sum, guest) =>
+        sum + specialPlannedGameTarget(guest, activePlayers, settings) * 3,
+      0,
+    )
+  return configuredSpecialParticipantTarget(settings) <
+    maximumParticipantCapacity
+}
+
 const specialLimitGameTarget = (settings: MatchSettings) => {
   const limits: number[] = []
   if (settings.specialGameLimitEnabled) {
     limits.push(Math.max(1, Math.floor(settings.specialGameLimit)))
   }
-  if (settings.specialTimeLimitEnabled) {
+  if (
+    usesContinuousSpecialWindow(settings) &&
+    settings.specialTimeLimitEnabled
+  ) {
     limits.push(
       Math.max(1, Math.floor(settings.specialTimeLimitMinutes / GAME_SLOT_MINUTES)),
     )
@@ -1253,7 +1366,6 @@ const guestWithinSpecialLimit = (
   guest: Player,
   history: HistoryState,
   settings: MatchSettings,
-  roundNumber: number,
 ) => {
   if (!settings.specialLimitEnabled) return true
   const completedGames = history.guestGameCounts[guest.id] ?? 0
@@ -1264,8 +1376,10 @@ const guestWithinSpecialLimit = (
     return false
   }
   if (
+    usesContinuousSpecialWindow(settings) &&
     settings.specialTimeLimitEnabled &&
-    (roundNumber - 1) * GAME_SLOT_MINUTES >= settings.specialTimeLimitMinutes
+    history.currentStartOffset + GAME_SLOT_MINUTES >
+      settings.specialTimeLimitMinutes
   ) {
     return false
   }
@@ -1282,7 +1396,8 @@ const guestWithinSpecialLimit = (
               GAME_SLOT_MINUTES,
           )
         : bookingMinutes
-    const allocationMinutes = settings.specialTimeLimitEnabled
+    const allocationMinutes =
+      usesContinuousSpecialWindow(settings) && settings.specialTimeLimitEnabled
       ? Math.min(scheduledBookingMinutes, settings.specialTimeLimitMinutes)
       : scheduledBookingMinutes
     const targetGames = Math.min(
@@ -2553,10 +2668,24 @@ const pickSpecialRegulars = (
   conditions: MatchConditionOptions,
   settings: MatchSettings,
 ): [Player, Player, Player] | null => {
+  const enforceParticipantCap = specialParticipantTargetRequiresCap(
+    activePlayers,
+    settings,
+  )
+  const remainingCoverage = remainingSpecialParticipantTarget(
+    activePlayers,
+    history,
+    settings,
+  )
   const availableRegulars = activePlayers.filter(
     (player) =>
       !player.isGuest &&
       (player.specialMatchEligible ?? true) &&
+      (
+        !enforceParticipantCap ||
+        remainingCoverage > 0 ||
+        history.specialCompleted.has(player.id)
+      ) &&
       !usedIds.has(player.id),
   )
   if (availableRegulars.length < 3) return null
@@ -2564,13 +2693,20 @@ const pickSpecialRegulars = (
   const plannedPending = pending.filter((player) =>
     history.plannedSpecialIds.has(player.id),
   )
+  const cappedPendingCount = Math.min(3, remainingCoverage)
   const allocationPending =
-    history.plannedSpecialIds.size > 0 && plannedPending.length > 0
+    history.plannedSpecialIds.size > 0 &&
+    plannedPending.length >= (enforceParticipantCap ? cappedPendingCount : 1)
       ? plannedPending
       : pending
   const pendingIds = new Set(allocationPending.map((player) => player.id))
-  const hasPending = allocationPending.length > 0
-  const expectedPendingCount = hasPending ? Math.min(3, pendingIds.size) : 0
+  const expectedPendingCount = enforceParticipantCap
+    ? cappedPendingCount
+    : allocationPending.length > 0
+      ? Math.min(3, pendingIds.size)
+      : 0
+  const hasPending = expectedPendingCount > 0
+  if (allocationPending.length < expectedPendingCount) return null
   const requirePending = hasPending
   const prioritizeWait =
     conditions.waitPriority && hasWaitCapacityPressure(activePlayers, settings)
@@ -2704,7 +2840,6 @@ const pickSingleGuestSpecialGroup = (
   history: HistoryState,
   random: () => number,
   conditions: MatchConditionOptions,
-  pacing: RoundPacing,
   allowExtraSpecial: boolean,
   settings: MatchSettings,
 ): [Player, Player, Player, Player] | null => {
@@ -2712,11 +2847,15 @@ const pickSingleGuestSpecialGroup = (
     (player) =>
       player.isGuest &&
       !usedIds.has(player.id) &&
-      guestWithinSpecialLimit(player, history, settings, pacing.roundNumber),
+      guestWithinSpecialLimit(player, history, settings),
   )
   if (candidateGuests.length === 0) return null
 
-  const pending = activePlayers
+  const rawPending = (hasReachedSpecialParticipantTarget(
+    activePlayers,
+    history,
+    settings,
+  ) ? [] : activePlayers)
     .filter(
       (player) =>
         !player.isGuest &&
@@ -2736,6 +2875,7 @@ const pickSingleGuestSpecialGroup = (
         playerPriority(b, history, random, conditions)
       )
     })
+  const pending = rawPending
 
   const needsGuestFirstMatch = candidateGuests.some(
     (guest) => (history.guestGameCounts[guest.id] ?? 0) === 0,
@@ -2853,11 +2993,20 @@ const pickAdaptiveSpecialGroup = (
     (player) =>
       player.isGuest &&
       !usedIds.has(player.id) &&
-      guestWithinSpecialLimit(player, history, settings, pacing.roundNumber),
+      guestWithinSpecialLimit(player, history, settings),
   )
   if (candidateGuests.length === 0) return null
 
-  const pending = activePlayers
+  const remainingCoverage = remainingSpecialParticipantTarget(
+    activePlayers,
+    history,
+    settings,
+  )
+  const rawPending = (hasReachedSpecialParticipantTarget(
+    activePlayers,
+    history,
+    settings,
+  ) ? [] : activePlayers)
     .filter(
       (player) =>
         !player.isGuest &&
@@ -2870,6 +3019,7 @@ const pickAdaptiveSpecialGroup = (
         playerPriority(a, history, random, conditions) -
         playerPriority(b, history, random, conditions),
     )
+  const pending = rawPending
   const needsGuestFirstMatch = candidateGuests.some(
     (guest) => (history.guestGameCounts[guest.id] ?? 0) === 0,
   )
@@ -2891,6 +3041,7 @@ const pickAdaptiveSpecialGroup = (
     (player) =>
       !player.isGuest &&
       (player.specialMatchEligible ?? true) &&
+      (remainingCoverage > 0 || history.specialCompleted.has(player.id)) &&
       !usedIds.has(player.id),
   )
   if (availableRegulars.length === 0) return null
@@ -2958,7 +3109,15 @@ const pickAdaptiveSpecialGroup = (
           const guestsInGroup = group.filter((player) => player.isGuest)
           const regularsInGroup = group.filter((player) => !player.isGuest)
           if (guestsInGroup.length === 0 || regularsInGroup.length === 0) continue
-          if (hasPending && !regularsInGroup.some((player) => pendingIds.has(player.id))) {
+          const expectedPendingCount = Math.min(
+            regularsInGroup.length,
+            remainingCoverage,
+          )
+          if (
+            expectedPendingCount > 0 &&
+            regularsInGroup.filter((player) => pendingIds.has(player.id)).length <
+              expectedPendingCount
+          ) {
             continue
           }
           if (
@@ -3023,7 +3182,6 @@ const pickSpecialGroup = (
       history,
       random,
       conditions,
-      pacing,
       allowExtraSpecial,
       settings,
     )
@@ -5020,7 +5178,7 @@ const generateSchedulePass = (
       const availableGuestCount = activeGuests.filter(
         (guest) =>
           !usedIds.has(guest.id) &&
-          guestWithinSpecialLimit(guest, history, settings, pacing.roundNumber),
+          guestWithinSpecialLimit(guest, history, settings),
       ).length
       const eligibleSpecialCourtIds = openCourtIds.filter((court) =>
         specialCourtIds.has(court),
@@ -5121,6 +5279,39 @@ const generateSchedulePass = (
             !history.specialCompleted.has(player.id),
         )
       : []
+  const eligibleSpecialParticipantCount = activeRegulars.filter(
+    (player) => player.specialMatchEligible ?? true,
+  ).length
+  const requestedSpecialParticipantTarget = settings.specialLimitEnabled
+    ? configuredSpecialParticipantTarget(settings)
+    : eligibleSpecialParticipantCount
+  const achievedSpecialParticipantCount = history.specialCompleted.size
+  if (
+    specialMatchesEnabled &&
+    settings.specialLimitEnabled &&
+    eligibleSpecialParticipantCount < requestedSpecialParticipantTarget
+  ) {
+    warnings.push(
+      `스페셜 참가 대상 부족: ${eligibleSpecialParticipantCount}/${requestedSpecialParticipantTarget}명`,
+    )
+  } else if (
+    specialMatchesEnabled &&
+    settings.specialLimitEnabled &&
+    achievedSpecialParticipantCount < requestedSpecialParticipantTarget
+  ) {
+    warnings.push(
+      `스페셜 참가 목표 미달: ${achievedSpecialParticipantCount}/${requestedSpecialParticipantTarget}명`,
+    )
+  }
+  if (specialMatchesEnabled && settings.specialLimitEnabled) {
+    const achievedGuestGames = Object.values(history.guestGameCounts)
+      .reduce((sum, count) => sum + count, 0)
+    if (achievedGuestGames < plannedSpecialMatchCount) {
+      warnings.push(
+        `스페셜 경기 목표 미달: ${achievedGuestGames}/${plannedSpecialMatchCount}경기`,
+      )
+    }
+  }
   if (pendingSpecial.length > 0 && !settings.specialLimitEnabled) {
     warnings.push(
       `스페셜 경기 미완료: ${pendingSpecial.map((player) => player.name).join(', ')}`,
@@ -5146,6 +5337,179 @@ const generateSchedulePass = (
   }
 }
 
+const enforceSpecialParticipantTarget = (
+  schedule: Schedule,
+  players: Player[],
+  settings: MatchSettings,
+  preferredParticipantIds: Set<string>,
+): Schedule => {
+  if (!settings.specialLimitEnabled) return schedule
+
+  const eligiblePlayers = players.filter(
+    (player) =>
+      player.active &&
+      !player.isGuest &&
+      (player.specialMatchEligible ?? true),
+  )
+  const eligibleIds = new Set(eligiblePlayers.map((player) => player.id))
+  const requestedTarget = configuredSpecialParticipantTarget(settings)
+  let matches = schedule.rounds.flatMap((round) => round.matches)
+  const specialRegularAppearances = matches
+    .filter((match) => match.isSpecial)
+    .flatMap((match) => matchPlayers(match).filter((player) => !player.isGuest))
+  const targetCount = Math.min(
+    requestedTarget,
+    eligiblePlayers.length,
+    specialRegularAppearances.length,
+  )
+  if (targetCount === 0) return schedule
+
+  const playerById = new Map(players.map((player) => [player.id, player]))
+  for (const match of matches) {
+    for (const player of matchPlayers(match)) playerById.set(player.id, player)
+  }
+  const scheduledSpecialIds = specialRegularAppearances.map((player) => player.id)
+  const targetIds = new Set(
+    [...new Set([
+      ...preferredParticipantIds,
+      ...scheduledSpecialIds,
+      ...eligiblePlayers.map((player) => player.id),
+    ])]
+      .filter((id) => eligibleIds.has(id))
+      .slice(0, targetCount),
+  )
+
+  const specialCounts = () => {
+    const counts = new Map<string, number>()
+    for (const match of matches.filter((candidate) => candidate.isSpecial)) {
+      for (const player of matchPlayers(match).filter((candidate) => !candidate.isGuest)) {
+        counts.set(player.id, (counts.get(player.id) ?? 0) + 1)
+      }
+    }
+    return counts
+  }
+  const canUsePlayer = (playerId: string, match: Match) =>
+    !matchPlayers(match).some((player) => player.id === playerId) &&
+    !matches.some(
+      (other) =>
+        other.id !== match.id &&
+        windowsOverlap(match, other) &&
+        matchPlayers(other).some((player) => player.id === playerId),
+    )
+  const replacementFit = (incoming: Player, outgoing: Player) => [
+    Number(incoming.gender !== outgoing.gender),
+    scoreDistanceBetweenPlayers(incoming, outgoing),
+    Math.abs(ageValue(incoming) - ageValue(outgoing)),
+  ]
+  const replaceAppearance = (
+    matchIndex: number,
+    outgoingId: string,
+    incoming: Player,
+  ) => {
+    matches = matches.map((match, index) =>
+      index === matchIndex
+        ? replaceMatchPlayer(match, outgoingId, incoming)
+        : match,
+    )
+  }
+
+  for (let matchIndex = 0; matchIndex < matches.length; matchIndex += 1) {
+    const match = matches[matchIndex]
+    if (!match.isSpecial) continue
+    for (const outgoing of matchPlayers(match).filter(
+      (player) => !player.isGuest && !targetIds.has(player.id),
+    )) {
+      const counts = specialCounts()
+      const incoming = [...targetIds]
+        .map((id) => playerById.get(id))
+        .filter((player): player is Player => Boolean(player))
+        .filter((player) => canUsePlayer(player.id, matches[matchIndex]))
+        .sort((left, right) => compareNumberTuples(
+          [
+            counts.get(left.id) ?? 0,
+            ...replacementFit(left, outgoing),
+          ],
+          [
+            counts.get(right.id) ?? 0,
+            ...replacementFit(right, outgoing),
+          ],
+        ))[0]
+      if (incoming) replaceAppearance(matchIndex, outgoing.id, incoming)
+    }
+  }
+
+  for (const missingId of targetIds) {
+    const counts = specialCounts()
+    if ((counts.get(missingId) ?? 0) > 0) continue
+    const incoming = playerById.get(missingId)
+    if (!incoming) continue
+
+    const replacementOptions = matches.flatMap((match, matchIndex) =>
+      !match.isSpecial || !canUsePlayer(missingId, match)
+        ? []
+        : matchPlayers(match)
+            .filter(
+              (player) =>
+                !player.isGuest &&
+                targetIds.has(player.id) &&
+                (counts.get(player.id) ?? 0) > 1,
+            )
+            .map((outgoing) => ({ matchIndex, outgoing })),
+    )
+    const replacement = replacementOptions.sort((left, right) =>
+      compareNumberTuples(
+        replacementFit(incoming, left.outgoing),
+        replacementFit(incoming, right.outgoing),
+      ),
+    )[0]
+    if (replacement) {
+      replaceAppearance(
+        replacement.matchIndex,
+        replacement.outgoing.id,
+        incoming,
+      )
+    }
+  }
+
+  const matchById = new Map(matches.map((match) => [match.id, match]))
+  const specialCompletedIds = [...new Set(
+    matches
+      .filter((match) => match.isSpecial)
+      .flatMap((match) =>
+        matchPlayers(match)
+          .filter((player) => !player.isGuest)
+          .map((player) => player.id),
+      ),
+  )]
+  const warnings = schedule.warnings.filter(
+    (warning) =>
+      !warning.startsWith('스페셜 참가 대상 부족:') &&
+      !warning.startsWith('스페셜 참가 목표 미달:'),
+  )
+  if (eligiblePlayers.length < requestedTarget) {
+    warnings.push(
+      `스페셜 참가 대상 부족: ${eligiblePlayers.length}/${requestedTarget}명`,
+    )
+  } else if (specialCompletedIds.length < requestedTarget) {
+    warnings.push(
+      `스페셜 참가 목표 미달: ${specialCompletedIds.length}/${requestedTarget}명`,
+    )
+  }
+
+  return refreshScheduleRestingPlayers(
+    {
+      ...schedule,
+      rounds: schedule.rounds.map((round) => ({
+        ...round,
+        matches: round.matches.map((match) => matchById.get(match.id) ?? match),
+      })),
+      warnings,
+      specialCompletedIds,
+    },
+    players,
+  )
+}
+
 const generateScheduleCandidate = (
   players: Player[],
   settings: MatchSettings,
@@ -5167,14 +5531,39 @@ const generateScheduleCandidate = (
     ),
   )
 
-  return plannedSpecialIds.size === 0
-    ? initialSchedule
-    : generateSchedulePass(
-        players,
-        settings,
-        plannedSpecialIds,
-        preferBalancedGenderComposition,
-      )
+  if (plannedSpecialIds.size === 0) return initialSchedule
+
+  const plannedSchedule = generateSchedulePass(
+    players,
+    settings,
+    plannedSpecialIds,
+    preferBalancedGenderComposition,
+  )
+  const participantTargetEnabled =
+    settings.specialScheduleMode === 'spread' ||
+    usesContinuousSpecialWindow(settings)
+  if (!participantTargetEnabled) return plannedSchedule
+
+  const targetedPlannedSchedule = enforceSpecialParticipantTarget(
+    plannedSchedule,
+    players,
+    settings,
+    plannedSpecialIds,
+  )
+  if (!settings.specialLimitEnabled) {
+    return targetedPlannedSchedule
+  }
+
+  const targetedInitialSchedule = enforceSpecialParticipantTarget(
+    initialSchedule,
+    players,
+    settings,
+    plannedSpecialIds,
+  )
+  return targetedInitialSchedule.specialCompletedIds.length >
+    targetedPlannedSchedule.specialCompletedIds.length
+    ? targetedInitialSchedule
+    : targetedPlannedSchedule
 }
 
 export const generateSchedule = (
