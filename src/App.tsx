@@ -19,6 +19,7 @@ import {
   samplePlayers,
 } from './defaultData'
 import {
+  analyzeParticipantWaitLimitViolations,
   analyzeScheduleQuality,
   analyzeScheduleWait,
   appendGeneralCourtGames,
@@ -29,7 +30,6 @@ import {
   findScheduleOverlap,
   findMeetingPlayerTimeConflict,
   generateBalancedTournamentTeams,
-  generateScheduleWithWaitOptimization,
   getMatchGenderCompositionReview,
   getMatchSkillWarningLevel,
   generateTournamentLineups,
@@ -113,6 +113,7 @@ import type {
   MatchWinnerSide,
   MatchSettings,
   MeetingCourtAssignments,
+  MeetingWaitLimitFailure,
   MeetingShuffleDirection,
   MeetingLineupsByMatch,
   Player,
@@ -130,6 +131,7 @@ import type {
   TournamentResultsByMatch,
   TournamentSettings,
   TournamentTeam,
+  WaitLimitParticipantViolation,
 } from './types'
 import {
   DEFAULT_START_TIME,
@@ -175,6 +177,14 @@ const MEETING_GENERATION_MESSAGES = [
   '즐거운 배드민턴, 고성현&신백철의 A.M.A와 함께 하세요!',
 ] as const
 const MEETING_GENERATION_ATTEMPTS = 5
+
+type MeetingGenerationWorkerResponse = {
+  requestId: number
+  schedule?: Schedule
+  waitLimitFailure?: MeetingWaitLimitFailure
+  progress?: string
+  error?: string
+}
 const MIN_MEETING_PHASE_PERCENT = 15
 const MEETING_PHASE_STEP = 5
 const meetingSwapRecommendationKey = (matchId: string, playerId: string) =>
@@ -1700,12 +1710,16 @@ function App() {
   const [meetingWarningsReconciled, setMeetingWarningsReconciled] = useState(false)
   const [meetingGenerationMessage, setMeetingGenerationMessage] = useState('')
   const [meetingOperationLabel, setMeetingOperationLabel] = useState('대진 생성 중')
+  const [meetingWaitLimitFailure, setMeetingWaitLimitFailure] =
+    useState<MeetingWaitLimitFailure | null>(null)
   const meetingPrintPreviewRef = useRef<HTMLElement | null>(null)
   const tournamentPrintPreviewRef = useRef<HTMLElement | null>(null)
   const contactCopyTimerRef = useRef<number | null>(null)
   const rouletteTimerRef = useRef<number | null>(null)
   const meetingGenerationStartTimerRef = useRef<number | null>(null)
   const meetingGenerationEndTimerRef = useRef<number | null>(null)
+  const meetingGenerationWorkerRef = useRef<Worker | null>(null)
+  const meetingGenerationRequestRef = useRef(0)
   const meetingStatusRefreshTimerRef = useRef<number | null>(null)
   const browserSaveToastTimerRef = useRef<number | null>(null)
   const meetingGenerationCompletedNoticeRef = useRef('대진 완료')
@@ -1721,19 +1735,7 @@ function App() {
     [generatedMeetingPlayers, generatedMeetingSettings, players, settings],
   )
 
-  const rawSchedule = useMemo(
-    () =>
-      scheduleOverride
-        ? scheduleOverride
-        : generatedMeetingPlayers.length === 0
-        ? emptyMeetingSchedule
-        : generateScheduleWithWaitOptimization(
-            generatedMeetingPlayers,
-            generatedMeetingSettings,
-            MEETING_GENERATION_ATTEMPTS,
-          ),
-    [generatedMeetingPlayers, generatedMeetingSettings, scheduleOverride],
-  )
+  const rawSchedule = scheduleOverride ?? emptyMeetingSchedule
   const schedule = useMemo(() => applyMeetingLineups(
     applyPairMixes(rawSchedule, pairMixes),
     generatedMeetingPlayers,
@@ -1766,6 +1768,14 @@ function App() {
   }, [generatedMeetingPlayers, generatedMeetingSettings])
   const scheduleWaitAnalysis = useMemo(
     () => analyzeScheduleWait(
+      schedule,
+      generatedMeetingPlayers,
+      generatedMeetingSettings,
+    ),
+    [generatedMeetingPlayers, generatedMeetingSettings, schedule],
+  )
+  const participantWaitLimitViolations = useMemo(
+    () => analyzeParticipantWaitLimitViolations(
       schedule,
       generatedMeetingPlayers,
       generatedMeetingSettings,
@@ -2323,6 +2333,38 @@ function App() {
           }]
         : []
       : courtSchedules
+  const meetingMatchLocationById = new Map(
+    meetingScheduleSections.flatMap((section) =>
+      section.matches.map((match, index) => [
+        match.id,
+        generatedMeetingSettings.courtAssignmentMode === 'available'
+          ? `${index + 1}번 경기`
+          : `${section.number}코트 ${index + 1}번 경기`,
+      ] as const),
+    ),
+  )
+  const waitViolationDetail = (violation: WaitLimitParticipantViolation) => {
+    const previous = violation.previousMatchId
+      ? meetingMatchLocationById.get(violation.previousMatchId)
+      : null
+    const next = violation.nextMatchId
+      ? meetingMatchLocationById.get(violation.nextMatchId)
+      : null
+    if (violation.phase === 'initial') {
+      return `첫 경기 전 ${violation.waitMinutes}분${next ? ` · ${next} 전` : ''}`
+    }
+    if (violation.phase === 'between') {
+      return `경기 간 ${violation.waitMinutes}분${
+        previous && next ? ` · ${previous} → ${next}` : ''
+      }`
+    }
+    if (violation.phase === 'final') {
+      return `마지막 경기 후 ${violation.waitMinutes}분${
+        previous ? ` · ${previous} 후` : ''
+      }`
+    }
+    return `경기 미배정 · ${violation.waitMinutes}분 대기`
+  }
   const bookingMinutes = getBookingDurationMinutes(
     settings.startTime,
     settings.endTime,
@@ -2819,6 +2861,9 @@ function App() {
       if (meetingGenerationEndTimerRef.current !== null) {
         window.clearTimeout(meetingGenerationEndTimerRef.current)
       }
+      meetingGenerationWorkerRef.current?.terminate()
+      meetingGenerationWorkerRef.current = null
+      meetingGenerationRequestRef.current += 1
       if (meetingStatusRefreshTimerRef.current !== null) {
         window.clearTimeout(meetingStatusRefreshTimerRef.current)
       }
@@ -3888,6 +3933,7 @@ function App() {
   ) => {
     if (isMeetingGenerating && !force) return
     setMeetingOperationLabel('대진 생성 중')
+    setMeetingWaitLimitFailure(null)
     meetingGenerationCompletedNoticeRef.current = completedNotice
 
     if (meetingGenerationStartTimerRef.current !== null) {
@@ -3896,6 +3942,10 @@ function App() {
     if (meetingGenerationEndTimerRef.current !== null) {
       window.clearTimeout(meetingGenerationEndTimerRef.current)
     }
+    meetingGenerationWorkerRef.current?.terminate()
+    meetingGenerationWorkerRef.current = null
+    const requestId = meetingGenerationRequestRef.current + 1
+    meetingGenerationRequestRef.current = requestId
 
     const playerSnapshot = players
     setMeetingGenerationMessage((currentMessage) => {
@@ -3914,9 +3964,79 @@ function App() {
       setGeneratedMeetingSettings(nextSettings)
       setScheduleOverride(null)
       clearMeetingScheduleState()
-      setMeetingOperationLabel('대진 검증 중')
-      setMeetingGenerationMessage('참가자 중복, 코트, 전체 대기 25분을 확인하고 있습니다.')
+      setMeetingOperationLabel('대진 생성 중')
+      setMeetingGenerationMessage('참가자 조합과 경기 순서를 계산하고 있습니다.')
       meetingGenerationStartTimerRef.current = null
+
+      const worker = new Worker(
+        new URL('./meetingGeneration.worker.ts', import.meta.url),
+        { type: 'module' },
+      )
+      meetingGenerationWorkerRef.current = worker
+
+      const finishWorker = () => {
+        worker.terminate()
+        if (meetingGenerationWorkerRef.current === worker) {
+          meetingGenerationWorkerRef.current = null
+        }
+      }
+      const failGeneration = (message: string) => {
+        if (meetingGenerationRequestRef.current !== requestId) return
+        finishWorker()
+        setMeetingOperationLabel('대진 검증 실패')
+        setMeetingGenerationMessage(message)
+        setNotice('대진 생성 실패')
+      }
+
+      worker.onmessage = (
+        event: MessageEvent<MeetingGenerationWorkerResponse>,
+      ) => {
+        const response = event.data
+        if (
+          response.requestId !== requestId ||
+          meetingGenerationRequestRef.current !== requestId
+        ) return
+        if (response.progress) {
+          setMeetingGenerationMessage(response.progress)
+          return
+        }
+        if (response.waitLimitFailure) {
+          if (!response.schedule) {
+            failGeneration('검토할 대진을 생성하지 못했습니다.')
+            return
+          }
+          finishWorker()
+          setScheduleOverride(response.schedule)
+          setMeetingWaitLimitFailure(response.waitLimitFailure)
+          setMeetingOperationLabel('대진 검증 실패')
+          setMeetingGenerationMessage(
+            `최장 대기 ${response.waitLimitFailure.maximumWaitMinutes}분 · ` +
+            `25분 초과 ${response.waitLimitFailure.participantsOverLimit}명`,
+          )
+          setNotice('25분 제한으로 대진 생성 불가')
+          return
+        }
+        if (!response.schedule) {
+          failGeneration(response.error || '대진을 생성하지 못했습니다.')
+          return
+        }
+        finishWorker()
+        setMeetingWaitLimitFailure(null)
+        setScheduleOverride(response.schedule)
+        setMeetingOperationLabel('대진 검증 중')
+        setMeetingGenerationMessage(
+          '참가자 중복, 코트, 전체 대기 25분을 확인하고 있습니다.',
+        )
+      }
+      worker.onerror = () => {
+        failGeneration('대진 계산 중 오류가 발생했습니다. 다시 생성해 주세요.')
+      }
+      worker.postMessage({
+        requestId,
+        players: playerSnapshot,
+        settings: nextSettings,
+        attemptCount: MEETING_GENERATION_ATTEMPTS,
+      })
     }, 60)
   }
 
@@ -3926,6 +4046,7 @@ function App() {
       meetingGenerationEndTimerRef.current = null
     }
     setIsMeetingGenerating(false)
+    setMeetingWaitLimitFailure(null)
     setView('schedule')
     setNotice(meetingGenerationCompletedNoticeRef.current)
   }
@@ -3946,7 +4067,12 @@ function App() {
       window.clearTimeout(meetingGenerationEndTimerRef.current)
       meetingGenerationEndTimerRef.current = null
     }
+    meetingGenerationWorkerRef.current?.terminate()
+    meetingGenerationWorkerRef.current = null
+    meetingGenerationRequestRef.current += 1
     setIsMeetingGenerating(false)
+    setMeetingWaitLimitFailure(null)
+    setScheduleOverride(null)
     setSettingsOpen(true)
     setNotice('설정 확인 필요')
     window.setTimeout(() => scrollToSection('meeting-settings'), 0)
@@ -4921,6 +5047,59 @@ function App() {
     window.setTimeout(() => scrollToSection(sectionId), 0)
   }
 
+  const openWaitLimitManualEdit = (
+    selectedViolation?: WaitLimitParticipantViolation,
+  ) => {
+    const violation = selectedViolation ??
+      meetingWaitLimitFailure?.participantViolations[0] ??
+      participantWaitLimitViolations[0]
+    const targetMatchId =
+      violation?.nextMatchId ??
+      violation?.previousMatchId ??
+      allScheduledMatches[0]?.id
+    const targetMatch = allScheduledMatches.find(
+      (match) => match.id === targetMatchId,
+    )
+
+    setIsMeetingGenerating(false)
+    setMeetingWaitLimitFailure(null)
+    setView('schedule')
+    if (targetMatch) {
+      setCollapsedMatchIds((current) => ({
+        ...current,
+        [targetMatch.id]: false,
+      }))
+      openMatchEditor(targetMatch)
+      window.setTimeout(() => {
+        scrollToElement(document.getElementById(`meeting-match-${targetMatch.id}`))
+      }, 0)
+    } else {
+      scrollToSectionAfterRender('wait-limit-review')
+    }
+    setNotice(
+      violation
+        ? `${waitViolationDetail(violation)} · 참가자 교체 후 현황을 확인하세요.`
+        : '25분 초과 대진 · 수동 수정 후 현황을 확인하세요.',
+    )
+  }
+
+  const acceptWaitLimitOverride = () => {
+    const failure = meetingWaitLimitFailure
+    if (!failure) return
+    const confirmed = window.confirm(
+      `최장 대기 ${failure.maximumWaitMinutes}분 · ` +
+      `${failure.participantsOverLimit}명이 25분을 초과합니다.\n` +
+      '현장 조정을 전제로 이 대진을 사용하시겠습니까?',
+    )
+    if (!confirmed) return
+
+    setIsMeetingGenerating(false)
+    setMeetingWaitLimitFailure(null)
+    setView('schedule')
+    setNotice(`25분 초과 ${failure.participantsOverLimit}명 · 확인 후 사용`)
+    scrollToSectionAfterRender('wait-limit-review')
+  }
+
   const scrollToPrintPreview = (previewRef: RefObject<HTMLElement | null>) => {
     window.setTimeout(() => scrollToElement(previewRef.current), 0)
   }
@@ -5344,6 +5523,102 @@ function App() {
             )}
             <strong>{meetingOperationLabel}</strong>
             <p>{meetingGenerationMessage}</p>
+            {meetingOperationLabel === '대진 검증 실패' &&
+            meetingWaitLimitFailure ? (
+              <div className="generation-wait-failure">
+                <div className="generation-wait-metrics">
+                  <span className={
+                    meetingWaitLimitFailure.maximumInitialWaitMinutes > 25
+                      ? 'over-limit'
+                      : ''
+                  }>
+                    첫 경기 전
+                    <strong>
+                      {meetingWaitLimitFailure.maximumInitialWaitMinutes}분
+                    </strong>
+                  </span>
+                  <span className={
+                    meetingWaitLimitFailure.maximumBetweenWaitMinutes > 25
+                      ? 'over-limit'
+                      : ''
+                  }>
+                    경기 간
+                    <strong>
+                      {meetingWaitLimitFailure.maximumBetweenWaitMinutes}분
+                    </strong>
+                  </span>
+                  <span className={
+                    meetingWaitLimitFailure.maximumFinalIdleMinutes > 25
+                      ? 'over-limit'
+                      : ''
+                  }>
+                    마지막 경기 후
+                    <strong>
+                      {meetingWaitLimitFailure.maximumFinalIdleMinutes}분
+                    </strong>
+                  </span>
+                </div>
+                <div className="generation-wait-participants">
+                  <strong>
+                    25분 초과 참가자 {meetingWaitLimitFailure.participantViolations.length}명
+                  </strong>
+                  <div>
+                    {meetingWaitLimitFailure.participantViolations.map(
+                      (violation) => {
+                        const player = generatedMeetingPlayers.find(
+                          (candidate) => candidate.id === violation.playerId,
+                        )
+                        return (
+                          <button
+                            type="button"
+                            key={violation.playerId}
+                            onClick={() => openWaitLimitManualEdit(violation)}
+                          >
+                            <span>
+                              <b>
+                                {player
+                                  ? playerDisplayName(player, scheduleDisplayNames)
+                                  : '참가자'}
+                              </b>
+                              <small>{waitViolationDetail(violation)}</small>
+                            </span>
+                            <em>관련 경기 수정</em>
+                          </button>
+                        )
+                      },
+                    )}
+                  </div>
+                </div>
+                <div className="generation-wait-recommendations">
+                  <strong>해결 방법</strong>
+                  {meetingWaitLimitFailure.recommendations.length > 0 ? (
+                    meetingWaitLimitFailure.recommendations.map(
+                      (recommendation) => (
+                        <article key={recommendation.kind}>
+                          <div>
+                            <b>{recommendation.title}</b>
+                            <span>{recommendation.detail}</span>
+                          </div>
+                          <em className={recommendation.verified ? 'verified' : ''}>
+                            {recommendation.verified
+                              ? '재계산 통과'
+                              : '계산상 권장'}
+                          </em>
+                        </article>
+                      ),
+                    )
+                  ) : (
+                    <small>
+                      코트 수, 경기 시간 또는 참가 인원을 조정해 주세요.
+                    </small>
+                  )}
+                </div>
+                <small className="generation-search-count">
+                  최대 {meetingWaitLimitFailure.searchedScheduleCount}개 후보를
+                  자동 탐색했습니다.
+                </small>
+              </div>
+            ) : null}
             {meetingOperationLabel === '대진 완료' ? (
               <div className="generation-review-summary">
                 <span>
@@ -5402,6 +5677,13 @@ function App() {
                   첫 경기 대기 <strong>{scheduleWaitAnalysis.maximumInitialWaitMinutes}분</strong>
                 </span>
                 <span className={
+                  scheduleWaitAnalysis.maximumBetweenWaitMinutes > 25
+                    ? 'wait-warning'
+                    : ''
+                }>
+                  경기 간 대기 <strong>{scheduleWaitAnalysis.maximumBetweenWaitMinutes}분</strong>
+                </span>
+                <span className={
                   scheduleWaitAnalysis.maximumFinalIdleMinutes > 25
                     ? 'wait-warning'
                     : ''
@@ -5429,12 +5711,19 @@ function App() {
                 </button>
               </div>
             ) : meetingOperationLabel === '대진 검증 실패' ? (
-              <div className="generation-review-actions">
-                <button type="button" className="primary-action" onClick={returnToMeetingSettings}>
+              <div className="generation-review-actions wait-limit-actions">
+                <button type="button" onClick={returnToMeetingSettings}>
                   다시 설정
                 </button>
-                <button type="button" onClick={regenerateReviewedMeeting}>
-                  재생성
+                <button
+                  type="button"
+                  className="primary-action"
+                  onClick={() => openWaitLimitManualEdit()}
+                >
+                  수동 수정
+                </button>
+                <button type="button" onClick={acceptWaitLimitOverride}>
+                  초과 확인 후 사용
                 </button>
               </div>
             ) : null}
@@ -7200,6 +7489,44 @@ function App() {
             </div>
           ) : null}
 
+          {!isSharedMode &&
+          totalMatches > 0 &&
+          participantWaitLimitViolations.length > 0 ? (
+            <section className="wait-limit-operator-panel" id="wait-limit-review">
+              <div className="wait-limit-operator-heading">
+                <div>
+                  <span className="eyebrow">운영자 확인</span>
+                  <h2>25분 초과 참가자 {participantWaitLimitViolations.length}명</h2>
+                </div>
+                <span>교체 후 목록이 자동으로 다시 계산됩니다.</span>
+              </div>
+              <div className="wait-limit-participant-list">
+                {participantWaitLimitViolations.map((violation) => {
+                  const player = generatedMeetingPlayers.find(
+                    (candidate) => candidate.id === violation.playerId,
+                  )
+                  return (
+                    <button
+                      type="button"
+                      key={violation.playerId}
+                      onClick={() => openWaitLimitManualEdit(violation)}
+                    >
+                      <span>
+                        <strong>
+                          {player
+                            ? playerDisplayName(player, scheduleDisplayNames)
+                            : '참가자'}
+                        </strong>
+                        <small>{waitViolationDetail(violation)}</small>
+                      </span>
+                      <em>관련 경기 수정</em>
+                    </button>
+                  )
+                })}
+              </div>
+            </section>
+          ) : null}
+
           <section className={`time-bar ${overtimeMatches.length > 0 ? 'time-overrun' : ''}`}>
             <div className="schedule-overview-heading">
               <span className="eyebrow">대진표 요약</span>
@@ -7459,10 +7786,20 @@ function App() {
                         if (collapsedMatchIds[match.id]) {
                           return (
                             <article
-                              className={`match-card collapsed-match-card ${skillWarningClass} ${genderReviewClass}`}
+                              id={`meeting-match-${match.id}`}
+                              className={`match-card collapsed-match-card ${
+                                availableAssignment ? 'available-assignment-match' : ''
+                              } ${skillWarningClass} ${genderReviewClass}`}
                               key={match.id}
                             >
-                              <strong>{matchIndex + 1}번</strong>
+                              {availableAssignment ? (
+                                <span className="available-collapsed-match-number">
+                                  <b>{matchIndex + 1}</b>
+                                  <small>번</small>
+                                </span>
+                              ) : (
+                                <strong>{matchIndex + 1}번</strong>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => toggleMeetingMatch(match.id)}
@@ -7668,20 +8005,32 @@ function App() {
 
                         return (
                           <article
+                            id={`meeting-match-${match.id}`}
                             className={`match-card ${
                               match.isSpecial ? 'special-match' : ''
+                            } ${
+                              availableAssignment ? 'available-assignment-match' : ''
                             } ${skillWarningClass} ${genderReviewClass}`}
                             key={match.id}
                           >
                             <header>
-                              <span>
-                                {availableAssignment
-                                  ? `${matchIndex + 1}번 · ${
-                                      meetingCourtAssignments[match.id]
-                                        ? `${meetingCourtAssignments[match.id].court}코트 배정`
-                                        : '코트 현장 배정'
-                                    } · ${match.durationMinutes ?? GAME_SLOT_MINUTES}분`
-                                  : `${matchIndex + 1}번 · ${clockTimeAtOffset(
+                              {availableAssignment ? (
+                                <span className="available-match-heading">
+                                  <span className="available-match-number">
+                                    <b>{matchIndex + 1}</b>
+                                    <small>번</small>
+                                  </span>
+                                  <span className="available-match-detail">
+                                    {meetingCourtAssignments[match.id]
+                                      ? `${meetingCourtAssignments[match.id].court}코트 배정`
+                                      : '코트 현장 배정'}
+                                    {' · '}
+                                    {match.durationMinutes ?? GAME_SLOT_MINUTES}분
+                                  </span>
+                                </span>
+                              ) : (
+                                <span>
+                                  {`${matchIndex + 1}번 · ${clockTimeAtOffset(
                                       generatedMeetingSettings.startTime,
                                       match.startOffsetMinutes ?? startsAt,
                                     )}–${clockTimeAtOffset(
@@ -7689,7 +8038,8 @@ function App() {
                                       (match.startOffsetMinutes ?? startsAt) +
                                         (match.durationMinutes ?? GAME_SLOT_MINUTES),
                                     )} · ${match.durationMinutes ?? GAME_SLOT_MINUTES}분`}
-                              </span>
+                                </span>
+                              )}
                               <div className="match-card-actions">
                                 {!isSharedMode ? (
                                   <>

@@ -10,6 +10,7 @@ import type {
   MeetingLineupsByMatch,
   MeetingShuffleDirection,
   MatchSettings,
+  MeetingWaitLimitFailure,
   Player,
   PlayerStat,
   ResultsByMatch,
@@ -28,6 +29,7 @@ import type {
   TournamentTeam,
   TournamentTeamBattleStanding,
   TournamentTeamBattleTie,
+  WaitLimitParticipantViolation,
 } from './types'
 import { defaultLevelTiers, defaultMatchConditionOptions } from './defaultData'
 import { getBookingDurationMinutes, getBookingRoundCount } from './scheduleTime'
@@ -202,6 +204,16 @@ const playerMatchWindows = (matches: Match[], playerId: string) =>
     .map(matchTimeWindow)
     .sort((left, right) => left.start - right.start)
 
+const playerScheduledMatches = (matches: Match[], playerId: string) =>
+  matches
+    .filter((match) =>
+      [...match.teamA, ...match.teamB].some((player) => player.id === playerId),
+    )
+    .sort((left, right) =>
+      matchTimeWindow(left).start - matchTimeWindow(right).start ||
+      left.id.localeCompare(right.id),
+    )
+
 const playerWaitGaps = (matches: Match[], playerId: string) => {
   const windows = playerMatchWindows(matches, playerId)
   const gaps: number[] = []
@@ -273,6 +285,7 @@ export const getScheduleMaximumWaitMinutes = (
 export type ScheduleWaitAnalysis = {
   maximumWaitMinutes: number
   maximumInitialWaitMinutes: number
+  maximumBetweenWaitMinutes: number
   maximumFinalIdleMinutes: number
   zeroGameParticipantCount: number
   exceedsLimit: boolean
@@ -349,6 +362,10 @@ export const analyzeScheduleWait = (
         : analysisEndMinutes
     }),
   )
+  const maximumBetweenWaitMinutes = Math.max(
+    0,
+    ...activePlayers.flatMap((player) => playerWaitGaps(matches, player.id)),
+  )
   const maximumWaitMinutes = Math.max(
     0,
     ...activePlayers.map((player) =>
@@ -400,12 +417,97 @@ export const analyzeScheduleWait = (
   return {
     maximumWaitMinutes,
     maximumInitialWaitMinutes,
+    maximumBetweenWaitMinutes,
     maximumFinalIdleMinutes,
     zeroGameParticipantCount,
     exceedsLimit,
     recommendedParticipantCount,
     warning,
   }
+}
+
+export const analyzeParticipantWaitLimitViolations = (
+  schedule: Schedule,
+  players: Player[],
+  settings: MatchSettings,
+): WaitLimitParticipantViolation[] => {
+  const matches = schedule.rounds.flatMap((round) => round.matches)
+  const bookingMinutes = getBookingDurationMinutes(
+    settings.startTime,
+    settings.endTime,
+  )
+  const violations: WaitLimitParticipantViolation[] = []
+
+  for (const player of players.filter((candidate) => candidate.active)) {
+    const scheduledMatches = playerScheduledMatches(matches, player.id)
+    const analysisEndMinutes = playerWaitAnalysisEndMinutes(
+      player,
+      matches,
+      bookingMinutes,
+      settings,
+    )
+    if (scheduledMatches.length === 0) {
+      if (analysisEndMinutes > WAIT_PRIORITY_MINUTES) {
+        violations.push({
+          playerId: player.id,
+          waitMinutes: analysisEndMinutes,
+          phase: 'unassigned',
+        })
+      }
+      continue
+    }
+
+    const candidates: WaitLimitParticipantViolation[] = []
+    const firstMatch = scheduledMatches[0]
+    const initialWait = matchTimeWindow(firstMatch).start
+    if (initialWait > WAIT_PRIORITY_MINUTES) {
+      candidates.push({
+        playerId: player.id,
+        waitMinutes: initialWait,
+        phase: 'initial',
+        nextMatchId: firstMatch.id,
+      })
+    }
+    for (let index = 1; index < scheduledMatches.length; index += 1) {
+      const previousMatch = scheduledMatches[index - 1]
+      const nextMatch = scheduledMatches[index]
+      const waitMinutes = Math.max(
+        0,
+        matchTimeWindow(nextMatch).start - matchTimeWindow(previousMatch).end,
+      )
+      if (waitMinutes <= WAIT_PRIORITY_MINUTES) continue
+      candidates.push({
+        playerId: player.id,
+        waitMinutes,
+        phase: 'between',
+        previousMatchId: previousMatch.id,
+        nextMatchId: nextMatch.id,
+      })
+    }
+    const lastMatch = scheduledMatches[scheduledMatches.length - 1]
+    const finalWait = Math.max(
+      0,
+      analysisEndMinutes - matchTimeWindow(lastMatch).end,
+    )
+    if (finalWait > WAIT_PRIORITY_MINUTES) {
+      candidates.push({
+        playerId: player.id,
+        waitMinutes: finalWait,
+        phase: 'final',
+        previousMatchId: lastMatch.id,
+      })
+    }
+    const maximumViolation = candidates.sort(
+      (left, right) => right.waitMinutes - left.waitMinutes,
+    )[0]
+    if (maximumViolation) violations.push(maximumViolation)
+  }
+
+  return violations.sort(
+    (left, right) =>
+      right.waitMinutes - left.waitMinutes ||
+      left.playerId.localeCompare(right.playerId),
+  )
 }
 
 const countValues = (values: string[]) => {
@@ -6856,6 +6958,187 @@ export const generateScheduleWithWaitOptimization = (
       ...completedSchedule.warnings,
       '동시 품질조건 후보 없음 · 가장 가까운 대진을 표시했습니다.',
     ],
+  }
+}
+
+export type ScheduleGenerationResolution = {
+  schedule: Schedule
+  waitLimitFailure: MeetingWaitLimitFailure | null
+}
+
+const waitResolutionScore = (analysis: ScheduleWaitAnalysis) => [
+  analysis.maximumWaitMinutes,
+  analysis.maximumInitialWaitMinutes +
+    analysis.maximumBetweenWaitMinutes +
+    analysis.maximumFinalIdleMinutes,
+]
+
+const waitResolutionAlternative = (
+  players: Player[],
+  settings: MatchSettings,
+) => {
+  const schedule = generateScheduleWithWaitOptimization(players, settings, 1)
+  const wait = analyzeScheduleWait(schedule, players, settings)
+  const valid =
+    !wait.exceedsLimit &&
+    validateMeetingSchedule(schedule, players, settings).length === 0 &&
+    validateMeetingFairness(schedule, players).length === 0
+  return { schedule, wait, valid }
+}
+
+export const generateScheduleWithWaitResolution = (
+  players: Player[],
+  settings: MatchSettings,
+  attemptCount = 5,
+  onProgress?: (message: string) => void,
+): ScheduleGenerationResolution => {
+  const activePlayerCount = players.filter((player) => player.active).length
+  const requestedAttempts = Math.min(5, Math.max(1, Math.floor(attemptCount)))
+  const attemptsPerBatch =
+    activePlayerCount >= 40 && !settings.conditionOptions.strictSkillLimit
+      ? Math.min(3, requestedAttempts)
+      : requestedAttempts
+  const searchBatchCount = 3
+  let searchedScheduleCount = 0
+  let bestSchedule: Schedule | null = null
+  let bestWait: ScheduleWaitAnalysis | null = null
+
+  for (let batchIndex = 0; batchIndex < searchBatchCount; batchIndex += 1) {
+    if (batchIndex > 0) {
+      onProgress?.(
+        `25분 이내 대진을 추가 탐색하고 있습니다. ${batchIndex + 1}/${searchBatchCount}`,
+      )
+    }
+    const candidateSettings = {
+      ...settings,
+      seed: settings.seed + batchIndex * requestedAttempts,
+    }
+    const candidate = generateScheduleWithWaitOptimization(
+      players,
+      candidateSettings,
+      requestedAttempts,
+    )
+    const wait = analyzeScheduleWait(candidate, players, candidateSettings)
+    searchedScheduleCount += attemptsPerBatch
+    if (
+      bestWait === null ||
+      compareNumberTuples(
+        waitResolutionScore(wait),
+        waitResolutionScore(bestWait),
+      ) < 0
+    ) {
+      bestSchedule = candidate
+      bestWait = wait
+    }
+    const valid =
+      !wait.exceedsLimit &&
+      validateMeetingSchedule(candidate, players, candidateSettings).length === 0 &&
+      validateMeetingFairness(candidate, players).length === 0
+    if (valid) {
+      return { schedule: candidate, waitLimitFailure: null }
+    }
+  }
+
+  const schedule = bestSchedule ?? generateSchedule(players, settings)
+  const wait = bestWait ?? analyzeScheduleWait(schedule, players, settings)
+  const participantViolations = analyzeParticipantWaitLimitViolations(
+    schedule,
+    players,
+    settings,
+  )
+  const recommendations: MeetingWaitLimitFailure['recommendations'] = []
+
+  onProgress?.('25분 제한을 충족하는 운영 대안을 계산하고 있습니다.')
+
+  const shorterDurations = ([10, 12, 15] as const).filter(
+    (duration) => duration < settings.normalGameMinutes,
+  )
+  for (const duration of shorterDurations) {
+    const alternative = waitResolutionAlternative(players, {
+      ...settings,
+      normalGameMinutes: duration,
+      seed: settings.seed + 101 + duration,
+    })
+    if (!alternative.valid) continue
+    recommendations.push({
+      kind: 'shorter-game',
+      title: `경기 시간을 ${duration}분으로 단축`,
+      detail: `재계산 최장 대기 ${alternative.wait.maximumWaitMinutes}분`,
+      verified: true,
+    })
+    break
+  }
+
+  for (
+    let courtCount = settings.courtCount + 1;
+    courtCount <= Math.min(12, settings.courtCount + 2);
+    courtCount += 1
+  ) {
+    const alternative = waitResolutionAlternative(players, {
+      ...settings,
+      courtCount,
+      seed: settings.seed + 200 + courtCount,
+    })
+    if (!alternative.valid) continue
+    recommendations.push({
+      kind: 'more-courts',
+      title: `코트를 ${courtCount}개로 확대`,
+      detail: `재계산 최장 대기 ${alternative.wait.maximumWaitMinutes}분`,
+      verified: true,
+    })
+    break
+  }
+
+  const relaxedConditions: MatchConditionOptions = {
+    ...settings.conditionOptions,
+    restBalance: false,
+    levelBalance: false,
+    ageBalance: false,
+    genderBalance: false,
+    partnerRepeat: false,
+    opponentRepeat: false,
+    groupRepeat: false,
+    specialPriority: false,
+    guestPartnerRepeat: false,
+    femaleLevelFit: false,
+    strictSkillLimit: false,
+  }
+  const relaxedAlternative = waitResolutionAlternative(players, {
+    ...settings,
+    conditionOptions: relaxedConditions,
+    seed: settings.seed + 301,
+  })
+  if (relaxedAlternative.valid) {
+    recommendations.push({
+      kind: 'relax-conditions',
+      title: '선택 균형 조건 완화',
+      detail: `재계산 최장 대기 ${relaxedAlternative.wait.maximumWaitMinutes}분`,
+      verified: true,
+    })
+  }
+
+  if (wait.recommendedParticipantCount < activePlayerCount) {
+    recommendations.push({
+      kind: 'reduce-participants',
+      title: `참가 인원 ${wait.recommendedParticipantCount}명 이하 검토`,
+      detail: '현재 코트 회전율을 기준으로 계산한 권장 인원입니다.',
+      verified: false,
+    })
+  }
+
+  return {
+    schedule,
+    waitLimitFailure: {
+      maximumWaitMinutes: wait.maximumWaitMinutes,
+      maximumInitialWaitMinutes: wait.maximumInitialWaitMinutes,
+      maximumBetweenWaitMinutes: wait.maximumBetweenWaitMinutes,
+      maximumFinalIdleMinutes: wait.maximumFinalIdleMinutes,
+      participantsOverLimit: participantViolations.length,
+      recommendedParticipantCount: wait.recommendedParticipantCount,
+      searchedScheduleCount,
+      recommendations,
+      participantViolations,
+    },
   }
 }
 

@@ -183,12 +183,13 @@ const text = (
   x: number,
   y: number,
   options: {
+    anchor?: 'start' | 'middle' | 'end'
     color?: string
     size?: number
     weight?: number
   } = {},
 ) =>
-  `<text x="${x}" y="${y}" fill="${options.color ?? '#18211f'}" font-family="Inter, Arial, sans-serif" font-size="${options.size ?? 13}" font-weight="${options.weight ?? 800}">${escapeXml(value)}</text>`
+  `<text x="${x}" y="${y}" fill="${options.color ?? '#18211f'}" text-anchor="${options.anchor ?? 'start'}" font-family="Inter, Arial, sans-serif" font-size="${options.size ?? 13}" font-weight="${options.weight ?? 800}">${escapeXml(value)}</text>`
 
 const rect = (
   x: number,
@@ -197,11 +198,12 @@ const rect = (
   height: number,
   options: {
     fill?: string
+    radius?: number
     stroke?: string
     strokeWidth?: number
   } = {},
 ) =>
-  `<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="${options.fill ?? '#fff'}" stroke="${options.stroke ?? 'none'}" stroke-width="${options.strokeWidth ?? 0}" />`
+  `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${options.radius ?? 0}" fill="${options.fill ?? '#fff'}" stroke="${options.stroke ?? 'none'}" stroke-width="${options.strokeWidth ?? 0}" />`
 
 const makeRoundText = (
   round: Round,
@@ -772,6 +774,154 @@ export const paginatePrintableTournamentItems = (
   return pages.length > 0 || currentPage.length > 0 ? [...pages, currentPage] : [[]]
 }
 
+type AvailablePrintMatch = {
+  match: Match
+  order: number
+}
+
+const availablePrintLayout = {
+  cardGap: 6,
+  cardHeight: 155,
+  columns: 5,
+  contentTop: 114,
+  horizontalPadding: 28,
+  rows: 10,
+}
+
+const renderAvailableGridPageSvg = (
+  page: AvailablePrintMatch[],
+  pageIndex: number,
+  pageCount: number,
+  totalMatchCount: number,
+  options: PrintScheduleOptions,
+) => {
+  const { cardGap, cardHeight, columns, contentTop, horizontalPadding } =
+    availablePrintLayout
+  const cardWidth = Math.floor(
+    (A4_IMAGE_WIDTH - horizontalPadding * 2 - cardGap * (columns - 1)) /
+      columns,
+  )
+  const firstOrder = page[0]?.order ?? 0
+  const lastOrder = page[page.length - 1]?.order ?? 0
+  const nodes: string[] = [
+    rect(0, 0, A4_IMAGE_WIDTH, A4_IMAGE_HEIGHT, { fill: '#ffffff' }),
+    rect(28, 15, 6, 42, { fill: '#0c8f7f', radius: 3 }),
+    text(truncateText(options.settings.eventName, 52), 46, 35, {
+      size: 21,
+      weight: 900,
+    }),
+    text(
+      `전체 순번 대진표 · 빈 코트 순차 배정 · 현장 배정 · ${options.settings.courtCount}코트`,
+      46,
+      56,
+      { color: '#65716e', size: 11, weight: 800 },
+    ),
+    rect(28, 68, A4_IMAGE_WIDTH - 56, 38, {
+      fill: '#f1f7f5',
+      stroke: '#d5e2de',
+      strokeWidth: 1,
+      radius: 6,
+    }),
+    text(
+      `참가 ${options.summary.participantCount}명 · 총 ${totalMatchCount}경기 · ` +
+        `${options.settings.startTime}–${options.settings.endTime}`,
+      40,
+      92,
+      { size: 13, weight: 900 },
+    ),
+    text(
+      `${firstOrder}–${lastOrder}번 · ${pageIndex + 1}/${pageCount}쪽`,
+      A4_IMAGE_WIDTH - 40,
+      92,
+      { anchor: 'end', color: '#18685c', size: 13, weight: 900 },
+    ),
+  ]
+
+  for (const [pageMatchIndex, { match, order }] of page.entries()) {
+    const column = pageMatchIndex % columns
+    const row = Math.floor(pageMatchIndex / columns)
+    const x = horizontalPadding + column * (cardWidth + cardGap)
+    const y = contentTop + row * (cardHeight + cardGap)
+    const overrides = options.matchNameOverrides?.[match.id] ?? {}
+    const teamName = (team: Team) =>
+      truncateText(
+        team
+          .map(
+            (player) =>
+              overrides[player.id]?.trim() ||
+              playerDisplayName(player, options.names),
+          )
+          .join(' + '),
+        15,
+      )
+    const accent = match.isSpecial ? '#c46b16' : '#0e3457'
+    const softAccent = match.isSpecial ? '#fff4e5' : '#edf8f5'
+
+    nodes.push(
+      rect(x, y, cardWidth, cardHeight, {
+        fill: match.isSpecial ? '#fffaf3' : '#ffffff',
+        stroke: match.isSpecial ? '#e2a665' : '#cbd9d5',
+        strokeWidth: 1,
+        radius: 8,
+      }),
+      rect(x + 7, y + 7, 52, 36, {
+        fill: accent,
+        radius: 7,
+      }),
+      text(String(order), x + 33, y + 34, {
+        anchor: 'middle',
+        color: '#ffe16a',
+        size: 25,
+        weight: 900,
+      }),
+      text(
+        `${match.durationMinutes ?? GAME_SLOT_MINUTES}분${
+          match.isSpecial ? ' · 스페셜' : ''
+        }`,
+        x + cardWidth - 9,
+        y + 29,
+        { anchor: 'end', color: accent, size: 9, weight: 900 },
+      ),
+      rect(x + 8, y + 51, cardWidth - 16, 36, {
+        fill: softAccent,
+        radius: 5,
+      }),
+      text(teamName(match.teamA), x + cardWidth / 2, y + 75, {
+        anchor: 'middle',
+        color: '#102a43',
+        size: 16,
+        weight: 900,
+      }),
+      text('VS', x + cardWidth / 2, y + 98, {
+        anchor: 'middle',
+        color: '#9aa6a2',
+        size: 8,
+        weight: 700,
+      }),
+      rect(x + 8, y + 105, cardWidth - 16, 36, {
+        fill: '#f4f6f5',
+        radius: 5,
+      }),
+      text(teamName(match.teamB), x + cardWidth / 2, y + 129, {
+        anchor: 'middle',
+        color: '#102a43',
+        size: 16,
+        weight: 900,
+      }),
+    )
+  }
+
+  nodes.push(
+    text(`생성 ${formatGeneratedAt(options.generatedAt)}`, 28, A4_IMAGE_HEIGHT - 14, {
+      color: '#8a9692',
+      size: 9,
+      weight: 700,
+    }),
+  )
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${A4_IMAGE_WIDTH}" height="${A4_IMAGE_HEIGHT}" viewBox="0 0 ${A4_IMAGE_WIDTH} ${A4_IMAGE_HEIGHT}" data-layout="available-grid" data-columns="5">${nodes.join('')}</svg>`
+}
+
 export const renderLegacySchedulePageSvg = (
   page: PrintableScheduleItem[],
   pageIndex: number,
@@ -1104,14 +1254,23 @@ export const createSchedulePrintImages = (options: PrintScheduleOptions) => {
         left.court - right.court ||
         left.id.localeCompare(right.id),
       )
-      .map((match, index) => ({ ...match, round: index + 1, court: 0 }))
-    const pages = paginatePrintableScheduleItems(
-      orderedMatches.map((match) => ({ kind: 'match' as const, match })),
-    )
-    return pages.map((page, index) => svgDataUrl(renderLegacySchedulePageSvg(
+      .map((match, index) => ({ match, order: index + 1 }))
+    const matchesPerPage =
+      availablePrintLayout.columns * availablePrintLayout.rows
+    const pages: AvailablePrintMatch[][] = orderedMatches.length > 0
+      ? Array.from(
+          { length: Math.ceil(orderedMatches.length / matchesPerPage) },
+          (_, index) => orderedMatches.slice(
+            index * matchesPerPage,
+            (index + 1) * matchesPerPage,
+          ),
+        )
+      : [[]]
+    return pages.map((page, index) => svgDataUrl(renderAvailableGridPageSvg(
       page,
       index,
       pages.length,
+      orderedMatches.length,
       options,
     )))
   }

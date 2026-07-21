@@ -85,7 +85,7 @@
 }
 
 .generation-card.review.failure-review {
-  grid-template-rows: repeat(5, auto);
+  grid-template-rows: repeat(6, auto);
   overflow-y: auto;
 }
 
@@ -179,6 +179,166 @@
   min-height: 44px;
 }
 
+.generation-review-actions.wait-limit-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.generation-wait-failure {
+  display: grid;
+  width: 100%;
+  gap: 10px;
+  text-align: left;
+}
+
+.generation-wait-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.generation-wait-metrics > span {
+  display: grid;
+  gap: 3px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--soft-green);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.generation-wait-metrics > span strong {
+  color: var(--navy);
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.generation-wait-metrics > span.over-limit {
+  border-color: #f0b429;
+  color: #8a4b08;
+  background: #fff7df;
+}
+
+.generation-wait-metrics > span.over-limit strong {
+  color: #b42318;
+}
+
+.generation-wait-participants {
+  display: grid;
+  gap: 6px;
+}
+
+.generation-wait-participants > strong {
+  color: var(--navy);
+  font-size: 13px;
+  letter-spacing: 0;
+}
+
+.generation-wait-participants > div {
+  display: grid;
+  max-height: 154px;
+  gap: 5px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.generation-wait-participants button {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-color: #f0b429;
+  background: #fffaf0;
+  text-align: left;
+}
+
+.generation-wait-participants button > span {
+  display: grid;
+  gap: 2px;
+}
+
+.generation-wait-participants b {
+  color: var(--navy);
+  font-size: 12px;
+}
+
+.generation-wait-participants small {
+  color: #8a4b08;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.generation-wait-participants em {
+  color: #b42318;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.generation-wait-recommendations {
+  display: grid;
+  gap: 6px;
+}
+
+.generation-wait-recommendations > strong {
+  color: var(--navy);
+  font-size: 13px;
+  letter-spacing: 0;
+}
+
+.generation-wait-recommendations article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.generation-wait-recommendations article > div {
+  display: grid;
+  gap: 2px;
+}
+
+.generation-wait-recommendations b {
+  color: var(--navy);
+  font-size: 13px;
+}
+
+.generation-wait-recommendations span,
+.generation-wait-recommendations small,
+.generation-search-count {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.generation-wait-recommendations em {
+  padding: 4px 6px;
+  border-radius: 999px;
+  color: #7a4b00;
+  background: #fff2cd;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.generation-wait-recommendations em.verified {
+  color: #087668;
+  background: #e4faf5;
+}
+
+.generation-search-count {
+  text-align: right;
+}
+
 .generation-spinner {
   width: 34px;
   height: 34px;
@@ -264,6 +424,59 @@
     min-height: 38px;
     padding: 6px 4px;
     font-size: 12px;
+  }
+
+  .generation-review-actions.wait-limit-actions button {
+    font-size: 10px;
+  }
+
+  .generation-wait-failure {
+    gap: 6px;
+  }
+
+  .generation-wait-metrics > span {
+    padding: 5px 6px;
+    font-size: 9px;
+  }
+
+  .generation-wait-metrics > span strong {
+    font-size: 12px;
+  }
+
+  .generation-wait-participants > strong,
+  .generation-wait-participants b {
+    font-size: 10px;
+  }
+
+  .generation-wait-participants > div {
+    max-height: 104px;
+  }
+
+  .generation-wait-participants button {
+    padding: 4px 6px;
+  }
+
+  .generation-wait-participants small,
+  .generation-wait-participants em {
+    font-size: 8px;
+  }
+
+  .generation-wait-recommendations {
+    gap: 4px;
+  }
+
+  .generation-wait-recommendations article {
+    padding: 5px 7px;
+  }
+
+  .generation-wait-recommendations b {
+    font-size: 11px;
+  }
+
+  .generation-wait-recommendations span,
+  .generation-wait-recommendations small,
+  .generation-search-count {
+    font-size: 9px;
   }
 }
 
@@ -2623,6 +2836,81 @@ textarea {
   color: var(--red);
 }
 
+.wait-limit-operator-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid #f0b429;
+  border-radius: 10px;
+  background: #fffaf0;
+}
+
+.wait-limit-operator-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.wait-limit-operator-heading h2 {
+  margin-top: 3px;
+  color: #9a3412;
+  font-size: 20px;
+}
+
+.wait-limit-operator-heading > span {
+  color: #8a4b08;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.wait-limit-participant-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.wait-limit-participant-list button {
+  display: grid;
+  min-height: 54px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-color: rgba(180, 83, 9, 0.24);
+  background: #fff;
+  text-align: left;
+}
+
+.wait-limit-participant-list button > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.wait-limit-participant-list strong {
+  overflow: hidden;
+  color: var(--navy);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wait-limit-participant-list small {
+  color: #8a4b08;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.wait-limit-participant-list em {
+  color: #b42318;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
 .time-bar {
   display: grid;
   grid-template-columns: 180px minmax(0, 1fr);
@@ -4092,6 +4380,44 @@ textarea {
 
   .player-list {
     max-height: none;
+  }
+
+  .wait-limit-operator-panel {
+    gap: 7px;
+    margin-top: 8px;
+    padding: 9px 10px;
+  }
+
+  .wait-limit-operator-heading {
+    display: grid;
+    gap: 3px;
+  }
+
+  .wait-limit-operator-heading h2 {
+    font-size: 16px;
+  }
+
+  .wait-limit-operator-heading > span {
+    font-size: 10px;
+  }
+
+  .wait-limit-participant-list {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+  }
+
+  .wait-limit-participant-list button {
+    min-height: 46px;
+    padding: 6px 8px;
+  }
+
+  .wait-limit-participant-list strong {
+    font-size: 12px;
+  }
+
+  .wait-limit-participant-list small,
+  .wait-limit-participant-list em {
+    font-size: 10px;
   }
 
   .special-bar,
@@ -6312,5 +6638,123 @@ textarea {
 
   .progress-court-board[data-court-columns='4'] .progress-team-preview span {
     justify-self: start;
+  }
+}
+
+.available-assignment-match > header {
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.available-match-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.available-match-number,
+.available-collapsed-match-number {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  justify-content: center;
+  gap: 2px;
+  border: 2px solid var(--mint);
+  border-radius: 9px;
+  color: #ffe16a;
+  background: var(--navy);
+  box-shadow: 0 4px 10px rgba(7, 31, 61, 0.2);
+  font-weight: 900;
+}
+
+.available-match-number {
+  min-width: 48px;
+  min-height: 40px;
+  padding: 3px 7px;
+}
+
+.available-match-number b {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.available-match-number small {
+  color: #fff;
+  font-size: 10px;
+}
+
+.available-match-detail {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.3;
+  word-break: keep-all;
+}
+
+.available-assignment-match > header .match-card-actions {
+  flex: 0 0 auto;
+}
+
+.available-collapsed-match-number {
+  min-width: 58px;
+  min-height: 44px;
+  padding: 4px 8px;
+}
+
+.available-collapsed-match-number b {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.available-collapsed-match-number small {
+  color: #fff;
+  font-size: 11px;
+}
+
+@media (max-width: 640px) {
+  .available-match-number {
+    min-width: 52px;
+    min-height: 42px;
+  }
+
+  .available-match-number b {
+    font-size: 28px;
+  }
+}
+
+/* 코트별 경기 카드는 PC 3열, 태블릿 2열, 모바일 1열로 이어진다. */
+.court-schedule-list .match-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: visible;
+  padding-bottom: 0;
+  scroll-snap-type: none;
+}
+
+.court-schedule-list .match-card,
+.court-schedule-list .collapsed-match-card {
+  min-width: 0;
+  flex: none;
+}
+
+@media (min-width: 641px) and (max-width: 1040px) {
+  .court-schedule-list .match-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .court-schedule-list .round-section {
+    display: block;
+  }
+
+  .court-schedule-list .round-heading {
+    position: static;
+    padding: 2px 2px 8px;
+  }
+
+  .court-schedule-list .match-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

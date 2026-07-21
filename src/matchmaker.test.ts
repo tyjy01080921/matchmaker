@@ -7,6 +7,7 @@ import {
   defaultTournamentSettings,
 } from './defaultData'
 import {
+  analyzeParticipantWaitLimitViolations,
   analyzeScheduleQuality,
   analyzeScheduleWait,
   appendGeneralCourtGames,
@@ -17,6 +18,7 @@ import {
   deferSkillWarningMatches,
   generateBalancedTournamentTeams,
   generateSchedule,
+  generateScheduleWithWaitResolution,
   generateScheduleWithWaitOptimization,
   getMeetingPhaseWeights,
   getMatchGenderCompositionReview,
@@ -1016,14 +1018,27 @@ describe('generateSchedule', () => {
     }
 
     const analysis = analyzeScheduleWait(schedule, players, settings)
+    const participantViolations = analyzeParticipantWaitLimitViolations(
+      schedule,
+      players,
+      settings,
+    )
 
     expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
     expect(analysis).toMatchObject({
       maximumWaitMinutes: 30,
+      maximumBetweenWaitMinutes: 30,
       exceedsLimit: true,
       recommendedParticipantCount: 6,
     })
     expect(analysis.warning).toContain('권장 참가 6명 이하')
+    expect(participantViolations).toHaveLength(8)
+    expect(participantViolations[0]).toMatchObject({
+      waitMinutes: 30,
+      phase: 'between',
+    })
+    expect(participantViolations[0].previousMatchId).toBeTruthy()
+    expect(participantViolations[0].nextMatchId).toBeTruthy()
   })
 
   it('includes first-game and final idle time in the 25-minute wait limit', () => {
@@ -1050,10 +1065,105 @@ describe('generateSchedule', () => {
 
     expect(analysis.maximumWaitMinutes).toBe(60)
     expect(analysis.maximumInitialWaitMinutes).toBe(45)
+    expect(analysis.maximumBetweenWaitMinutes).toBe(0)
     expect(analysis.maximumFinalIdleMinutes).toBe(60)
     expect(analysis.zeroGameParticipantCount).toBe(0)
     expect(analysis.exceedsLimit).toBe(true)
     expect(quality.participantsOverWaitLimit).toBe(8)
+  })
+
+  it('links an excessive first-game wait to the participant first match', () => {
+    const players = Array.from({ length: 8 }, (_, index) =>
+      makeTestPlayer(`wait-initial-${index + 1}`, 'B'),
+    )
+    const settings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '19:30',
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
+      roundCountLocked: true,
+    }
+    const schedule = generateSchedule(players, settings)
+    for (const match of schedule.rounds[0].matches) {
+      match.startOffsetMinutes = 45
+      match.durationMinutes = 15
+    }
+
+    const violations = analyzeParticipantWaitLimitViolations(
+      schedule,
+      players,
+      settings,
+    )
+
+    expect(violations).toHaveLength(8)
+    expect(violations[0]).toMatchObject({
+      waitMinutes: 45,
+      phase: 'initial',
+    })
+    expect(violations[0].nextMatchId).toBeTruthy()
+  })
+
+  it('accepts only a valid schedule within every 25-minute wait boundary', () => {
+    const players = Array.from({ length: 8 }, (_, index) =>
+      makeTestPlayer(`wait-resolution-pass-${index + 1}`, 'B'),
+    )
+    const settings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '18:30',
+      targetRoundCount: 2,
+      pacingRoundCount: 2,
+      roundCountLocked: true,
+    }
+
+    const result = generateScheduleWithWaitResolution(players, settings, 1)
+    const wait = analyzeScheduleWait(result.schedule, players, settings)
+
+    expect(result.waitLimitFailure).toBeNull()
+    expect(validateMeetingSchedule(result.schedule, players, settings)).toEqual([])
+    expect(validateMeetingFairness(result.schedule, players)).toEqual([])
+    expect(wait.maximumInitialWaitMinutes).toBeLessThanOrEqual(25)
+    expect(wait.maximumBetweenWaitMinutes).toBeLessThanOrEqual(25)
+    expect(wait.maximumFinalIdleMinutes).toBeLessThanOrEqual(25)
+  })
+
+  it('blocks an over-limit plan and returns a recalculated resolution', () => {
+    const players = Array.from({ length: 16 }, (_, index) =>
+      makeTestPlayer(`wait-resolution-fail-${index + 1}`, 'B'),
+    )
+    const settings = {
+      ...defaultSettings,
+      courtCount: 1,
+      startTime: '18:00',
+      endTime: '18:30',
+      targetRoundCount: 2,
+      pacingRoundCount: 2,
+      roundCountLocked: true,
+    }
+
+    const result = generateScheduleWithWaitResolution(players, settings, 1)
+
+    expect(result.waitLimitFailure).toMatchObject({
+      maximumWaitMinutes: 30,
+      maximumInitialWaitMinutes: 30,
+      participantsOverLimit: 8,
+    })
+    expect(result.waitLimitFailure?.participantViolations).toHaveLength(8)
+    expect(result.waitLimitFailure?.participantViolations[0]).toMatchObject({
+      waitMinutes: 30,
+      phase: 'unassigned',
+    })
+    expect(result.waitLimitFailure?.recommendations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'more-courts',
+          verified: true,
+        }),
+      ]),
+    )
   })
 
   it('blocks zero-game participants and a standard game spread over one', () => {

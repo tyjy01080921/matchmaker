@@ -205,6 +205,58 @@ describe('printable schedule', () => {
     expect(svg).toContain('전체 순번 대진표')
     expect(svg).toContain('빈 코트 순차 배정')
     expect(svg).toContain('현장 배정')
+    expect(svg).toContain('data-layout="available-grid"')
+    expect(svg).toContain('data-columns="5"')
+    expect(svg).toContain('font-size="8"')
+    expect(svg).toContain('>VS</text>')
+    expect(svg).toContain('김민수 1 + 이지연')
+  })
+
+  it('places up to 50 available-court match cards on each image', () => {
+    const names = makePlayerNameLookup([...players])
+    const schedule: Schedule = {
+      rounds: Array.from({ length: 51 }, (_, index) => ({
+        id: `r-${index + 1}`,
+        number: index + 1,
+        matches: [makeMatch(index + 1)],
+        resting: [],
+      })),
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+    const images = createSchedulePrintImages({
+      generatedAt: new Date('2026-07-21T00:00:00.000Z'),
+      names,
+      results: {},
+      schedule,
+      summary: {
+        averageGames: 40.8,
+        estimatedMinutes: 180,
+        maximumGames: 41,
+        maximumParticipants: '김민수 1',
+        minimumGames: 40,
+        minimumParticipants: '최수빈',
+        participantCount: 5,
+        specialCount: 0,
+        specialStatus: '스페셜 없음',
+      },
+      settings: {
+        ...defaultSettings,
+        courtAssignmentMode: 'available',
+        courtCount: 2,
+      },
+    })
+    const firstPage = decodeURIComponent(
+      images[0].replace('data:image/svg+xml;charset=utf-8,', ''),
+    )
+    const secondPage = decodeURIComponent(
+      images[1].replace('data:image/svg+xml;charset=utf-8,', ''),
+    )
+
+    expect(images).toHaveLength(2)
+    expect(firstPage).toContain('1–50번')
+    expect(secondPage).toContain('51–51번')
   })
 
   it('splits long tournament schedules into A4 image pages', () => {

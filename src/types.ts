@@ -153,6 +153,45 @@ export type Schedule = {
   guestGameCounts: Record<string, number>
 }
 
+export type WaitLimitRecommendationKind =
+  | 'shorter-game'
+  | 'more-courts'
+  | 'relax-conditions'
+  | 'reduce-participants'
+
+export type WaitLimitRecommendation = {
+  kind: WaitLimitRecommendationKind
+  title: string
+  detail: string
+  verified: boolean
+}
+
+export type WaitLimitViolationPhase =
+  | 'initial'
+  | 'between'
+  | 'final'
+  | 'unassigned'
+
+export type WaitLimitParticipantViolation = {
+  playerId: string
+  waitMinutes: number
+  phase: WaitLimitViolationPhase
+  previousMatchId?: string
+  nextMatchId?: string
+}
+
+export type MeetingWaitLimitFailure = {
+  maximumWaitMinutes: number
+  maximumInitialWaitMinutes: number
+  maximumBetweenWaitMinutes: number
+  maximumFinalIdleMinutes: number
+  participantsOverLimit: number
+  recommendedParticipantCount: number
+  searchedScheduleCount: number
+  recommendations: WaitLimitRecommendation[]
+  participantViolations: WaitLimitParticipantViolation[]
+}
+
 export type MatchWinnerSide = 'A' | 'B'
 
 export type MatchResult = {
