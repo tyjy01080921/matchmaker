@@ -153,7 +153,7 @@ export const SharedScheduleFinder = ({
                     <span>일정 {index + 1}</span>
                   </div>
                   <div className="personal-schedule-location">
-                    <strong>{item.court}코트</strong>
+                    <strong>{item.court ? `${item.court}코트` : '현장 배정'}</strong>
                     <span>{item.label}</span>
                     <time>{item.time}</time>
                     {item.detail ? <small>{item.detail}</small> : null}

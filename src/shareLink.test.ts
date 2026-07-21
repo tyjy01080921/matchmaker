@@ -24,6 +24,9 @@ const makePayload = (): SharePayload => ({
       note: '결승 코트',
     },
   },
+  meetingCourtAssignments: {
+    'r1-c1': { court: 3, dispatchOrder: 1 },
+  },
   pairMixes: {
     'r1-c1': 2,
   },

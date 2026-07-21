@@ -2,6 +2,7 @@ import type {
   Match,
   MatchResult,
   MatchWinnerSide,
+  MeetingCourtAssignments,
   ResultsByMatch,
   Schedule,
   TournamentMatch,
@@ -74,6 +75,12 @@ export type MeetingCourtLane = {
   completed: Match[]
 }
 
+export type AvailableMeetingCourtLane = {
+  court: number
+  active?: Match
+  completed: Match[]
+}
+
 export type TournamentCourtLane = {
   court: number
   ready: TournamentMatch[]
@@ -98,7 +105,151 @@ const meetingStartOffset = (match: Match) =>
 const compareMeetingMatches = (left: Match, right: Match) =>
   meetingStartOffset(left) - meetingStartOffset(right) ||
   left.round - right.round ||
+  left.court - right.court ||
   left.id.localeCompare(right.id)
+
+export const getMeetingMatchSequence = (schedule: Schedule) =>
+  schedule.rounds
+    .flatMap((round) => round.matches)
+    .sort(compareMeetingMatches)
+
+export const getMeetingSequenceNumber = (
+  schedule: Schedule,
+  matchId: string,
+) => {
+  const index = getMeetingMatchSequence(schedule)
+    .findIndex((match) => match.id === matchId)
+  return index >= 0 ? index + 1 : 0
+}
+
+const meetingMatchPlayerIds = (match: Match) =>
+  [...match.teamA, ...match.teamB].map((player) => player.id)
+
+const activeAvailableMeetingMatches = (
+  schedule: Schedule,
+  assignments: MeetingCourtAssignments,
+  results: ResultsByMatch,
+) => {
+  const matchesById = new Map(
+    getMeetingMatchSequence(schedule).map((match) => [match.id, match]),
+  )
+  return Object.entries(assignments)
+    .filter(([matchId]) => !results[matchId]?.completed)
+    .map(([matchId]) => matchesById.get(matchId))
+    .filter((match): match is Match => Boolean(match))
+}
+
+export const getNextAvailableMeetingMatch = (
+  schedule: Schedule,
+  assignments: MeetingCourtAssignments,
+  results: ResultsByMatch,
+) => {
+  const assignedIds = new Set(Object.keys(assignments))
+  const activePlayerIds = new Set(
+    activeAvailableMeetingMatches(schedule, assignments, results)
+      .flatMap(meetingMatchPlayerIds),
+  )
+
+  return getMeetingMatchSequence(schedule).find((match) =>
+    !assignedIds.has(match.id) &&
+    !results[match.id]?.completed &&
+    meetingMatchPlayerIds(match).every((playerId) => !activePlayerIds.has(playerId)),
+  )
+}
+
+export const assignNextAvailableMeetingMatch = (
+  schedule: Schedule,
+  assignments: MeetingCourtAssignments,
+  results: ResultsByMatch,
+  court: number,
+): MeetingCourtAssignments => {
+  const courtOccupied = Object.entries(assignments).some(
+    ([matchId, assignment]) =>
+      assignment.court === court && !results[matchId]?.completed,
+  )
+  if (courtOccupied) return assignments
+
+  const nextMatch = getNextAvailableMeetingMatch(schedule, assignments, results)
+  if (!nextMatch) return assignments
+  const dispatchOrder = Math.max(
+    0,
+    ...Object.values(assignments).map((assignment) => assignment.dispatchOrder),
+  ) + 1
+  return {
+    ...assignments,
+    [nextMatch.id]: { court, dispatchOrder },
+  }
+}
+
+export const initializeAvailableMeetingAssignments = (
+  schedule: Schedule,
+  courtCount: number,
+  assignments: MeetingCourtAssignments = {},
+  results: ResultsByMatch = {},
+) => {
+  let nextAssignments = assignments
+  for (let court = 1; court <= courtCount; court += 1) {
+    nextAssignments = assignNextAvailableMeetingMatch(
+      schedule,
+      nextAssignments,
+      results,
+      court,
+    )
+  }
+  return nextAssignments
+}
+
+export const buildAvailableMeetingCourtLanes = (
+  schedule: Schedule,
+  courtCount: number,
+  assignments: MeetingCourtAssignments,
+  results: ResultsByMatch,
+): AvailableMeetingCourtLane[] => {
+  const matchesById = new Map(
+    getMeetingMatchSequence(schedule).map((match) => [match.id, match]),
+  )
+
+  return Array.from({ length: courtCount }, (_, index) => {
+    const court = index + 1
+    const courtMatches = Object.entries(assignments)
+      .filter(([, assignment]) => assignment.court === court)
+      .sort((left, right) => left[1].dispatchOrder - right[1].dispatchOrder)
+      .map(([matchId]) => matchesById.get(matchId))
+      .filter((match): match is Match => Boolean(match))
+    return {
+      court,
+      active: courtMatches.find((match) => !results[match.id]?.completed),
+      completed: courtMatches.filter((match) => results[match.id]?.completed),
+    }
+  })
+}
+
+export const canUndoAvailableMeetingMatch = (
+  schedule: Schedule,
+  matchId: string,
+  assignments: MeetingCourtAssignments,
+  results: ResultsByMatch,
+) => {
+  const assignment = assignments[matchId]
+  if (!assignment || !results[matchId]?.completed) return false
+  const hasLaterCourtAssignment = Object.entries(assignments).some(
+    ([otherMatchId, otherAssignment]) =>
+      otherMatchId !== matchId &&
+      otherAssignment.court === assignment.court &&
+      otherAssignment.dispatchOrder > assignment.dispatchOrder,
+  )
+  if (hasLaterCourtAssignment) return false
+
+  const match = getMeetingMatchSequence(schedule)
+    .find((candidate) => candidate.id === matchId)
+  if (!match) return false
+  const playerIds = new Set(meetingMatchPlayerIds(match))
+  return activeAvailableMeetingMatches(schedule, assignments, results)
+    .every((activeMatch) =>
+      meetingMatchPlayerIds(activeMatch)
+        .every((playerId) => !playerIds.has(playerId)),
+    )
+}
 
 const compareTournamentMatches = (
   left: TournamentMatch,

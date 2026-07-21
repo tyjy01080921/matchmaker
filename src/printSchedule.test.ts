@@ -163,6 +163,50 @@ describe('printable schedule', () => {
     expect(svg).not.toContain('점수')
   })
 
+  it('renders an ordered on-site court assignment schedule', () => {
+    const names = makePlayerNameLookup([...players])
+    const first = { ...makeMatch(1), court: 2, startOffsetMinutes: 0 }
+    const second = { ...makeMatch(2), court: 1, startOffsetMinutes: 15 }
+    const schedule: Schedule = {
+      rounds: [
+        { id: 'r-1', number: 1, matches: [first], resting: [] },
+        { id: 'r-2', number: 2, matches: [second], resting: [] },
+      ],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+    const images = createSchedulePrintImages({
+      generatedAt: new Date('2026-07-21T00:00:00.000Z'),
+      names,
+      results: {},
+      schedule,
+      summary: {
+        averageGames: 1.6,
+        estimatedMinutes: 30,
+        maximumGames: 2,
+        maximumParticipants: '김민수 1',
+        minimumGames: 0,
+        minimumParticipants: '최수빈',
+        participantCount: 5,
+        specialCount: 0,
+        specialStatus: '스페셜 없음',
+      },
+      settings: {
+        ...defaultSettings,
+        courtAssignmentMode: 'available',
+        courtCount: 2,
+      },
+    })
+    const svg = decodeURIComponent(
+      images[0].replace('data:image/svg+xml;charset=utf-8,', ''),
+    )
+
+    expect(svg).toContain('전체 순번 대진표')
+    expect(svg).toContain('빈 코트 순차 배정')
+    expect(svg).toContain('현장 배정')
+  })
+
   it('splits long tournament schedules into A4 image pages', () => {
     const items: PrintableTournamentItem[] = Array.from(
       { length: 80 },

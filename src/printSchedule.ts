@@ -372,7 +372,9 @@ const drawScheduleSummary = (options: PrintScheduleOptions) => {
   const { summary } = options
   const cells = [
     { label: '참가자', value: `${summary.participantCount}명 · 스페셜 ${summary.specialCount}명` },
-    { label: '라운드', value: `${options.schedule.rounds.length}R` },
+    options.settings.courtAssignmentMode === 'available'
+      ? { label: '운영', value: '빈 코트 순차 배정' }
+      : { label: '라운드', value: `${options.schedule.rounds.length}R` },
     {
       label: '총 경기',
       value: `${options.schedule.rounds.reduce((sum, round) => sum + round.matches.length, 0)}경기`,
@@ -473,8 +475,12 @@ const drawMatchItem = (
       )
       .join(' + ')
   const values = [
-    `${match.round}경기`,
-    `${match.court}코트`,
+    options.settings.courtAssignmentMode === 'available'
+      ? `${match.round}번`
+      : `${match.round}경기`,
+    options.settings.courtAssignmentMode === 'available'
+      ? '현장 배정'
+      : `${match.court}코트`,
     matchTeamDisplayName(match.teamA),
     matchTeamDisplayName(match.teamB),
   ]
@@ -787,7 +793,9 @@ export const renderLegacySchedulePageSvg = (
 
   body.push(
     text(
-      `대진표 · ${options.schedule.rounds.length}경기 순서 · ${matchCount}매치 · ${options.settings.courtCount}코트`,
+      options.settings.courtAssignmentMode === 'available'
+        ? `전체 순번 대진표 · ${matchCount}경기 · 빈 코트 순차 배정 · ${options.settings.courtCount}코트`
+        : `대진표 · ${options.schedule.rounds.length}경기 순서 · ${matchCount}매치 · ${options.settings.courtCount}코트`,
       68,
       82,
       { color: '#65716e', size: 11, weight: 800 },
@@ -1088,6 +1096,25 @@ const renderTournamentPageSvg = (
 
 export const createSchedulePrintImages = (options: PrintScheduleOptions) => {
   const matches = options.schedule.rounds.flatMap((round) => round.matches)
+  if (options.settings.courtAssignmentMode === 'available') {
+    const orderedMatches = [...matches]
+      .sort((left, right) =>
+        (left.startOffsetMinutes ?? 0) - (right.startOffsetMinutes ?? 0) ||
+        left.round - right.round ||
+        left.court - right.court ||
+        left.id.localeCompare(right.id),
+      )
+      .map((match, index) => ({ ...match, round: index + 1, court: 0 }))
+    const pages = paginatePrintableScheduleItems(
+      orderedMatches.map((match) => ({ kind: 'match' as const, match })),
+    )
+    return pages.map((page, index) => svgDataUrl(renderLegacySchedulePageSvg(
+      page,
+      index,
+      pages.length,
+      options,
+    )))
+  }
   const allCourts = Array.from({ length: options.settings.courtCount }, (_, index) => ({
     court: index + 1,
     matches: matches

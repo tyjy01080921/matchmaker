@@ -54,6 +54,7 @@ export const defaultMatchConditionOptions: MatchConditionOptions = {
 export const defaultSettings: MatchSettings = {
   eventName: 'A.M.A Match Maker Pro',
   courtCount: 4,
+  courtAssignmentMode: 'fixed',
   startTime: '18:00',
   endTime: '20:00',
   normalGameMinutes: 15,

@@ -54,16 +54,24 @@ import {
 } from './shareLink'
 import { createShortShareUrl, loadShortShare, ShortShareError } from './shortShare'
 import {
+  AvailableMeetingProgressMode,
   MeetingProgressMode,
   TournamentProgressMode,
 } from './ProgressModeView'
 import { SharedScheduleFinder } from './SharedScheduleFinder'
 import type { SharedScheduleCandidate } from './sharedSchedule'
 import {
+  assignNextAvailableMeetingMatch,
+  buildAvailableMeetingCourtLanes,
   buildMeetingCourtLanes,
   buildTournamentCourtLanes,
+  canUndoAvailableMeetingMatch,
+  getMeetingMatchSequence,
+  getMeetingSequenceNumber,
+  getNextAvailableMeetingMatch,
   getProgressWinnerSide,
   getUndoableTournamentMatchId,
+  initializeAvailableMeetingAssignments,
   toggleProgressWinner,
   updateProgressScore,
 } from './progressMode'
@@ -104,6 +112,7 @@ import type {
   MatchResult,
   MatchWinnerSide,
   MatchSettings,
+  MeetingCourtAssignments,
   MeetingShuffleDirection,
   MeetingLineupsByMatch,
   Player,
@@ -230,6 +239,7 @@ type StoredState = {
   generatedMeetingPlayers: Player[]
   generatedMeetingSettings: MatchSettings
   results: ResultsByMatch
+  meetingCourtAssignments: MeetingCourtAssignments
   pairMixes: Record<string, number>
   matchNameOverrides: MatchNameOverrides
   meetingLineups: MeetingLineupsByMatch
@@ -248,6 +258,7 @@ type StoredMeetingSchedule = {
   settings: MatchSettings
   schedule: Schedule
   results: ResultsByMatch
+  meetingCourtAssignments?: MeetingCourtAssignments
   pairMixes: Record<string, number>
   matchNameOverrides: MatchNameOverrides
   meetingLineups: MeetingLineupsByMatch
@@ -728,6 +739,8 @@ const normalizeMatchSettings = (
       1,
       12,
     ),
+    courtAssignmentMode:
+      settings?.courtAssignmentMode === 'available' ? 'available' : 'fixed',
     startTime: booking.startTime,
     endTime: booking.endTime,
     normalGameMinutes: [10, 12, 15].includes(Number(settings?.normalGameMinutes))
@@ -777,6 +790,27 @@ const normalizeMatchSettings = (
     ...phaseBoundaries,
     conditionOptions: normalizeMatchConditionOptions(settings?.conditionOptions),
   }
+}
+
+const normalizeMeetingCourtAssignments = (
+  value: MeetingCourtAssignments | undefined,
+): MeetingCourtAssignments => {
+  if (!value || typeof value !== 'object') return {}
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([matchId, assignment]) => {
+      const court = Number(assignment?.court)
+      const dispatchOrder = Number(assignment?.dispatchOrder)
+      if (
+        !matchId ||
+        !Number.isInteger(court) ||
+        court < 1 ||
+        court > 12 ||
+        !Number.isInteger(dispatchOrder) ||
+        dispatchOrder < 1
+      ) return []
+      return [[matchId, { court, dispatchOrder }]]
+    }),
+  )
 }
 
 const normalizeTournamentSeed = (value: unknown) => {
@@ -1040,6 +1074,7 @@ const readStoredState = (): StoredState => {
       generatedMeetingPlayers: defaultPlayers,
       generatedMeetingSettings: defaultSettings,
       results: {},
+      meetingCourtAssignments: {},
       pairMixes: {},
       matchNameOverrides: {},
       meetingLineups: {},
@@ -1090,6 +1125,11 @@ const readStoredState = (): StoredState => {
       generatedMeetingPlayers: savedMeetingPlayers ?? defaultPlayers,
       generatedMeetingSettings: savedMeetingSettings ?? settings,
       results: savedMeetingPlayers ? (savedMeetingSchedule?.results ?? {}) : {},
+      meetingCourtAssignments: savedMeetingPlayers
+        ? normalizeMeetingCourtAssignments(
+            savedMeetingSchedule?.meetingCourtAssignments,
+          )
+        : {},
       pairMixes: savedMeetingPlayers ? (savedMeetingSchedule?.pairMixes ?? {}) : {},
       matchNameOverrides: savedMeetingPlayers
         ? (savedMeetingSchedule?.matchNameOverrides ?? {})
@@ -1121,6 +1161,7 @@ const readStoredState = (): StoredState => {
       generatedMeetingPlayers: defaultPlayers,
       generatedMeetingSettings: defaultSettings,
       results: {},
+      meetingCourtAssignments: {},
       pairMixes: {},
       matchNameOverrides: {},
       meetingLineups: {},
@@ -1150,6 +1191,9 @@ const storedStateFromSharePayload = (payload: SharePayload): StoredState => {
     generatedMeetingPlayers: meetingPlayers,
     generatedMeetingSettings: normalizeMatchSettings(payload.settings),
     results: payload.results ?? {},
+    meetingCourtAssignments: normalizeMeetingCourtAssignments(
+      payload.meetingCourtAssignments,
+    ),
     pairMixes: cachedMeetingSchedule ? {} : (payload.pairMixes ?? {}),
     matchNameOverrides: payload.matchNameOverrides ?? {},
     meetingLineups: cachedMeetingSchedule ? {} : (payload.meetingLineups ?? {}),
@@ -1566,6 +1610,8 @@ function App() {
     initialState.cachedMeetingSchedule,
   )
   const [results, setResults] = useState<ResultsByMatch>(initialState.results)
+  const [meetingCourtAssignments, setMeetingCourtAssignments] =
+    useState<MeetingCourtAssignments>(initialState.meetingCourtAssignments)
   const [pairMixes, setPairMixes] = useState<Record<string, number>>(
     initialState.pairMixes,
   )
@@ -1700,6 +1746,7 @@ function App() {
     settings: generatedMeetingSettings,
     schedule,
     results,
+    meetingCourtAssignments,
     // 최종 화면 대진을 저장하므로 이미 적용한 수동 조합은 다시 적용하지 않는다.
     pairMixes: {},
     matchNameOverrides,
@@ -1709,6 +1756,7 @@ function App() {
     generatedMeetingPlayers,
     generatedMeetingSettings,
     matchNameOverrides,
+    meetingCourtAssignments,
     prizeDraw,
     results,
     schedule,
@@ -2002,6 +2050,20 @@ function App() {
     () => buildMeetingCourtLanes(schedule, results),
     [results, schedule],
   )
+  const availableMeetingProgressLanes = useMemo(
+    () => buildAvailableMeetingCourtLanes(
+      schedule,
+      generatedMeetingSettings.courtCount,
+      meetingCourtAssignments,
+      results,
+    ),
+    [
+      generatedMeetingSettings.courtCount,
+      meetingCourtAssignments,
+      results,
+      schedule,
+    ],
+  )
   const tournamentProgressLanes = useMemo(
     () => buildTournamentCourtLanes(
       tournamentSchedule.matches,
@@ -2230,7 +2292,7 @@ function App() {
   const completedMatches = schedule.rounds
     .flatMap((round) => round.matches)
     .filter((match) => results[match.id]?.completed).length
-  const allScheduledMatches = schedule.rounds.flatMap((round) => round.matches)
+  const allScheduledMatches = getMeetingMatchSequence(schedule)
   const totalMatches = allScheduledMatches.length
   const courtSchedules: Round[] = Array.from(
     { length: generatedMeetingSettings.courtCount },
@@ -2250,6 +2312,17 @@ function App() {
       }
     },
   ).filter((court) => court.matches.length > 0)
+  const meetingScheduleSections: Round[] =
+    generatedMeetingSettings.courtAssignmentMode === 'available'
+      ? allScheduledMatches.length > 0
+        ? [{
+            id: 'available-court-sequence',
+            number: 0,
+            matches: allScheduledMatches,
+            resting: [],
+          }]
+        : []
+      : courtSchedules
   const bookingMinutes = getBookingDurationMinutes(
     settings.startTime,
     settings.endTime,
@@ -2551,6 +2624,7 @@ function App() {
         generatedMeetingPlayers,
         generatedMeetingSettings,
         results,
+        meetingCourtAssignments,
         pairMixes,
         matchNameOverrides,
         meetingLineups,
@@ -2579,6 +2653,7 @@ function App() {
     players,
     settings,
     results,
+    meetingCourtAssignments,
     pairMixes,
     progressMode,
     matchNameOverrides,
@@ -2640,6 +2715,7 @@ function App() {
       setGeneratedMeetingSettings(sharedState.generatedMeetingSettings)
       setScheduleOverride(sharedState.cachedMeetingSchedule)
       setResults(sharedState.results)
+      setMeetingCourtAssignments(sharedState.meetingCourtAssignments)
       setPairMixes(sharedState.pairMixes)
       setMatchNameOverrides(sharedState.matchNameOverrides)
       setMeetingLineups(sharedState.meetingLineups)
@@ -2686,6 +2762,7 @@ function App() {
         setGeneratedMeetingSettings(sharedState.generatedMeetingSettings)
         setScheduleOverride(sharedState.cachedMeetingSchedule)
         setResults(sharedState.results)
+        setMeetingCourtAssignments(sharedState.meetingCourtAssignments)
         setPairMixes(sharedState.pairMixes)
         setMatchNameOverrides(sharedState.matchNameOverrides)
         setMeetingLineups(sharedState.meetingLineups)
@@ -2789,6 +2866,7 @@ function App() {
 
   const clearMeetingScheduleState = () => {
     setResults({})
+    setMeetingCourtAssignments({})
     setPairMixes({})
     setMatchNameOverrides({})
     setMeetingLineups({})
@@ -2897,6 +2975,16 @@ function App() {
       if (totalMatches === 0) {
         setNotice('먼저 친목 대진을 생성해 주세요.')
         return
+      }
+      if (generatedMeetingSettings.courtAssignmentMode === 'available') {
+        setMeetingCourtAssignments((current) =>
+          initializeAvailableMeetingAssignments(
+            schedule,
+            generatedMeetingSettings.courtCount,
+            current,
+            results,
+          ),
+        )
       }
       try {
         window.localStorage.setItem(
@@ -3780,6 +3868,7 @@ function App() {
     setProgressMode(false)
     setScheduleOverride(null)
     setResults({})
+    setMeetingCourtAssignments({})
     setPairMixes({})
     setMatchNameOverrides({})
     setMeetingLineups({})
@@ -3982,13 +4071,16 @@ function App() {
         result?.note?.trim() ||
         result?.winnerSide ||
         pairMixes[match.id] ||
+        meetingCourtAssignments[match.id] ||
         Object.keys(matchNameOverrides[match.id] ?? {}).length > 0 ||
         prizeDraw.matchMissions[match.id],
       )
     })
     const message = hasRecordedData
       ? `마지막 ${removedMatches.length}경기의 점수, 메모, 수정, 미션도 함께 삭제됩니다. 계속할까요?`
-      : `코트별 마지막 경기 ${removedMatches.length}개를 삭제할까요?`
+      : generatedMeetingSettings.courtAssignmentMode === 'available'
+        ? `전체 순번의 마지막 경기 ${removedMatches.length}개를 삭제할까요?`
+        : `코트별 마지막 경기 ${removedMatches.length}개를 삭제할까요?`
     if (!window.confirm(message)) return
 
     const endTime = clockTimeAtOffset(
@@ -4029,6 +4121,7 @@ function App() {
       roundCountLocked: true,
     }))
     setResults((current) => omitRecordKeys(current, matchIds))
+    setMeetingCourtAssignments((current) => omitRecordKeys(current, matchIds))
     setPairMixes({})
     setMeetingLineups({})
     setMatchNameOverrides((current) => omitRecordKeys(current, matchIds))
@@ -4060,7 +4153,11 @@ function App() {
 
   const completeMeetingProgressMatch = (matchId: string) => {
     updateResult(matchId, { completed: true })
-    setNotice('친목 경기 완료')
+    setNotice(
+      generatedMeetingSettings.courtAssignmentMode === 'available'
+        ? '경기 완료 · 빈 코트에 다음 경기를 배정하세요.'
+        : '친목 경기 완료',
+    )
   }
 
   const updateMeetingProgressScore = (
@@ -4085,8 +4182,53 @@ function App() {
   }
 
   const undoMeetingProgressMatch = (matchId: string) => {
+    if (
+      generatedMeetingSettings.courtAssignmentMode === 'available' &&
+      !canUndoAvailableMeetingMatch(
+        schedule,
+        matchId,
+        meetingCourtAssignments,
+        results,
+      )
+    ) {
+      setNotice('이후 코트 배정을 먼저 취소해 주세요.')
+      return
+    }
     updateResult(matchId, { completed: false })
     setNotice('친목 완료 취소')
+  }
+
+  const assignNextMeetingMatch = (court: number) => {
+    const nextMatch = getNextAvailableMeetingMatch(
+      schedule,
+      meetingCourtAssignments,
+      results,
+    )
+    if (!nextMatch) {
+      setNotice('현재 배정 가능한 대진이 없습니다.')
+      return
+    }
+    setMeetingCourtAssignments((current) =>
+      assignNextAvailableMeetingMatch(schedule, current, results, court),
+    )
+    setNotice(
+      `${court}코트 · 전체 ${getMeetingSequenceNumber(schedule, nextMatch.id)}번 배정`,
+    )
+  }
+
+  const cancelMeetingCourtAssignment = (matchId: string) => {
+    if (results[matchId]?.completed) {
+      setNotice('완료를 먼저 취소해 주세요.')
+      return
+    }
+    const assignment = meetingCourtAssignments[matchId]
+    if (!assignment) return
+    setMeetingCourtAssignments((current) => {
+      const next = { ...current }
+      delete next[matchId]
+      return next
+    })
+    setNotice(`${assignment.court}코트 배정 취소됨`)
   }
 
   const updateMatchWinner = (matchId: string, winnerSide: MatchWinnerSide) => {
@@ -4539,6 +4681,7 @@ function App() {
         players: appMode === 'meeting' ? generatedMeetingPlayers : players,
         settings: appMode === 'meeting' ? generatedMeetingSettings : settings,
         results,
+        meetingCourtAssignments,
         pairMixes,
         matchNameOverrides,
         meetingLineups,
@@ -4735,6 +4878,7 @@ function App() {
         generatedMeetingPlayers,
         generatedMeetingSettings,
         results,
+        meetingCourtAssignments,
         pairMixes,
         matchNameOverrides,
         meetingLineups,
@@ -4919,19 +5063,30 @@ function App() {
             const courtMatchNumber = courtMatches.findIndex(
               (courtMatch) => courtMatch.id === match.id,
             ) + 1
+            const sequenceNumber = getMeetingSequenceNumber(schedule, match.id)
+            const actualCourt = meetingCourtAssignments[match.id]?.court
+            const availableAssignment =
+              generatedMeetingSettings.courtAssignmentMode === 'available'
 
             return {
               id: match.id,
-              time: `${clockTimeAtOffset(
-                generatedMeetingSettings.startTime,
-                startsAt,
-              )}–${clockTimeAtOffset(
-                generatedMeetingSettings.startTime,
-                startsAt + (match.durationMinutes ?? GAME_SLOT_MINUTES),
-              )}`,
-              court: match.court,
-              label: `${courtMatchNumber}경기`,
-              detail: match.isSpecial ? '스페셜' : undefined,
+              time: availableAssignment
+                ? '전체 순번대로 진행'
+                : `${clockTimeAtOffset(
+                    generatedMeetingSettings.startTime,
+                    startsAt,
+                  )}–${clockTimeAtOffset(
+                    generatedMeetingSettings.startTime,
+                    startsAt + (match.durationMinutes ?? GAME_SLOT_MINUTES),
+                  )}`,
+              court: availableAssignment ? actualCourt ?? null : match.court,
+              label: availableAssignment
+                ? `${sequenceNumber}번`
+                : `${courtMatchNumber}경기`,
+              detail: [
+                match.isSpecial ? '스페셜' : '',
+                availableAssignment && !actualCourt ? '코트 현장 배정' : '',
+              ].filter(Boolean).join(' · ') || undefined,
               team: ownTeam
                 .filter((matchPlayer) => matchPlayer.id !== player.id)
                 .map((matchPlayer) => matchPlayerName(match, matchPlayer))
@@ -5020,6 +5175,41 @@ function App() {
 
   if (progressMode && !isSharedMode) {
     if (appMode === 'meeting') {
+      if (generatedMeetingSettings.courtAssignmentMode === 'available') {
+        return (
+          <div className="app progress-mode-app">
+            <AvailableMeetingProgressMode
+              eventName={generatedMeetingSettings.eventName}
+              schedule={schedule}
+              lanes={availableMeetingProgressLanes}
+              assignments={meetingCourtAssignments}
+              results={results}
+              completedCount={completedMatches}
+              totalCount={totalMatches}
+              isFullscreen={isFullscreen}
+              fullscreenSupported={Boolean(
+                document.fullscreenEnabled && document.documentElement.requestFullscreen
+              )}
+              teamName={(match, side) =>
+                matchTeamName(match, side === 'A' ? match.teamA : match.teamB)}
+              canUndo={(matchId) => canUndoAvailableMeetingMatch(
+                schedule,
+                matchId,
+                meetingCourtAssignments,
+                results,
+              )}
+              onScoreChange={updateMeetingProgressScore}
+              onWinner={selectMeetingProgressWinner}
+              onComplete={completeMeetingProgressMatch}
+              onUndo={undoMeetingProgressMatch}
+              onAssignNext={assignNextMeetingMatch}
+              onCancelAssignment={cancelMeetingCourtAssignment}
+              onToggleFullscreen={toggleProgressFullscreen}
+              onExit={exitProgressMode}
+            />
+          </div>
+        )
+      }
       return (
         <div className="app progress-mode-app">
           <MeetingProgressMode
@@ -5784,6 +5974,45 @@ function App() {
                       <option value={15}>15분</option>
                     </select>
                   </label>
+                  <div className="court-assignment-settings">
+                    <span>코트 배정</span>
+                    <div role="group" aria-label="코트 배정 방식">
+                      <button
+                        type="button"
+                        className={
+                          settings.courtAssignmentMode === 'fixed' ? 'active' : ''
+                        }
+                        aria-pressed={settings.courtAssignmentMode === 'fixed'}
+                        onClick={() => {
+                          setSettings((current) => ({
+                            ...current,
+                            courtAssignmentMode: 'fixed',
+                          }))
+                          setNotice('코트 고정 배정 · 생성 필요')
+                        }}
+                      >
+                        <strong>코트 고정 배정</strong>
+                        <small>경기별 코트를 미리 정합니다.</small>
+                      </button>
+                      <button
+                        type="button"
+                        className={
+                          settings.courtAssignmentMode === 'available' ? 'active' : ''
+                        }
+                        aria-pressed={settings.courtAssignmentMode === 'available'}
+                        onClick={() => {
+                          setSettings((current) => ({
+                            ...current,
+                            courtAssignmentMode: 'available',
+                          }))
+                          setNotice('빈 코트 순차 배정 · 생성 필요')
+                        }}
+                      >
+                        <strong>빈 코트 순차 배정</strong>
+                        <small>전체 순번대로 빈 코트에 배정합니다.</small>
+                      </button>
+                    </div>
+                  </div>
                   <div className="booking-time-controls" aria-label="대관 시간">
                     <div className="booking-start-control">
                       <span>시작</span>
@@ -7016,9 +7245,21 @@ function App() {
                 <small>여1·남3 · 남1·여3 · 남2·여2</small>
               </div>
               <div>
-                <span>코트별 경기</span>
-                <strong>{minimumCourtGames}–{maximumCourtGames}경기</strong>
-                <small>{courtSchedules.length}개 코트 사용</small>
+                <span>
+                  {generatedMeetingSettings.courtAssignmentMode === 'available'
+                    ? '운영 방식'
+                    : '코트별 경기'}
+                </span>
+                <strong>
+                  {generatedMeetingSettings.courtAssignmentMode === 'available'
+                    ? '빈 코트 순차 배정'
+                    : `${minimumCourtGames}–${maximumCourtGames}경기`}
+                </strong>
+                <small>
+                  {generatedMeetingSettings.courtAssignmentMode === 'available'
+                    ? `전체 ${totalMatches}개 순번 · 코트 ${generatedMeetingSettings.courtCount}개`
+                    : `${courtSchedules.length}개 코트 사용`}
+                </small>
               </div>
               <div>
                 <span>참가자 평균</span>
@@ -7161,8 +7402,14 @@ function App() {
 
           {view === 'schedule' ? (
             <>
-              <div className="round-list court-schedule-list">
-              {courtSchedules.map((round) => {
+              <div className={`round-list court-schedule-list ${
+                generatedMeetingSettings.courtAssignmentMode === 'available'
+                  ? 'available-schedule-list'
+                  : ''
+              }`}>
+              {meetingScheduleSections.map((round) => {
+                const availableAssignment =
+                  generatedMeetingSettings.courtAssignmentMode === 'available'
                 const startsAt = round.matches[0]?.startOffsetMinutes ??
                   (round.number - 1) * GAME_SLOT_MINUTES
                 const isOvertimeRound = round.matches.some(
@@ -7180,14 +7427,19 @@ function App() {
                   >
                     <div className="round-heading">
                       <div className="round-title">
-                        <h2>{round.number}코트</h2>
+                        <h2>
+                          {availableAssignment ? '전체 대진 순서' : `${round.number}코트`}
+                        </h2>
                         <span className={`time-chip ${isOvertimeRound ? 'over' : ''}`}>
-                          {isOvertimeRound ? '예약 초과' : '예약 내'}
+                          {availableAssignment
+                            ? '빈 코트 배정'
+                            : isOvertimeRound ? '예약 초과' : '예약 내'}
                         </span>
                       </div>
                       <div className="round-meta-actions">
                         <span>
                           {round.matches.length}경기 · 시간순
+                          {availableAssignment ? ' · 순번대로 호출' : ''}
                         </span>
                       </div>
                     </div>
@@ -7230,6 +7482,12 @@ function App() {
                         const matchOverrides = matchNameOverrides[match.id] ?? {}
                         const matchMission = prizeDraw.matchMissions[match.id]
                         const selectedWinnerSide = resultWinnerSide(result)
+                        const assignmentLocked = Boolean(
+                          availableAssignment && meetingCourtAssignments[match.id],
+                        )
+                        const assignmentPending = Boolean(
+                          availableAssignment && !meetingCourtAssignments[match.id],
+                        )
                         const renderTeamName = (team: Team, teamLabel: string) =>
                           isEditingMatch && !isSharedMode ? (
                             <div className="team-name-edit">
@@ -7388,6 +7646,7 @@ function App() {
                             <div className="result-toggle-group" aria-label={`${teamName} 승패`}>
                               <button
                                 type="button"
+                                disabled={assignmentPending}
                                 className={selectedWinnerSide === teamSide ? 'active win' : ''}
                                 aria-pressed={selectedWinnerSide === teamSide}
                                 onClick={() => updateMatchWinner(match.id, teamSide)}
@@ -7396,6 +7655,7 @@ function App() {
                               </button>
                               <button
                                 type="button"
+                                disabled={assignmentPending}
                                 className={selectedWinnerSide === otherSide ? 'active loss' : ''}
                                 aria-pressed={selectedWinnerSide === otherSide}
                                 onClick={() => updateMatchWinner(match.id, otherSide)}
@@ -7415,20 +7675,32 @@ function App() {
                           >
                             <header>
                               <span>
-                                {matchIndex + 1}번 · {clockTimeAtOffset(
-                                  generatedMeetingSettings.startTime,
-                                  match.startOffsetMinutes ?? startsAt,
-                                )}–{clockTimeAtOffset(
-                                  generatedMeetingSettings.startTime,
-                                  (match.startOffsetMinutes ?? startsAt) +
-                                    (match.durationMinutes ?? GAME_SLOT_MINUTES),
-                                )} · {match.durationMinutes ?? GAME_SLOT_MINUTES}분
+                                {availableAssignment
+                                  ? `${matchIndex + 1}번 · ${
+                                      meetingCourtAssignments[match.id]
+                                        ? `${meetingCourtAssignments[match.id].court}코트 배정`
+                                        : '코트 현장 배정'
+                                    } · ${match.durationMinutes ?? GAME_SLOT_MINUTES}분`
+                                  : `${matchIndex + 1}번 · ${clockTimeAtOffset(
+                                      generatedMeetingSettings.startTime,
+                                      match.startOffsetMinutes ?? startsAt,
+                                    )}–${clockTimeAtOffset(
+                                      generatedMeetingSettings.startTime,
+                                      (match.startOffsetMinutes ?? startsAt) +
+                                        (match.durationMinutes ?? GAME_SLOT_MINUTES),
+                                    )} · ${match.durationMinutes ?? GAME_SLOT_MINUTES}분`}
                               </span>
                               <div className="match-card-actions">
                                 {!isSharedMode ? (
                                   <>
                                     <button
                                       type="button"
+                                      disabled={assignmentLocked}
+                                      title={
+                                        assignmentLocked
+                                          ? '코트 배정 후에는 참가자를 수정할 수 없습니다.'
+                                          : ''
+                                      }
                                       onClick={() =>
                                         isEditingMatch
                                           ? saveMatchEditor(match)
@@ -7437,7 +7709,16 @@ function App() {
                                     >
                                       {isEditingMatch ? '완료' : '수정'}
                                     </button>
-                                    <button type="button" onClick={() => mixMatch(match.id)}>
+                                    <button
+                                      type="button"
+                                      disabled={assignmentLocked}
+                                      title={
+                                        assignmentLocked
+                                          ? '코트 배정 후에는 조합을 바꿀 수 없습니다.'
+                                          : ''
+                                      }
+                                      onClick={() => mixMatch(match.id)}
+                                    >
                                       믹스
                                     </button>
                                     <button
@@ -7503,6 +7784,7 @@ function App() {
                                   aria-label={`${matchTeamName(match, match.teamA)} 점수`}
                                   type="number"
                                   min="0"
+                                  disabled={assignmentPending}
                                   value={result.teamAScore}
                                   onChange={(event) =>
                                     updateResult(match.id, {
@@ -7529,6 +7811,7 @@ function App() {
                                   aria-label={`${matchTeamName(match, match.teamB)} 점수`}
                                   type="number"
                                   min="0"
+                                  disabled={assignmentPending}
                                   value={result.teamBScore}
                                   onChange={(event) =>
                                     updateResult(match.id, {
@@ -7555,11 +7838,24 @@ function App() {
                                     <input
                                       type="checkbox"
                                       checked={result.completed}
-                                      onChange={(event) =>
-                                        updateResult(match.id, {
-                                          completed: event.target.checked,
-                                        })
+                                      disabled={
+                                        availableAssignment &&
+                                        !meetingCourtAssignments[match.id] &&
+                                        !result.completed
                                       }
+                                      onChange={(event) => {
+                                        if (!availableAssignment) {
+                                          updateResult(match.id, {
+                                            completed: event.target.checked,
+                                          })
+                                          return
+                                        }
+                                        if (event.target.checked) {
+                                          completeMeetingProgressMatch(match.id)
+                                        } else {
+                                          undoMeetingProgressMatch(match.id)
+                                        }
+                                      }}
                                     />
                                     완료
                                   </label>

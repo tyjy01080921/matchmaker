@@ -63,7 +63,7 @@ export const createPersonalScheduleImage = (
     context.fillText(`일정 ${index + 1}`, 34, top + 34)
     context.fillStyle = '#071f3d'
     context.font = '900 38px Arial, sans-serif'
-    context.fillText(`${item.court}코트`, 150, top + 42)
+    context.fillText(item.court ? `${item.court}코트` : '현장 배정', 150, top + 42)
     context.fillStyle = '#0c8f7f'
     context.font = '900 32px Arial, sans-serif'
     context.fillText(item.label, 306, top + 42)

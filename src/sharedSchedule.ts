@@ -1,7 +1,7 @@
 export type SharedScheduleItem = {
   id: string
   time: string
-  court: number
+  court: number | null
   label: string
   team: string
   opponent: string

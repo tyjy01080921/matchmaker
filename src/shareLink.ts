@@ -1,6 +1,7 @@
 import type {
   AppMode,
   MatchNameOverrides,
+  MeetingCourtAssignments,
   MeetingLineupsByMatch,
   MatchSettings,
   Player,
@@ -23,6 +24,7 @@ export type SharePayload = {
   players: Player[]
   settings: MatchSettings
   results: ResultsByMatch
+  meetingCourtAssignments?: MeetingCourtAssignments
   pairMixes: Record<string, number>
   matchNameOverrides?: MatchNameOverrides
   meetingLineups?: MeetingLineupsByMatch
@@ -109,6 +111,13 @@ const isSharePayload = (value: unknown): value is SharePayload => {
     payload.settings !== null &&
     typeof payload.results === 'object' &&
     payload.results !== null &&
+    (
+      payload.meetingCourtAssignments === undefined ||
+      (
+        typeof payload.meetingCourtAssignments === 'object' &&
+        payload.meetingCourtAssignments !== null
+      )
+    ) &&
     typeof payload.pairMixes === 'object' &&
     payload.pairMixes !== null &&
     (

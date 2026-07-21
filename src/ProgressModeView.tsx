@@ -8,16 +8,22 @@ import type {
   Match,
   MatchResult,
   MatchWinnerSide,
+  MeetingCourtAssignments,
   ResultsByMatch,
+  Schedule,
   TournamentMatch,
   TournamentResultsByMatch,
 } from './types'
 import type {
+  AvailableMeetingCourtLane,
   MeetingCourtLane,
   TournamentCourtLane,
 } from './progressMode'
 import {
   getMeetingCourtMatchNumber,
+  getMeetingMatchSequence,
+  getMeetingSequenceNumber,
+  getNextAvailableMeetingMatch,
   getProgressCourtPageSize,
   getProgressScoreWinnerSide,
   getProgressWinnerSide,
@@ -255,9 +261,10 @@ type ProgressMatchHeadingProps = {
   court: number
   matchNumber: number
   status: string
-  startsAt: string
-  endsAt: string
+  startsAt?: string
+  endsAt?: string
   detail?: string
+  label?: string
 }
 
 const ProgressMatchHeading = ({
@@ -267,17 +274,20 @@ const ProgressMatchHeading = ({
   startsAt,
   endsAt,
   detail,
+  label,
 }: ProgressMatchHeadingProps) => (
   <header className="progress-card-heading">
     <div className="progress-card-identity">
-      <strong>{court}코트 {matchNumber}경기</strong>
+      <strong>{label ?? `${court}코트 ${matchNumber}경기`}</strong>
       <span>{status}</span>
       {detail ? <em>{detail}</em> : null}
     </div>
-    <time>
-      <strong>{startsAt}</strong>
-      <span>–{endsAt}</span>
-    </time>
+    {startsAt ? (
+      <time>
+        <strong>{startsAt}</strong>
+        {endsAt ? <span>–{endsAt}</span> : null}
+      </time>
+    ) : null}
   </header>
 )
 
@@ -589,6 +599,222 @@ export const MeetingProgressMode = ({
                   <strong>{teamAName} vs {teamBName}</strong>
                   {summary ? <em>{summary}</em> : null}
                   <button type="button" onClick={() => onUndo(match.id)}>
+                    완료 취소
+                  </button>
+                </article>
+              )
+            })}
+          </div>
+        </section>
+      ) : null}
+    </main>
+  )
+}
+
+type AvailableMeetingProgressModeProps = Omit<ProgressHeaderProps, 'modeLabel'> & {
+  schedule: Schedule
+  lanes: AvailableMeetingCourtLane[]
+  assignments: MeetingCourtAssignments
+  results: ResultsByMatch
+  teamName: (match: Match, side: 'A' | 'B') => string
+  canUndo: (matchId: string) => boolean
+  onScoreChange: (
+    matchId: string,
+    side: MatchWinnerSide,
+    value: string,
+  ) => void
+  onWinner: (matchId: string, winnerSide: MatchWinnerSide) => void
+  onComplete: (matchId: string) => void
+  onUndo: (matchId: string) => void
+  onAssignNext: (court: number) => void
+  onCancelAssignment: (matchId: string) => void
+}
+
+export const AvailableMeetingProgressMode = ({
+  schedule,
+  lanes,
+  assignments,
+  results,
+  teamName,
+  canUndo,
+  onScoreChange,
+  onWinner,
+  onComplete,
+  onUndo,
+  onAssignNext,
+  onCancelAssignment,
+  ...headerProps
+}: AvailableMeetingProgressModeProps) => {
+  const [completedOpen, setCompletedOpen] = useState(false)
+  const courtPage = useCourtPage(lanes)
+  const sequence = getMeetingMatchSequence(schedule)
+  const nextMatch = getNextAvailableMeetingMatch(schedule, assignments, results)
+  const pendingMatches = sequence.filter(
+    (match) => !assignments[match.id] && !results[match.id]?.completed,
+  )
+  const firstPending = pendingMatches[0]
+  const completedMatches = lanes
+    .flatMap((lane) => lane.completed.map((match) => ({ court: lane.court, match })))
+    .sort((left, right) =>
+      (assignments[right.match.id]?.dispatchOrder ?? 0) -
+      (assignments[left.match.id]?.dispatchOrder ?? 0),
+    )
+  const allDone = headerProps.totalCount > 0 &&
+    headerProps.completedCount >= headerProps.totalCount
+  const nextSequenceNumber = nextMatch
+    ? getMeetingSequenceNumber(schedule, nextMatch.id)
+    : 0
+
+  return (
+    <main className="progress-mode-shell available-progress-mode">
+      <ProgressHeader
+        {...headerProps}
+        modeLabel="친목 · 빈 코트 배정"
+        completedPanelOpen={completedOpen}
+        onToggleCompletedPanel={() => setCompletedOpen((open) => !open)}
+      />
+      {allDone ? (
+        <section className="progress-mode-complete">
+          <strong>모든 경기를 완료했습니다.</strong>
+          <span>전체 순번 대진을 모두 진행했습니다.</span>
+        </section>
+      ) : (
+        <section className="available-next-call">
+          <div>
+            <span>다음 호출</span>
+            {nextMatch ? (
+              <strong>{nextSequenceNumber}번 대진</strong>
+            ) : pendingMatches.length > 0 ? (
+              <strong>참가자 경기 중</strong>
+            ) : (
+              <strong>배정 대기 없음</strong>
+            )}
+          </div>
+          {nextMatch ? (
+            <p>
+              {teamName(nextMatch, 'A')} <b>vs</b> {teamName(nextMatch, 'B')}
+            </p>
+          ) : (
+            <p>진행 중인 경기가 끝나면 다음 대진을 배정할 수 있습니다.</p>
+          )}
+          <small>
+            {firstPending && nextMatch && firstPending.id !== nextMatch.id
+              ? `${getMeetingSequenceNumber(schedule, firstPending.id)}번 참가자 경기 중 · ${nextSequenceNumber}번 먼저 진행`
+              : `미배정 ${pendingMatches.length}경기`}
+          </small>
+        </section>
+      )}
+      <CourtPageNavigation
+        page={courtPage.page}
+        pageCount={courtPage.pageCount}
+        pageSize={courtPage.pageSize}
+        lanes={lanes}
+        selectedCourt={courtPage.selectedCourt}
+        onPage={courtPage.setPage}
+        onCourt={courtPage.selectCourt}
+      />
+      <div
+        className="progress-court-board"
+        data-court-columns={courtPage.columns}
+        style={courtPage.boardStyle}
+      >
+        {courtPage.visibleLanes.map((lane) => {
+          const match = lane.active
+          const sequenceNumber = match
+            ? getMeetingSequenceNumber(schedule, match.id)
+            : 0
+          return (
+            <section
+              className={`progress-court-lane ${
+                lane.court === courtPage.selectedCourt ? 'selected' : ''
+              }`}
+              key={lane.court}
+            >
+              <header>
+                <h2>{lane.court}코트</h2>
+                <span>{match ? `진행 중 · ${sequenceNumber}번` : '빈 코트'}</span>
+              </header>
+              <div className="progress-court-matches">
+                {match ? (
+                  <article className="progress-match-card current">
+                    <ProgressMatchHeading
+                      court={lane.court}
+                      matchNumber={sequenceNumber}
+                      status="현재"
+                      label={`${lane.court}코트 · 전체 ${sequenceNumber}번`}
+                      detail={match.isSpecial ? '스페셜' : undefined}
+                    />
+                    <ProgressResultEditor
+                      matchId={match.id}
+                      teamAName={teamName(match, 'A')}
+                      teamBName={teamName(match, 'B')}
+                      result={results[match.id]}
+                      winnerRequired={false}
+                      onScoreChange={onScoreChange}
+                      onWinner={onWinner}
+                      onComplete={onComplete}
+                    />
+                    <button
+                      type="button"
+                      className="available-cancel-assignment"
+                      onClick={() => onCancelAssignment(match.id)}
+                    >
+                      배정 취소
+                    </button>
+                  </article>
+                ) : (
+                  <div className="progress-court-empty available-court-empty">
+                    <strong>코트가 비었습니다.</strong>
+                    <span>
+                      {nextMatch
+                        ? `${nextSequenceNumber}번 대진을 배정할 수 있습니다.`
+                        : pendingMatches.length > 0
+                          ? '진행 중인 참가자를 기다리고 있습니다.'
+                          : '남은 대진이 없습니다.'}
+                    </span>
+                    <button
+                      type="button"
+                      className="primary-action"
+                      disabled={!nextMatch}
+                      onClick={() => onAssignNext(lane.court)}
+                    >
+                      다음 경기 배정
+                    </button>
+                  </div>
+                )}
+              </div>
+            </section>
+          )
+        })}
+      </div>
+      {completedOpen ? (
+        <section className="progress-completed-panel open">
+          <button
+            type="button"
+            className="progress-completed-toggle"
+            onClick={() => setCompletedOpen(false)}
+          >
+            완료 경기 {completedMatches.length}개 · 닫기
+          </button>
+          <div className="progress-completed-list">
+            {completedMatches.map(({ court, match }) => {
+              const teamAName = teamName(match, 'A')
+              const teamBName = teamName(match, 'B')
+              const summary = resultSummary(results[match.id], teamAName, teamBName)
+              const undoable = canUndo(match.id)
+              return (
+                <article key={match.id}>
+                  <span>
+                    {court}코트 · 전체 {getMeetingSequenceNumber(schedule, match.id)}번
+                  </span>
+                  <strong>{teamAName} vs {teamBName}</strong>
+                  {summary ? <em>{summary}</em> : null}
+                  <button
+                    type="button"
+                    disabled={!undoable}
+                    title={undoable ? '' : '이후 코트 배정을 먼저 취소해 주세요.'}
+                    onClick={() => onUndo(match.id)}
+                  >
                     완료 취소
                   </button>
                 </article>

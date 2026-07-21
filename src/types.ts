@@ -27,6 +27,8 @@ export type MeetingShuffleDirection =
   | 'skill'
   | 'wait'
 
+export type CourtAssignmentMode = 'fixed' | 'available'
+
 export type SpecialScheduleMode = 'continuous' | 'spread'
 
 export type TournamentFormat =
@@ -73,6 +75,7 @@ export type Player = {
 export type MatchSettings = {
   eventName: string
   courtCount: number
+  courtAssignmentMode: CourtAssignmentMode
   startTime: string
   endTime: string
   normalGameMinutes: 10 | 12 | 15
@@ -161,6 +164,13 @@ export type MatchResult = {
 }
 
 export type ResultsByMatch = Record<string, MatchResult>
+
+export type MeetingCourtAssignment = {
+  court: number
+  dispatchOrder: number
+}
+
+export type MeetingCourtAssignments = Record<string, MeetingCourtAssignment>
 
 export type PrizeDrawResult = {
   prize: string

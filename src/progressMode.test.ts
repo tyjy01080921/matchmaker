@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
+  assignNextAvailableMeetingMatch,
+  buildAvailableMeetingCourtLanes,
   buildMeetingCourtLanes,
   buildTournamentCourtLanes,
+  canUndoAvailableMeetingMatch,
+  getMeetingMatchSequence,
   getUndoableTournamentMatchId,
   getProgressWinnerSide,
   getMeetingCourtMatchNumber,
@@ -9,11 +13,13 @@ import {
   getProgressCourtPageSize,
   hasTournamentWinner,
   hasProgressScorePair,
+  initializeAvailableMeetingAssignments,
   toggleProgressWinner,
   updateProgressScore,
 } from './progressMode'
 import type {
   Match,
+  MeetingCourtAssignments,
   Player,
   Schedule,
   TournamentMatch,
@@ -41,6 +47,22 @@ const meetingMatch = (
   court,
   teamA: [player(`${id}-a1`), player(`${id}-a2`)],
   teamB: [player(`${id}-b1`), player(`${id}-b2`)],
+  isSpecial: false,
+  startOffsetMinutes,
+  durationMinutes: 15,
+})
+
+const meetingMatchWithPlayers = (
+  id: string,
+  court: number,
+  startOffsetMinutes: number,
+  playerIds: [string, string, string, string],
+): Match => ({
+  id,
+  round: startOffsetMinutes / 15 + 1,
+  court,
+  teamA: [player(playerIds[0]), player(playerIds[1])],
+  teamB: [player(playerIds[2]), player(playerIds[3])],
   isSpecial: false,
   startOffsetMinutes,
   durationMinutes: 15,
@@ -131,6 +153,89 @@ describe('progress mode helpers', () => {
     expect(lanes[0].pending.map((match) => match.id)).toEqual(['second'])
     expect(lanes[0].completed.map((match) => match.id)).toEqual(['first'])
     expect(getMeetingCourtMatchNumber(lanes[0], second.id)).toBe(2)
+  })
+
+  it('assigns the opening sequence across available courts', () => {
+    const first = meetingMatchWithPlayers('first', 1, 0, ['a', 'b', 'c', 'd'])
+    const second = meetingMatchWithPlayers('second', 2, 0, ['e', 'f', 'g', 'h'])
+    const schedule: Schedule = {
+      rounds: [
+        { id: 'round-1', number: 1, matches: [second, first], resting: [] },
+      ],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+
+    const assignments = initializeAvailableMeetingAssignments(schedule, 2)
+
+    expect(getMeetingMatchSequence(schedule).map((match) => match.id))
+      .toEqual(['first', 'second'])
+    expect(assignments).toEqual({
+      first: { court: 1, dispatchOrder: 1 },
+      second: { court: 2, dispatchOrder: 2 },
+    })
+  })
+
+  it('skips a blocked sequence match and assigns the first playable match', () => {
+    const first = meetingMatchWithPlayers('first', 1, 0, ['a', 'b', 'c', 'd'])
+    const second = meetingMatchWithPlayers('second', 2, 0, ['e', 'f', 'g', 'h'])
+    const blocked = meetingMatchWithPlayers('blocked', 1, 15, ['e', 'i', 'j', 'k'])
+    const playable = meetingMatchWithPlayers('playable', 2, 15, ['a', 'l', 'm', 'n'])
+    const schedule: Schedule = {
+      rounds: [
+        { id: 'round-1', number: 1, matches: [first, second], resting: [] },
+        { id: 'round-2', number: 2, matches: [blocked, playable], resting: [] },
+      ],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+    const initial = initializeAvailableMeetingAssignments(schedule, 2)
+    const results = {
+      first: { teamAScore: '', teamBScore: '', completed: true, note: '' },
+    }
+
+    const assigned = assignNextAvailableMeetingMatch(
+      schedule,
+      initial,
+      results,
+      1,
+    )
+
+    expect(assigned.playable).toEqual({ court: 1, dispatchOrder: 3 })
+    expect(assigned.blocked).toBeUndefined()
+    expect(buildAvailableMeetingCourtLanes(schedule, 2, assigned, results)[0])
+      .toMatchObject({ court: 1, active: { id: 'playable' } })
+  })
+
+  it('only allows undo before a later match is assigned to the same court', () => {
+    const first = meetingMatchWithPlayers('first', 1, 0, ['a', 'b', 'c', 'd'])
+    const second = meetingMatchWithPlayers('second', 1, 15, ['e', 'f', 'g', 'h'])
+    const schedule: Schedule = {
+      rounds: [
+        { id: 'round-1', number: 1, matches: [first], resting: [] },
+        { id: 'round-2', number: 2, matches: [second], resting: [] },
+      ],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+    const results = {
+      first: { teamAScore: '', teamBScore: '', completed: true, note: '' },
+    }
+    const firstOnly: MeetingCourtAssignments = {
+      first: { court: 1, dispatchOrder: 1 },
+    }
+    const withLater: MeetingCourtAssignments = {
+      ...firstOnly,
+      second: { court: 1, dispatchOrder: 2 },
+    }
+
+    expect(canUndoAvailableMeetingMatch(schedule, 'first', firstOnly, results))
+      .toBe(true)
+    expect(canUndoAvailableMeetingMatch(schedule, 'first', withLater, results))
+      .toBe(false)
   })
 
   it('accepts a winner selection without requiring scores', () => {
