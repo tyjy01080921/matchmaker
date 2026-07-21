@@ -6723,8 +6723,8 @@ textarea {
   }
 }
 
-/* 코트별 경기 카드는 PC 3열, 태블릿 2열, 모바일 1열로 이어진다. */
-.court-schedule-list .match-grid {
+/* 빈 코트 순차 배정만 PC 3열, 태블릿 2열, 모바일 1열로 이어진다. */
+.court-schedule-list.available-schedule-list .match-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   overflow: visible;
@@ -6732,29 +6732,29 @@ textarea {
   scroll-snap-type: none;
 }
 
-.court-schedule-list .match-card,
-.court-schedule-list .collapsed-match-card {
+.court-schedule-list.available-schedule-list .match-card,
+.court-schedule-list.available-schedule-list .collapsed-match-card {
   min-width: 0;
   flex: none;
 }
 
 @media (min-width: 641px) and (max-width: 1040px) {
-  .court-schedule-list .match-grid {
+  .court-schedule-list.available-schedule-list .match-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 640px) {
-  .court-schedule-list .round-section {
+  .court-schedule-list.available-schedule-list .round-section {
     display: block;
   }
 
-  .court-schedule-list .round-heading {
+  .court-schedule-list.available-schedule-list .round-heading {
     position: static;
     padding: 2px 2px 8px;
   }
 
-  .court-schedule-list .match-grid {
+  .court-schedule-list.available-schedule-list .match-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }
