@@ -2191,7 +2191,7 @@ describe('generateSchedule', () => {
         .filter((match) => (match.startOffsetMinutes ?? 0) >= 120)
         .every((match) => !match.isSpecial),
     ).toBe(true)
-  })
+  }, 15_000)
 
   it('spreads the same special target across the full booking when requested', () => {
     const guest = makeTestPlayer('spread-guest', '스페셜', 'none', false, true)

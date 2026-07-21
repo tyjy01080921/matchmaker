@@ -992,37 +992,45 @@ h2 {
 
 .special-limit-options {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
   padding: 0 9px;
 }
 
 .special-limit-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(88px, 0.7fr) minmax(180px, 1.3fr);
   min-width: 0;
   align-items: center;
-  justify-content: space-between;
-  gap: 7px;
-  padding: 7px 8px;
+  gap: 10px;
+  min-height: 50px;
+  padding: 7px 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fff;
 }
 
-.special-limit-row label {
-  flex: 0 0 auto;
+.special-limit-row > label,
+.special-limit-row > span {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
 }
 
 .limit-stepper {
   display: grid;
-  grid-template-columns: 30px 48px 30px auto;
+  grid-template-columns: 38px minmax(64px, 1fr) 38px 28px;
   align-items: center;
-  gap: 3px;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
 }
 
 .limit-stepper button {
-  width: 30px;
-  min-height: 30px;
+  width: 38px;
+  min-height: 38px;
   padding: 0;
   color: var(--green);
   background: var(--soft-green);
@@ -1035,16 +1043,20 @@ h2 {
 }
 
 .special-limit-options input[type='number'] {
-  width: 48px;
-  min-height: 30px;
-  margin: 0 0 0 auto;
-  padding: 4px 6px;
+  width: 100%;
+  min-width: 64px;
+  min-height: 38px;
+  margin: 0;
+  padding: 5px 8px;
+  text-align: center;
 }
 
 .special-limit-options select {
-  min-height: 30px;
-  margin: 0 0 0 auto;
-  padding: 4px 6px;
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  margin: 0;
+  padding: 5px 9px;
 }
 
 .special-allocation-options {
@@ -1426,6 +1438,7 @@ h2 {
 .stepper-control {
   display: grid;
   grid-template-columns: 40px minmax(0, 1fr) 40px;
+  min-width: 0;
   align-items: center;
   gap: 0;
   min-height: 40px;
@@ -1448,6 +1461,7 @@ h2 {
 }
 
 .stepper-control input {
+  min-width: 0;
   min-height: 40px;
   margin-top: 0;
   border: 0;
@@ -3106,7 +3120,14 @@ textarea {
   }
 
   .special-limit-options input[type='number'],
-  .special-limit-options select,
+  .special-limit-options select {
+    width: 100%;
+    min-width: 0;
+    min-height: 34px;
+    padding: 4px 6px;
+    font-size: 11px;
+  }
+
   .special-allocation-options select {
     width: 60px;
     min-width: 60px;
@@ -4025,6 +4046,20 @@ textarea {
   }
 }
 
+@media (min-width: 641px) and (max-width: 1040px) {
+  .header-main {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .mode-switch {
+    justify-self: end;
+  }
+
+  .header-actions {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (max-width: 640px) {
   .app-header {
     padding: 8px;
@@ -4487,17 +4522,22 @@ textarea {
   }
 
   .special-limit-options {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     gap: 5px;
     padding: 0 6px;
   }
 
   .special-limit-row {
+    grid-template-columns: minmax(0, 1fr);
     min-width: 0;
-    gap: 4px;
+    gap: 6px;
     padding: 6px;
     font-size: 10px;
-    white-space: nowrap;
+  }
+
+  .special-limit-row > label,
+  .special-limit-row > span {
+    white-space: normal;
   }
 
   .special-limit-options label > input:first-child {
@@ -4506,8 +4546,8 @@ textarea {
   }
 
   .special-limit-options input[type='number'] {
-    width: 54px;
-    min-width: 54px;
+    width: 100%;
+    min-width: 64px;
     min-height: 36px;
     margin: 0;
     padding: 4px;
@@ -4523,8 +4563,9 @@ textarea {
   }
 
   .limit-stepper {
-    grid-template-columns: 38px 54px 38px auto;
+    grid-template-columns: 38px minmax(64px, 1fr) 38px 28px;
     gap: 5px;
+    width: 100%;
   }
 
   .limit-stepper button {
@@ -4534,13 +4575,15 @@ textarea {
   }
 
   .special-limit-options select {
-    min-width: 50px;
-    min-height: 28px;
-    padding: 3px;
-    font-size: 10px;
+    width: 100%;
+    min-width: 0;
+    min-height: 36px;
+    padding: 4px 6px;
+    font-size: 11px;
   }
 
   .special-allocation-options {
+    grid-template-columns: minmax(0, 1fr);
     gap: 5px;
     padding: 0 6px;
   }

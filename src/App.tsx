@@ -138,6 +138,7 @@ const LAST_MEETING_SCHEDULE_KEY = 'badminton-matchmaker-last-meeting-v1'
 const CONTACT_EMAIL = 'ama_official@naver.com'
 const APP_VERSION = '0.0.1'
 const LAST_UPDATED = '2026.07.17'
+const SPECIAL_TIME_LIMIT_OPTIONS = [60, 90, 120, 150, 180] as const
 const SHARE_LINK_SAVED_MESSAGE = '현재 생성된 이벤트의 링크를 저장하였습니다.'
 type FeatureHelpKey = 'shared-edit' | 'shared-new' | 'browser-save'
 const featureHelpContent: Record<FeatureHelpKey, { title: string; body: string }> = {
@@ -522,6 +523,22 @@ const normalizePositiveInteger = (
   return Math.min(max, Math.max(min, Math.floor(numeric)))
 }
 
+const normalizeSpecialTimeLimit = (
+  value: unknown,
+  bookingMinutes: number,
+) => {
+  const availableOptions = SPECIAL_TIME_LIMIT_OPTIONS.filter(
+    (minutes) => minutes <= bookingMinutes,
+  )
+  if (availableOptions.length === 0) return bookingMinutes
+  const numeric = Number(value)
+  const requested = Number.isFinite(numeric)
+    ? numeric
+    : defaultSettings.specialTimeLimitMinutes
+  return availableOptions.find((minutes) => minutes >= requested) ??
+    availableOptions[availableOptions.length - 1]
+}
+
 const normalizeMeetingPhasePercent = (value: unknown, fallback: number) => {
   const numeric = Number(value)
   const safeValue = Number.isFinite(numeric) ? numeric : fallback
@@ -730,14 +747,9 @@ const normalizeMatchSettings = (
     specialGameLimit,
     specialParticipantTarget,
     specialTimeLimitEnabled: settings?.specialTimeLimitEnabled ?? true,
-    specialTimeLimitMinutes: Math.min(
+    specialTimeLimitMinutes: normalizeSpecialTimeLimit(
+      settings?.specialTimeLimitMinutes,
       booking.durationMinutes,
-      normalizePositiveInteger(
-        settings?.specialTimeLimitMinutes,
-        defaultSettings.specialTimeLimitMinutes,
-        GAME_SLOT_MINUTES,
-        MAX_BOOKING_MINUTES,
-      ),
     ),
     specialLowPriorityEnabled,
     specialLowPriorityPercent,
@@ -2242,10 +2254,6 @@ function App() {
     settings.startTime,
     settings.endTime,
   )
-  const bookingRoundCount = getBookingRoundCount(
-    settings.startTime,
-    settings.endTime,
-  )
   const scheduledBookingMinutes = getBookingDurationMinutes(
     generatedMeetingSettings.startTime,
     generatedMeetingSettings.endTime,
@@ -2844,7 +2852,7 @@ function App() {
     setSettings((current) => ({
       ...current,
       endTime,
-      specialTimeLimitMinutes: Math.min(
+      specialTimeLimitMinutes: normalizeSpecialTimeLimit(
         current.specialTimeLimitMinutes,
         duration,
       ),
@@ -6182,12 +6190,11 @@ function App() {
                                   }))
                                 }}
                               >
-                                {Array.from(
-                                  { length: bookingRoundCount },
-                                  (_, index) => (index + 1) * GAME_SLOT_MINUTES,
-                                ).map((minutes) => (
+                                {SPECIAL_TIME_LIMIT_OPTIONS
+                                  .filter((minutes) => minutes <= bookingMinutes)
+                                  .map((minutes) => (
                                   <option value={minutes} key={minutes}>
-                                    {minutes}분 · {clockTimeAtOffset(settings.startTime, minutes)}까지
+                                    {minutes}분
                                   </option>
                                 ))}
                               </select>
