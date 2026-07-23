@@ -58,6 +58,7 @@ import {
   MeetingProgressMode,
   TournamentProgressMode,
 } from './ProgressModeView'
+import { analyzeMeetingScheduleV2 } from './matchmaker/validation'
 import { SharedScheduleFinder } from './SharedScheduleFinder'
 import type { SharedScheduleCandidate } from './sharedSchedule'
 import {
@@ -114,7 +115,6 @@ import type {
   MatchSettings,
   MeetingCourtAssignments,
   MeetingWaitLimitFailure,
-  MeetingShuffleDirection,
   MeetingLineupsByMatch,
   Player,
   PrizeDrawState,
@@ -148,6 +148,10 @@ const STORAGE_KEY = 'badminton-matchmaker-v1'
 const LAST_MEETING_SCHEDULE_KEY = 'badminton-matchmaker-last-meeting-v1'
 const CONTACT_EMAIL = 'ama_official@naver.com'
 const APP_VERSION = '0.0.1'
+const meetingDefaultSettings: MatchSettings = {
+  ...defaultSettings,
+  normalGameMinutes: 12,
+}
 const LAST_UPDATED = '2026.07.17'
 const SPECIAL_TIME_LIMIT_OPTIONS = [60, 90, 120, 150, 180] as const
 const SHARE_LINK_SAVED_MESSAGE = '현재 생성된 이벤트의 링크를 저장하였습니다.'
@@ -189,28 +193,6 @@ const MIN_MEETING_PHASE_PERCENT = 15
 const MEETING_PHASE_STEP = 5
 const meetingSwapRecommendationKey = (matchId: string, playerId: string) =>
   `${matchId}::${playerId}`
-
-const meetingShuffleDirections: Array<{
-  key: Exclude<MeetingShuffleDirection, 'balanced'>
-  label: string
-  description: string
-}> = [
-  {
-    key: 'variety',
-    label: '조합 다양하게',
-    description: '파트너·상대·같은 4인 반복이 적은 대진을 우선합니다.',
-  },
-  {
-    key: 'skill',
-    label: '실력 더 비슷하게',
-    description: '팀 간 실력 차와 실력 경고가 적은 대진을 우선합니다.',
-  },
-  {
-    key: 'wait',
-    label: '대기 더 고르게',
-    description: '첫 경기 전과 마지막 경기 후를 포함해 대기가 짧은 대진을 우선합니다.',
-  },
-]
 
 const getTargetRoundCount = (settings: MatchSettings) => {
   const numeric = Number(settings.targetRoundCount)
@@ -303,81 +285,22 @@ const genderLabels: Record<Gender, string> = {
   none: '무관',
 }
 
-const fixedMatchConditionKeys: MatchConditionKey[] = [
+const matchConditionKeys: MatchConditionKey[] = [
   'fairGames',
-  'waitPriority',
-]
-
-const conditionalHardMatchConditionKeys: MatchConditionKey[] = [
-  'groupRepeat',
-  'strictSkillLimit',
-]
-
-const preferenceMatchConditionKeys: MatchConditionKey[] = [
-  'levelBalance',
-  'genderBalance',
   'restBalance',
+  'waitPriority',
+  'levelBalance',
+  'ageBalance',
+  'genderBalance',
   'partnerRepeat',
   'opponentRepeat',
-  'ageBalance',
-  'femaleLevelFit',
-]
-
-const specialMatchConditionKeys: MatchConditionKey[] = [
+  'groupRepeat',
   'specialMatchCreation',
   'specialPriority',
   'guestPartnerRepeat',
+  'femaleLevelFit',
+  'strictSkillLimit',
 ]
-
-const optionalMatchConditionKeys: MatchConditionKey[] = [
-  ...conditionalHardMatchConditionKeys,
-  ...preferenceMatchConditionKeys,
-  ...specialMatchConditionKeys,
-]
-
-const matchConditionSections: Array<{
-  title: string
-  description: string
-  keys: MatchConditionKey[]
-}> = [
-  {
-    title: '선택 필수 조건',
-    description: '사용하면 위반 대진을 만들지 않습니다.',
-    keys: conditionalHardMatchConditionKeys,
-  },
-  {
-    title: '우선 조건',
-    description: '필수 조건을 통과한 후보끼리 비교합니다.',
-    keys: preferenceMatchConditionKeys,
-  },
-  {
-    title: '스페셜 운영',
-    description: '스페셜 경기 생성과 배치 방식을 정합니다.',
-    keys: specialMatchConditionKeys,
-  },
-]
-
-const matchConditionKeys: MatchConditionKey[] = [
-  ...fixedMatchConditionKeys,
-  ...optionalMatchConditionKeys,
-]
-
-const matchConditionLabels: Record<MatchConditionKey, string> = {
-  levelBalance: '팀 레벨 균형',
-  genderBalance: '동일 성별 우선',
-  fairGames: '일반 경기 수 차이 1 이하',
-  restBalance: '연속 경기 방지',
-  waitPriority: '최장 대기 25분 이하',
-  partnerRepeat: '파트너 반복 최소',
-  opponentRepeat: '상대 반복 최소',
-  groupRepeat: '같은 4인 최대 2경기',
-  specialMatchCreation: '스페셜 경기 생성',
-  specialPriority: '스페셜 먼저 배치',
-  guestPartnerRepeat: '스페셜 파트너 반복 최소',
-  ageBalance: '연령대 균형',
-  femaleLevelFit: '혼합 성별 여성 레벨 보정',
-  strictSkillLimit: '큰 실력 차 금지 · 경고 최대 5경기',
-}
 
 const tournamentFormatLabels: Record<TournamentFormat, string> = {
   'group-knockout': '조별+넉아웃',
@@ -542,11 +465,8 @@ const normalizeAppMode = (value: unknown): AppMode =>
   value === 'tournament' ? 'tournament' : 'meeting'
 
 const normalizeMeetingShuffleDirection = (
-  value: unknown,
-): MeetingShuffleDirection =>
-  value === 'variety' || value === 'skill' || value === 'wait'
-    ? value
-    : 'balanced'
+  _value: unknown,
+): MatchSettings['shuffleDirection'] => 'balanced'
 
 const normalizeTournamentFormat = (value: unknown): TournamentFormat => {
   if (
@@ -647,8 +567,23 @@ const normalizeMatchConditionOptions = (
     ]),
   ) as MatchConditionOptions
 
-  if (normalized.strictSkillLimit) normalized.levelBalance = true
-  return normalized
+  return {
+    ...normalized,
+    fairGames: true,
+    restBalance: true,
+    waitPriority: true,
+    levelBalance: true,
+    ageBalance: true,
+    genderBalance: true,
+    partnerRepeat: true,
+    opponentRepeat: true,
+    groupRepeat: true,
+    specialMatchCreation: true,
+    specialPriority: true,
+    guestPartnerRepeat: true,
+    femaleLevelFit: false,
+    strictSkillLimit: false,
+  }
 }
 
 const normalizeLevelTiers = (value: unknown): LevelTierTable => {
@@ -775,7 +710,7 @@ const normalizeMatchSettings = (
   )
 
   return {
-    ...defaultSettings,
+    ...meetingDefaultSettings,
     ...settings,
     courtCount: normalizePositiveInteger(
       settings?.courtCount,
@@ -789,7 +724,7 @@ const normalizeMatchSettings = (
     endTime: booking.endTime,
     normalGameMinutes: [10, 12, 15].includes(Number(settings?.normalGameMinutes))
       ? Number(settings?.normalGameMinutes) as 10 | 12 | 15
-      : defaultSettings.normalGameMinutes,
+      : meetingDefaultSettings.normalGameMinutes,
     seed: normalizePositiveInteger(settings?.seed, defaultSettings.seed, 1, 999999),
     shuffleDirection: normalizeMeetingShuffleDirection(
       settings?.shuffleDirection,
@@ -1114,9 +1049,9 @@ const readStoredState = (): StoredState => {
       appMode: 'meeting',
       progressMode: false,
       players: defaultPlayers,
-      settings: defaultSettings,
+      settings: meetingDefaultSettings,
       generatedMeetingPlayers: defaultPlayers,
-      generatedMeetingSettings: defaultSettings,
+      generatedMeetingSettings: meetingDefaultSettings,
       results: {},
       meetingCourtAssignments: {},
       pairMixes: {},
@@ -1201,9 +1136,9 @@ const readStoredState = (): StoredState => {
       appMode: 'meeting',
       progressMode: false,
       players: defaultPlayers,
-      settings: defaultSettings,
+      settings: meetingDefaultSettings,
       generatedMeetingPlayers: defaultPlayers,
-      generatedMeetingSettings: defaultSettings,
+      generatedMeetingSettings: meetingDefaultSettings,
       results: {},
       meetingCourtAssignments: {},
       pairMixes: {},
@@ -1703,7 +1638,6 @@ function App() {
   const [conditionsOpen, setConditionsOpen] = useState(false)
   const [levelHelpOpen, setLevelHelpOpen] = useState(false)
   const [levelTierEditorOpen, setLevelTierEditorOpen] = useState(false)
-  const [shuffleDirectionOpen, setShuffleDirectionOpen] = useState(false)
   const [levelTierDraft, setLevelTierDraft] = useState<LevelTierTable>(
     () => normalizeLevelTiers(initialState.settings.levelTiers),
   )
@@ -1824,6 +1758,21 @@ function App() {
     ),
     [generatedMeetingPlayers, generatedMeetingSettings, schedule],
   )
+  const meetingV2Metrics = useMemo(
+    () => analyzeMeetingScheduleV2(
+      schedule,
+      generatedMeetingPlayers,
+      generatedMeetingSettings,
+    ),
+    [generatedMeetingPlayers, generatedMeetingSettings, schedule],
+  )
+  const meetingUsesClubQuality =
+    generatedMeetingPlayers.filter(
+      (player) => player.active && !player.isGuest,
+    ).length <= 35 &&
+    !generatedMeetingPlayers.some(
+      (player) => player.active && player.isGuest,
+    )
   const meetingSwapRecommendations = useMemo(() => {
     const recommendations = new Map<
       string,
@@ -1922,12 +1871,23 @@ function App() {
     schedule,
     scheduleDisplayNames,
   ])
-  const skillBalanceWarning = scheduleQualityAnalysis.teamSkillWarningMatches > 0
-    ? `실력 차 주의 ${scheduleQualityAnalysis.teamSkillWarningMatches}경기 · 대진 카드 확인`
+  const reviewedSkillWarningMatches = meetingUsesClubQuality
+    ? meetingV2Metrics.postWarmupSkillCautionMatches
+    : scheduleQualityAnalysis.teamSkillWarningMatches
+  const skillBalanceWarning = reviewedSkillWarningMatches > 0
+    ? `${meetingUsesClubQuality ? '워밍업 이후 ' : ''}실력 차 주의 ${reviewedSkillWarningMatches}경기 · 대진 카드 확인`
     : null
   const genderCompositionReviewNotice =
-    scheduleQualityAnalysis.genderCompositionReviewMatches > 0
-      ? `성별 조합 확인 ${scheduleQualityAnalysis.genderCompositionReviewMatches}경기 · 보라색 카드 확인`
+    (
+      meetingUsesClubQuality
+        ? meetingV2Metrics.postWarmupGenderExceptionMatches
+        : scheduleQualityAnalysis.genderCompositionReviewMatches
+    ) > 0
+      ? `${meetingUsesClubQuality ? '워밍업 이후 ' : ''}성별 조합 확인 ${
+          meetingUsesClubQuality
+            ? meetingV2Metrics.postWarmupGenderExceptionMatches
+            : scheduleQualityAnalysis.genderCompositionReviewMatches
+        }경기 · 보라색 카드 확인`
       : null
   const gameSpreadWarning = scheduleQualityAnalysis.standardGameSpread > 1
     ? `일반 참가자 경기 수 차 ${scheduleQualityAnalysis.standardGameSpread}경기`
@@ -1936,7 +1896,7 @@ function App() {
     ? `동일 4인 최대 ${scheduleQualityAnalysis.maximumGroupMeetings}경기`
     : null
   const partnerRepeatWarning = scheduleQualityAnalysis.maximumPartnerMeetings > 3
-    ? `같은 파트너 최대 ${scheduleQualityAnalysis.maximumPartnerMeetings}회`
+    ? `비선호 파트너 반복 최대 ${scheduleQualityAnalysis.maximumPartnerMeetings}회`
     : null
   const opponentRepeatWarning = scheduleQualityAnalysis.maximumOpponentMeetings > 6
     ? `같은 상대 최대 ${scheduleQualityAnalysis.maximumOpponentMeetings}회`
@@ -1951,6 +1911,14 @@ function App() {
     partnerRepeatWarning ||
     opponentRepeatWarning ||
     skillBalanceWarning ||
+    (
+      meetingUsesClubQuality &&
+      meetingV2Metrics.participantsBelowTightMinimum > 0
+    ) ||
+    (
+      meetingUsesClubQuality &&
+      meetingV2Metrics.postWarmupGenderExceptionMatches > 0
+    ) ||
     candidateQualityWarning,
   )
   const meetingWarnings = useMemo(
@@ -2205,9 +2173,6 @@ function App() {
   }, [players])
 
   const activePlayers = players.filter((player) => player.active)
-  const hasComparableAgeData = activePlayers.some(
-    (player) => !player.isGuest && player.ageGroup !== '무관',
-  )
   const prizeCandidates = activePlayers.map((player) => ({
     id: player.id,
     name: playerDisplayName(player, displayNames),
@@ -3149,47 +3114,6 @@ function App() {
     setNotice('경쟁 종료 시간 변경됨')
   }
 
-  const updateMatchCondition = (key: MatchConditionKey, checked: boolean) => {
-    setSettings((current) => ({
-      ...current,
-      conditionOptions: {
-        ...defaultMatchConditionOptions,
-        ...current.conditionOptions,
-        [key]: checked,
-        ...(key === 'strictSkillLimit' && checked
-          ? { levelBalance: true }
-          : {}),
-      },
-    }))
-    setResults({})
-    setPairMixes({})
-    setMatchNameOverrides({})
-    setMeetingLineups({})
-    setNotice(
-      key === 'strictSkillLimit' && checked
-        ? '큰 실력 차 금지 · 팀 레벨 균형 함께 적용'
-        : '조건 변경됨',
-    )
-  }
-
-  const updateMeetingPhaseBoundary = (
-    boundary: 'early' | 'middle',
-    value: number,
-  ) => {
-    setSettings((current) => {
-      const phaseBoundaries = normalizeMeetingPhaseBoundaries(
-        boundary === 'early' ? value : current.earlyPhaseEndPercent,
-        boundary === 'middle' ? value : current.middlePhaseEndPercent,
-      )
-      return { ...current, ...phaseBoundaries }
-    })
-    setResults({})
-    setPairMixes({})
-    setMatchNameOverrides({})
-    setMeetingLineups({})
-    setNotice('경기 흐름 변경됨 · 생성 필요')
-  }
-
   const openLevelTierEditor = () => {
     setLevelTierDraft(normalizeLevelTiers(settings.levelTiers))
     setLevelHelpOpen(false)
@@ -3941,9 +3865,9 @@ function App() {
     if (!confirmed) return
 
     setPlayers(defaultPlayers)
-    setSettings(defaultSettings)
+    setSettings(meetingDefaultSettings)
     setGeneratedMeetingPlayers(defaultPlayers)
-    setGeneratedMeetingSettings(defaultSettings)
+    setGeneratedMeetingSettings(meetingDefaultSettings)
     setProgressMode(false)
     setScheduleOverride(null)
     setResults({})
@@ -4110,23 +4034,6 @@ function App() {
     setSettingsOpen(true)
     setNotice('설정 확인 필요')
     window.setTimeout(() => scrollToSection('meeting-settings'), 0)
-  }
-
-  const reshuffle = (
-    direction: Exclude<MeetingShuffleDirection, 'balanced'>,
-  ) => {
-    const selectedDirection = meetingShuffleDirections.find(
-      (option) => option.key === direction,
-    )
-    setShuffleDirectionOpen(false)
-    startMeetingGeneration(
-      {
-        ...settings,
-        seed: settings.seed + 1,
-        shuffleDirection: direction,
-      },
-      `${selectedDirection?.label ?? '선택 방향'} · 새 대진 생성됨`,
-    )
   }
 
   const generateBookingSchedule = () => {
@@ -5655,37 +5562,38 @@ function App() {
             ) : null}
             {meetingOperationLabel === '대진 완료' ? (
               <div className="generation-review-summary">
-                <span>
-                  생성 방향 <strong>
-                    {generatedMeetingSettings.shuffleDirection === 'balanced'
-                      ? '기본 균형'
-                      : meetingShuffleDirections.find(
-                          (direction) =>
-                            direction.key === generatedMeetingSettings.shuffleDirection,
-                        )?.label ?? '기본 균형'}
-                  </strong>
-                </span>
                 <span>중복 <strong>0건</strong></span>
                 <span className={scheduleQualityAnalysis.standardGameSpread > 1 ? 'wait-warning' : ''}>
                   경기 <strong>{minimumParticipantGames}~{maximumParticipantGames}경기</strong>
                 </span>
                 <span>동일 4인 최대 <strong>{maximumMeetingGroupCount}경기</strong></span>
                 <span className={scheduleQualityAnalysis.maximumPartnerMeetings > 2 ? 'wait-warning' : ''}>
-                  파트너 반복 최대 <strong>{scheduleQualityAnalysis.maximumPartnerMeetings}회</strong>
+                  비선호 파트너 반복 최대 <strong>{scheduleQualityAnalysis.maximumPartnerMeetings}회</strong>
                 </span>
                 <span className={scheduleQualityAnalysis.maximumOpponentMeetings > 6 ? 'wait-warning' : ''}>
                   상대 반복 최대 <strong>{scheduleQualityAnalysis.maximumOpponentMeetings}회</strong>
                 </span>
-                <span className={scheduleQualityAnalysis.teamSkillWarningMatches > 0 ? 'wait-warning' : ''}>
-                  실력 차 경고 <strong>{scheduleQualityAnalysis.teamSkillWarningMatches}경기</strong>
+                <span className={reviewedSkillWarningMatches > 0 ? 'wait-warning' : ''}>
+                  {meetingUsesClubQuality ? '워밍업 이후 실력 차' : '실력 차'}{' '}
+                  <strong>{reviewedSkillWarningMatches}경기</strong>
                 </span>
                 <span className={
-                  scheduleQualityAnalysis.genderCompositionReviewMatches > 0
+                  (
+                    meetingUsesClubQuality
+                      ? meetingV2Metrics.postWarmupGenderExceptionMatches
+                      : scheduleQualityAnalysis.genderCompositionReviewMatches
+                  ) > 0
                     ? 'gender-review-summary'
                     : ''
                 }>
-                  성별 조합 확인 <strong>
-                    {scheduleQualityAnalysis.genderCompositionReviewMatches}경기
+                  {meetingUsesClubQuality
+                    ? '워밍업 이후 성별 예외'
+                    : '성별 조합 확인'}{' '}
+                  <strong>
+                    {meetingUsesClubQuality
+                      ? meetingV2Metrics.postWarmupGenderExceptionMatches
+                      : scheduleQualityAnalysis.genderCompositionReviewMatches}
+                    경기
                   </strong>
                 </span>
                 <span>
@@ -5732,6 +5640,28 @@ function App() {
                     경기 {gameCountFlexibleParticipantCount} · 대기 {waitTimeFlexibleParticipantCount}
                   </strong>
                 </span>
+                {meetingUsesClubQuality ? (
+                  <>
+                    <span>
+                      워밍업 <strong>{meetingV2Metrics.warmupMatches}경기</strong>
+                    </span>
+                    <span className={
+                      meetingV2Metrics.participantsBelowTightMinimum > 0
+                        ? 'wait-warning'
+                        : ''
+                    }>
+                      타이트 2회 미달 <strong>
+                        {meetingV2Metrics.participantsBelowTightMinimum}명
+                      </strong>
+                    </span>
+                    <span>
+                      타이트 3회 <strong>
+                        {meetingV2Metrics.participantsAtTightTarget}/
+                        {scheduledActiveMembers.length}명
+                      </strong>
+                    </span>
+                  </>
+                ) : null}
                 <span>총 <strong>{totalMatches}경기</strong></span>
               </div>
             ) : null}
@@ -5762,46 +5692,6 @@ function App() {
               </div>
             ) : null}
           </div>
-        </div>
-      ) : null}
-
-      {shuffleDirectionOpen ? (
-        <div
-          className="dialog-backdrop"
-          onClick={() => setShuffleDirectionOpen(false)}
-        >
-          <section
-            className="info-dialog shuffle-direction-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="shuffle-direction-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="dialog-heading">
-              <div>
-                <h2 id="shuffle-direction-title">어떻게 섞을까요?</h2>
-                <span>선택한 방향을 더 강하게 반영해 재생성합니다.</span>
-              </div>
-              <button type="button" onClick={() => setShuffleDirectionOpen(false)}>
-                닫기
-              </button>
-            </div>
-            <div className="shuffle-direction-list">
-              {meetingShuffleDirections.map((direction) => (
-                <button
-                  type="button"
-                  key={direction.key}
-                  onClick={() => reshuffle(direction.key)}
-                >
-                  <strong>{direction.label}</strong>
-                  <span>{direction.description}</span>
-                </button>
-              ))}
-            </div>
-            <p className="shuffle-direction-note">
-              경기 수·코트 충돌 기준은 유지하고, 대기시간은 다시 계산합니다.
-            </p>
-          </section>
         </div>
       ) : null}
 
@@ -6085,11 +5975,11 @@ function App() {
                   title={
                     totalMatches === 0
                       ? '먼저 기본 대진을 생성해 주세요.'
-                      : '원하는 방향으로 대진 다시 섞기'
+                      : '같은 운영 기준으로 새 대진 생성'
                   }
-                  onClick={() => setShuffleDirectionOpen(true)}
+                  onClick={regenerateReviewedMeeting}
                 >
-                  섞기
+                  다시 생성
                 </button>
                 <button type="button" onClick={handleCopyShareLink}>
                   공유
@@ -6832,115 +6722,27 @@ function App() {
 
             {conditionsOpen ? (
               <div className="match-condition-panel">
-                <div className="meeting-phase-editor">
-                  <div className="meeting-phase-heading">
-                    <strong>경기 흐름</strong>
-                    <span>소프트 조건 · 안전·품질 기준 우선</span>
-                  </div>
-                  <div className="meeting-phase-labels" aria-hidden="true">
-                    <div>
-                      <strong>초반</strong>
-                      <span>레벨 혼합 워밍업</span>
-                    </div>
-                    <div>
-                      <strong>중반</strong>
-                      <span>실력·성별·연령 우선</span>
-                    </div>
-                    <div>
-                      <strong>종반</strong>
-                      <span>균등 기회 우선</span>
-                    </div>
-                  </div>
-                  <div
-                    className="meeting-phase-range"
-                    style={{
-                      '--early-phase-end': `${settings.earlyPhaseEndPercent}%`,
-                      '--middle-phase-end': `${settings.middlePhaseEndPercent}%`,
-                    } as CSSProperties}
-                  >
-                    <div className="meeting-phase-track" aria-hidden="true" />
-                    <input
-                      type="range"
-                      min={MIN_MEETING_PHASE_PERCENT}
-                      max={settings.middlePhaseEndPercent - MIN_MEETING_PHASE_PERCENT}
-                      step={MEETING_PHASE_STEP}
-                      value={settings.earlyPhaseEndPercent}
-                      aria-label="초반 종료 지점"
-                      aria-valuetext={`전체 시간의 ${settings.earlyPhaseEndPercent}%`}
-                      onChange={(event) =>
-                        updateMeetingPhaseBoundary('early', Number(event.target.value))
-                      }
-                    />
-                    <input
-                      type="range"
-                      min={settings.earlyPhaseEndPercent + MIN_MEETING_PHASE_PERCENT}
-                      max={100 - MIN_MEETING_PHASE_PERCENT}
-                      step={MEETING_PHASE_STEP}
-                      value={settings.middlePhaseEndPercent}
-                      aria-label="중반 종료 지점"
-                      aria-valuetext={`전체 시간의 ${settings.middlePhaseEndPercent}%`}
-                      onChange={(event) =>
-                        updateMeetingPhaseBoundary('middle', Number(event.target.value))
-                      }
-                    />
-                  </div>
-                  <div className="meeting-phase-values" aria-live="polite">
-                    <span>초반 {settings.earlyPhaseEndPercent}%</span>
-                    <span>
-                      중반 {settings.middlePhaseEndPercent - settings.earlyPhaseEndPercent}%
-                    </span>
-                    <span>종반 {100 - settings.middlePhaseEndPercent}%</span>
-                  </div>
-                </div>
                 <div className="fixed-condition-summary">
-                  <strong>항상 지키는 필수 조건</strong>
+                  <strong>자동 운영 기준</strong>
                   <span>
-                    {fixedMatchConditionKeys
-                      .map((key) => matchConditionLabels[key])
-                      .join(' · ')}
+                    첫 경기 워밍업 · 이후 유사 실력과 동일 성별 우선
                   </span>
                 </div>
-                {matchConditionSections.map((section) => (
-                  <section className="condition-section" key={section.title}>
-                    <div className="condition-section-heading">
-                      <strong>{section.title}</strong>
-                      <span>{section.description}</span>
-                    </div>
-                    <div className="condition-grid">
-                      {section.keys.map((key) => (
-                        <label className="condition-row" key={key}>
-                          <input
-                            type="checkbox"
-                            disabled={
-                              (key === 'levelBalance' && Boolean(
-                                settings.conditionOptions?.strictSkillLimit,
-                              )) ||
-                              (key === 'ageBalance' && !hasComparableAgeData) ||
-                              (key === 'specialPriority' && !(
-                                settings.conditionOptions?.specialMatchCreation ??
-                                defaultMatchConditionOptions.specialMatchCreation
-                              )) ||
-                              (key === 'guestPartnerRepeat' && !(
-                                settings.conditionOptions?.specialMatchCreation ??
-                                defaultMatchConditionOptions.specialMatchCreation
-                              ))
-                            }
-                            checked={
-                              settings.conditionOptions?.[key] ??
-                              defaultMatchConditionOptions[key]
-                            }
-                            onChange={(event) =>
-                              updateMatchCondition(key, event.target.checked)
-                            }
-                          />
-                          {key === 'ageBalance' && !hasComparableAgeData
-                            ? '연령대 균형 (연령 정보 없음)'
-                            : matchConditionLabels[key]}
-                        </label>
-                      ))}
-                    </div>
-                  </section>
-                ))}
+                <div className="condition-grid automatic-condition-grid">
+                  <div className="condition-row">첫 경기 최단 배치</div>
+                  <div className="condition-row">최장 대기 25분 우선</div>
+                  <div className="condition-row">타이트 경기 최소 2회</div>
+                  <div className="condition-row">타이트 경기 3회 목표</div>
+                  <div className="condition-row">남복·여복 우선</div>
+                  <div className="condition-row">혼복은 남2·여2</div>
+                  <div className="condition-row">경기 수 차이 1 이하</div>
+                  <div className="condition-row">같은 4인 최대 2회</div>
+                </div>
+                {activeGuests.length > 0 ? (
+                  <small className="automatic-condition-note">
+                    스페셜 참가자는 위 설정의 스페셜 운영 기준을 함께 적용합니다.
+                  </small>
+                ) : null}
               </div>
             ) : null}
 

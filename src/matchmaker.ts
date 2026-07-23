@@ -32,6 +32,11 @@ import type {
   WaitLimitParticipantViolation,
 } from './types'
 import { defaultLevelTiers, defaultMatchConditionOptions } from './defaultData'
+import {
+  isPreferredPartnerPair,
+  preferredPartnerBonusStage,
+  preferredPartnerStrength,
+} from './preferredPartners'
 import { getBookingDurationMinutes, getBookingRoundCount } from './scheduleTime'
 import { generateMeetingScheduleV2WithWaitResolution } from './matchmaker/engine'
 
@@ -110,7 +115,6 @@ const STRICT_WARMUP_PARTNER_DIVERSITY_WEIGHT = 150
 const SPECIAL_GENERAL_GAME_OFFSET = 1
 const PREFERRED_PARTNER_FIRST_GAME_BONUS = 60000
 const PREFERRED_PARTNER_SECOND_GAME_BONUS = 10000
-const MAX_PREFERRED_PARTNER_GAMES = 2
 const GAME_SLOT_MINUTES = 15
 
 const replaceMatchPlayer = (match: Match, outgoingId: string, incoming: Player): Match => ({
@@ -678,10 +682,11 @@ export const analyzeScheduleQuality = (
     .filter((gaps) => gaps.length > 0)
     .map((gaps) => gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length)
   const partnerCounts = countValues(
-    matches.flatMap((match) => [
-      [match.teamA[0].id, match.teamA[1].id].sort().join('__'),
-      [match.teamB[0].id, match.teamB[1].id].sort().join('__'),
-    ]),
+    matches.flatMap((match) =>
+      [match.teamA, match.teamB]
+        .filter((team) => !isPreferredPartnerPair(team[0], team[1]))
+        .map((team) => [team[0].id, team[1].id].sort().join('__')),
+    ),
   )
   const opponentCounts = countValues(
     matches.flatMap((match) =>
@@ -1233,20 +1238,16 @@ const matchConditions = (settings: MatchSettings): MatchConditionOptions => {
 
 const pairKey = (a: string, b: string) => [a, b].sort().join('__')
 
-const preferredPartnerStrength = (left: Player, right: Player) =>
-  Number((left.preferredPartnerIds ?? []).includes(right.id)) +
-  Number((right.preferredPartnerIds ?? []).includes(left.id))
-
 const preferredPartnerBonus = (
   team: Team,
   history: HistoryState,
 ) => {
   const [left, right] = team
   const strength = preferredPartnerStrength(left, right)
-  if (strength === 0) return 0
   const previousGames = history.partners[pairKey(left.id, right.id)] ?? 0
-  if (previousGames >= MAX_PREFERRED_PARTNER_GAMES) return 0
-  const baseBonus = previousGames === 0
+  const stage = preferredPartnerBonusStage(left, right, previousGames)
+  if (stage === 'none' || strength === 0) return 0
+  const baseBonus = stage === 'first'
     ? PREFERRED_PARTNER_FIRST_GAME_BONUS
     : PREFERRED_PARTNER_SECOND_GAME_BONUS
   return baseBonus * (strength === 2 ? 1.25 : 1)
@@ -2152,8 +2153,10 @@ const guestRepeatPartnerPenalty = (team: Team, history: HistoryState) => {
       regulars.reduce(
         (regularSum, regular) =>
           regularSum +
-          (history.partners[pairKey(guest.id, regular.id)] ?? 0) *
-            GUEST_REPEAT_PARTNER_PENALTY,
+          (isPreferredPartnerPair(guest, regular)
+            ? 0
+            : history.partners[pairKey(guest.id, regular.id)] ?? 0) *
+              GUEST_REPEAT_PARTNER_PENALTY,
         0,
       ),
     0,
@@ -2180,7 +2183,9 @@ const scorePairing = (
     ? phaseWeights.middleIntensity * 12
     : phaseWeights.composition
   const regularPartnerRepeatPenalty = (team: Team) =>
-    conditions.strictSkillLimit
+    isPreferredPartnerPair(team[0], team[1])
+      ? 0
+      : conditions.strictSkillLimit
       ? (history.partners[pairKey(team[0].id, team[1].id)] ?? 0) * 16
       : team.every((player) => !player.isGuest)
         ? (history.partners[pairKey(team[0].id, team[1].id)] ?? 0) *
@@ -2349,7 +2354,9 @@ const bestSingleGuestPairing = (
       playerScore: getPlayerMatchScore(player),
       score:
         (conditions.guestPartnerRepeat
-          ? (history.partners[pairKey(guest.id, player.id)] ?? 0) *
+          ? (isPreferredPartnerPair(guest, player)
+              ? 0
+              : history.partners[pairKey(guest.id, player.id)] ?? 0) *
             GUEST_REPEAT_PARTNER_PENALTY
           : 0) +
         (conditions.partnerRepeat
@@ -3586,10 +3593,16 @@ const pickGeneralGroup = (
       ),
     ])
       .filter(
-        (player) =>
-          player.id !== anchor.id &&
-          (history.partners[pairKey(anchor.id, player.id)] ?? 0) <
-            MAX_PREFERRED_PARTNER_GAMES,
+        (player) => {
+          if (player.id === anchor.id) return false
+          const previousGames =
+            history.partners[pairKey(anchor.id, player.id)] ?? 0
+          return preferredPartnerBonusStage(
+            anchor,
+            player,
+            previousGames,
+          ) !== 'none'
+        },
       )
       .slice(0, 6)
     const openBridgeCompanions = isOpenLevel(anchor)
@@ -6071,10 +6084,10 @@ const matchGroupAssignmentKeys = (match: Match) => [
   matchPlayers(match).map((player) => player.id).sort().join('__'),
 ]
 
-const matchPartnerAssignmentKeys = (match: Match) => [
-  match.teamA.map((player) => player.id).sort().join('__'),
-  match.teamB.map((player) => player.id).sort().join('__'),
-]
+const matchPartnerAssignmentKeys = (match: Match) =>
+  [match.teamA, match.teamB]
+    .filter((team) => !isPreferredPartnerPair(team[0], team[1]))
+    .map((team) => team.map((player) => player.id).sort().join('__'))
 
 const matchOpponentAssignmentKeys = (match: Match) =>
   match.teamA.flatMap((left) =>

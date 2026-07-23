@@ -2,6 +2,26 @@ import type { Player } from './types'
 
 export const MAX_PREFERRED_PARTNERS = 3
 
+export const preferredPartnerStrength = (left: Player, right: Player) =>
+  Number((left.preferredPartnerIds ?? []).includes(right.id)) +
+  Number((right.preferredPartnerIds ?? []).includes(left.id))
+
+export const isPreferredPartnerPair = (left: Player, right: Player) =>
+  preferredPartnerStrength(left, right) > 0
+
+export type PreferredPartnerBonusStage = 'first' | 'second' | 'none'
+
+export const preferredPartnerBonusStage = (
+  left: Player,
+  right: Player,
+  previousGames: number,
+): PreferredPartnerBonusStage => {
+  if (!isPreferredPartnerPair(left, right)) return 'none'
+  if (previousGames <= 0) return 'first'
+  if (previousGames === 1) return 'second'
+  return 'none'
+}
+
 export type PreferredPartnerResolution = {
   ids: string[]
   error: string | null

@@ -8,9 +8,15 @@ import type {
   Team,
 } from '../types'
 import {
+  isPreferredPartnerPair,
+  preferredPartnerBonusStage,
+  preferredPartnerStrength,
+} from '../preferredPartners'
+import {
   MEETING_MAX_WAIT_MINUTES,
   MEETING_SKILL_CAUTION_GAP,
   MEETING_SKILL_DANGER_GAP,
+  MEETING_TIGHT_GAME_MINIMUM,
   SPECIAL_GAME_MINUTES,
   meetingSchedulingMinutes,
   plannedGuestGames,
@@ -43,7 +49,9 @@ type SpecialReservation = PlannedMeetingSlot & {
 }
 
 type EngineState = {
+  clubQualityEnabled: boolean
   games: Map<string, number>
+  tightGames: Map<string, number>
   generalGames: Map<string, number>
   specialGames: Map<string, number>
   guestGames: Map<string, number>
@@ -56,6 +64,8 @@ type EngineState = {
   specialParticipantIds: Set<string>
   plannedSpecialStarts: Map<string, number[]>
   remainingPlannedSpecials: Map<string, number>
+  initialSpecialReservedIds: Set<string>
+  initialSpecialFillerIds: Set<string>
   playOpportunityStarts: Map<string, number[]>
   maximumStandardGames: number | null
   strictCautionMatches: number
@@ -76,6 +86,9 @@ type GroupCandidate = {
   pairing: PairingChoice
   score: number[]
   skillGap: number
+  isWarmup: boolean
+  isTight: boolean
+  genderTier: 0 | 1 | 2
 }
 
 type BatchSelection = {
@@ -267,8 +280,7 @@ export const planMeetingSlotsV2 = (
   const activePlayers = players.filter((player) => player.active)
   const activeGuests = activePlayers.filter((player) => player.isGuest)
   const schedulingMinutes = meetingSchedulingMinutes(settings)
-  const specialEnabled =
-    settings.conditionOptions.specialMatchCreation && activeGuests.length > 0
+  const specialEnabled = activeGuests.length > 0
   const totalSpecialGames = specialEnabled
     ? activeGuests.reduce(
         (sum, guest) => sum + plannedGuestGames(guest, activePlayers, settings),
@@ -331,9 +343,7 @@ export const planMeetingSlotsV2 = (
   return slots.sort(
     (left, right) =>
       left.start - right.start ||
-      (settings.conditionOptions.specialPriority
-        ? Number(right.kind === 'special') - Number(left.kind === 'special')
-        : Number(left.kind === 'special') - Number(right.kind === 'special')) ||
+      Number(right.kind === 'special') - Number(left.kind === 'special') ||
       left.court - right.court,
   )
 }
@@ -384,8 +394,34 @@ const initializeState = (
       sum + (slot.kind === 'general' ? 4 : slot.plannedPlayerIds?.length ?? 0),
     0,
   )
+  const firstFollowupSpecial = plannedSlots
+    .filter((slot) => slot.kind === 'special' && slot.start > 0)
+    .sort((left, right) => left.start - right.start)[0]
+  const followupPlannedIds = firstFollowupSpecial?.plannedPlayerIds ?? []
+  const regularCount = activePlayers.filter((player) => !player.isGuest).length
+  const regularCapacityBeforeFollowup = firstFollowupSpecial
+    ? plannedSlots
+        .filter((slot) => slot.start < firstFollowupSpecial.start)
+        .reduce(
+          (sum, slot) =>
+            sum + (
+              slot.kind === 'general'
+                ? 4
+                : slot.plannedPlayerIds?.length ?? 0
+            ),
+          0,
+        )
+    : regularCount
+  const requiredFollowupFirstGames = Math.min(
+    followupPlannedIds.length,
+    Math.max(0, regularCount - regularCapacityBeforeFollowup),
+  )
   return {
+    clubQualityEnabled:
+      activePlayers.filter((player) => !player.isGuest).length <= 35 &&
+      !activePlayers.some((player) => player.isGuest),
     games: new Map(activePlayers.map((player) => [player.id, 0])),
+    tightGames: new Map(activePlayers.map((player) => [player.id, 0])),
     generalGames: new Map(activePlayers.map((player) => [player.id, 0])),
     specialGames: new Map(activePlayers.map((player) => [player.id, 0])),
     guestGames: new Map(
@@ -406,6 +442,12 @@ const initializeState = (
         playerId,
         starts.length,
       ]),
+    ),
+    initialSpecialReservedIds: new Set(
+      followupPlannedIds.slice(0, requiredFollowupFirstGames),
+    ),
+    initialSpecialFillerIds: new Set(
+      followupPlannedIds.slice(requiredFollowupFirstGames),
     ),
     playOpportunityStarts,
     maximumStandardGames: standardPlayerCount > 0
@@ -472,14 +514,47 @@ const teamOptions = (
   [[players[0], players[3]], [players[1], players[2]]],
 ]
 
-const preferredPartnerCount = (teamA: Team, teamB: Team) =>
-  [teamA, teamB].reduce((count, team) => {
+const preferredPartnerPriority = (
+  teamA: Team,
+  teamB: Team,
+  state: EngineState,
+) =>
+  [teamA, teamB].reduce((priority, team) => {
     const [left, right] = team
-    return count + Number(
-      (left.preferredPartnerIds ?? []).includes(right.id) ||
-      (right.preferredPartnerIds ?? []).includes(left.id),
-    )
+    const strength = preferredPartnerStrength(left, right)
+    if (strength === 0) return priority
+    const previousGames = state.partners.get(pairKey(left.id, right.id)) ?? 0
+    const stage = preferredPartnerBonusStage(left, right, previousGames)
+    if (stage === 'none') return priority
+    const basePriority = stage === 'first' ? 2 : 1
+    return priority + basePriority * (strength === 2 ? 1.25 : 1)
   }, 0)
+
+const teamIsMixed = (team: Team) =>
+  team.some((player) => player.gender === 'male') &&
+  team.some((player) => player.gender === 'female')
+
+const genderTierForPairing = (
+  players: Player[],
+  teamA: Team,
+  teamB: Team,
+): 0 | 1 | 2 => {
+  const regulars = players.filter((player) => !player.isGuest)
+  if (regulars.some((player) => player.gender === 'none')) return 1
+  const men = regulars.filter((player) => player.gender === 'male').length
+  const women = regulars.filter((player) => player.gender === 'female').length
+  if (men === 0 || women === 0) return 0
+  if (
+    regulars.length === 4 &&
+    men === 2 &&
+    women === 2 &&
+    teamIsMixed(teamA) &&
+    teamIsMixed(teamB)
+  ) {
+    return 1
+  }
+  return 2
+}
 
 const pickPairing = (
   players: [Player, Player, Player, Player],
@@ -490,8 +565,12 @@ const pickPairing = (
 ): PairingChoice => {
   const options = teamOptions(players).map(([teamA, teamB]) => {
     const partnerRepeats =
-      (state.partners.get(pairKey(teamA[0].id, teamA[1].id)) ?? 0) +
-      (state.partners.get(pairKey(teamB[0].id, teamB[1].id)) ?? 0)
+      (isPreferredPartnerPair(teamA[0], teamA[1])
+        ? 0
+        : state.partners.get(pairKey(teamA[0].id, teamA[1].id)) ?? 0) +
+      (isPreferredPartnerPair(teamB[0], teamB[1])
+        ? 0
+        : state.partners.get(pairKey(teamB[0].id, teamB[1].id)) ?? 0)
     const opponentRepeats = teamA.reduce(
       (sum, left) =>
         sum + teamB.reduce(
@@ -502,25 +581,32 @@ const pickPairing = (
       0,
     )
     const guestPartnerRepeats = [teamA, teamB].reduce((sum, team) => {
-      if (!team.some((player) => player.isGuest)) return sum
+      if (
+        !team.some((player) => player.isGuest) ||
+        isPreferredPartnerPair(team[0], team[1])
+      ) {
+        return sum
+      }
       return sum + (state.partners.get(pairKey(team[0].id, team[1].id)) ?? 0)
     }, 0)
     const teamSkillGap = adaptiveTeamGap(teamA, teamB, settings)
     const fixedSpread = fixedSkillSpread(players, settings)
-    const preferredPartners = preferredPartnerCount(teamA, teamB)
+    const preferredPartners = preferredPartnerPriority(teamA, teamB, state)
+    const genderTier = genderTierForPairing(players, teamA, teamB)
     const score = isSpecial
       ? [
           profile.conditions.guestPartnerRepeat ? guestPartnerRepeats : 0,
           teamSkillGap,
+          -preferredPartners,
           profile.conditions.partnerRepeat ? partnerRepeats : 0,
           profile.conditions.opponentRepeat ? opponentRepeats : 0,
-          -preferredPartners,
         ]
       : [
+          state.clubQualityEnabled ? genderTier : 0,
           profile.conditions.levelBalance ? teamSkillGap : 0,
+          -preferredPartners,
           profile.conditions.partnerRepeat ? partnerRepeats : 0,
           profile.conditions.opponentRepeat ? opponentRepeats : 0,
-          -preferredPartners,
         ]
     return {
       teamA,
@@ -544,6 +630,29 @@ const playerWait = (player: Player, state: EngineState, start: number) => {
   const lastEnd = state.lastEnd.get(player.id)
   return Math.max(0, start - (lastEnd ?? 0))
 }
+
+const hasImminentFirstSpecial = (
+  player: Player,
+  state: EngineState,
+  slot: PlannedMeetingSlot,
+) =>
+  slot.kind === 'general' &&
+  (state.games.get(player.id) ?? 0) === 0 &&
+  state.initialSpecialReservedIds.has(player.id) &&
+  (state.plannedSpecialStarts.get(player.id) ?? []).some(
+    (start) =>
+      start >= slot.start + slot.duration &&
+      start <= MEETING_MAX_WAIT_MINUTES,
+  )
+
+const isInitialSpecialFiller = (
+  player: Player,
+  state: EngineState,
+  slot: PlannedMeetingSlot,
+) =>
+  slot.kind === 'general' &&
+  (state.games.get(player.id) ?? 0) === 0 &&
+  state.initialSpecialFillerIds.has(player.id)
 
 const projectedGameCount = (player: Player, state: EngineState) =>
   (state.games.get(player.id) ?? 0) +
@@ -579,14 +688,18 @@ const requiredPlayerIdsForBatch = (
 
 const slotPriorityOrder = (
   profile: MeetingRuleProfile,
+  state: EngineState,
   slot: PlannedMeetingSlot,
   settings: MatchSettings,
 ): MeetingPreferenceKey[] => {
-  if (settings.shuffleDirection !== 'balanced') return profile.priorityOrder
+  if (
+    state.clubQualityEnabled ||
+    settings.shuffleDirection !== 'balanced'
+  ) {
+    return profile.priorityOrder
+  }
   const progress = slot.start / Math.max(1, meetingSchedulingMinutes(settings))
-  const earlyEnd = settings.earlyPhaseEndPercent / 100
-  const middleEnd = settings.middlePhaseEndPercent / 100
-  if (progress < earlyEnd) {
+  if (progress < settings.earlyPhaseEndPercent / 100) {
     return [
       'games',
       'wait',
@@ -600,7 +713,7 @@ const slotPriorityOrder = (
       'rest',
     ]
   }
-  if (progress < middleEnd) {
+  if (progress < settings.middlePhaseEndPercent / 100) {
     return [
       'games',
       'wait',
@@ -652,7 +765,18 @@ const individualPriority = (
   }
   return [
     -Number(requiredIds.has(player.id)),
-    ...slotPriorityOrder(profile, slot, settings).map((key) => categories[key]),
+    Number((state.games.get(player.id) ?? 0) > 0),
+    -Number(isInitialSpecialFiller(player, state, slot)),
+    Number(hasImminentFirstSpecial(player, state, slot)),
+    state.clubQualityEnabled
+      ? Math.min(2, state.tightGames.get(player.id) ?? 0)
+      : 0,
+    state.clubQualityEnabled
+      ? Math.min(3, state.tightGames.get(player.id) ?? 0)
+      : 0,
+    ...slotPriorityOrder(profile, state, slot, settings).map(
+      (key) => categories[key],
+    ),
     stableNoise(settings.seed, `${slot.id}:${player.id}`),
   ]
 }
@@ -727,7 +851,11 @@ const candidatePool = (
       (player.preferredPartnerIds ?? []).includes(anchor.id),
     ),
   ])
+  const unplayed = ranked.filter(
+    (player) => (state.games.get(player.id) ?? 0) === 0,
+  )
   return uniquePlayers([
+    ...unplayed.slice(0, MAX_PLAYER_POOL),
     ...ranked.slice(0, 10),
     ...complements,
   ])
@@ -853,7 +981,7 @@ const attachSpecialParticipantPlans = (
               (sum, player) => sum + (plannedCounts.get(player.id) ?? 0),
               0,
             ),
-            settings.conditionOptions.genderBalance ? genderPenalty(regulars) : 0,
+            genderPenalty(regulars),
             directionalScore,
             Math.max(...scores) - Math.min(...scores),
             ages.length > 1 ? Math.max(...ages) - Math.min(...ages) : 0,
@@ -995,10 +1123,53 @@ const scoreCandidate = (
           newSpecialParticipants,
       )
     : 0
+  const imminentFirstSpecialPenalty = slot.kind === 'general'
+    ? players.filter((player) =>
+        hasImminentFirstSpecial(player, state, slot),
+      ).length
+    : 0
+  const initialSpecialFillerReward = slot.kind === 'general'
+    ? -players.filter((player) =>
+        isInitialSpecialFiller(player, state, slot),
+      ).length
+    : 0
   const generalSkillGap = Math.max(
     pairing.teamSkillGap,
     pairing.fixedSkillSpread,
   )
+  const isWarmup =
+    slot.kind === 'general' &&
+    players.some((player) => (state.games.get(player.id) ?? 0) === 0)
+  const genderTier = genderTierForPairing(
+    players,
+    pairing.teamA,
+    pairing.teamB,
+  )
+  const isTight =
+    state.clubQualityEnabled &&
+    slot.kind === 'general' &&
+    !isWarmup &&
+    generalSkillGap < MEETING_SKILL_CAUTION_GAP &&
+    genderTier < 2
+  const unplayedRegularsRemain = activePlayers.some(
+    (player) =>
+      !player.isGuest && (state.games.get(player.id) ?? 0) === 0,
+  )
+  const warmupFillerPenalty =
+    slot.kind === 'general' && unplayedRegularsRemain
+      ? players.filter(
+          (player) => (state.games.get(player.id) ?? 0) > 0,
+        ).length
+      : 0
+  const tightCounts = players
+    .filter((player) => !player.isGuest)
+    .map((player) => state.tightGames.get(player.id) ?? 0)
+  const tightMinimumPriority =
+    Math.max(0, ...tightCounts.map((count) => Math.min(2, count))) * 100 +
+    tightCounts.reduce((sum, count) => sum + Math.min(2, count), 0)
+  const tightTargetPriority =
+    Math.max(0, ...tightCounts.map((count) => Math.min(3, count))) * 100 +
+    tightCounts.reduce((sum, count) => sum + Math.min(3, count), 0)
   const skillSafetyTier = slot.kind === 'special' || !profile.conditions.levelBalance
     ? 0
     : generalSkillGap > MEETING_SKILL_DANGER_GAP
@@ -1035,11 +1206,25 @@ const scoreCandidate = (
   return [
     0,
     coveragePenalty,
+    initialSpecialFillerReward,
+    imminentFirstSpecialPenalty,
+    warmupFillerPenalty,
     waitDeadlinePriority,
+    Number(
+      state.clubQualityEnabled &&
+      slot.kind === 'general' &&
+      !isWarmup &&
+      !isTight,
+    ),
+    tightMinimumPriority,
+    tightTargetPriority,
     categories.games,
+    state.clubQualityEnabled && slot.kind === 'general' && !isWarmup
+      ? genderTier
+      : 0,
     skillDangerTier,
     skillCautionTier,
-    ...slotPriorityOrder(profile, slot, settings).map((key) => {
+    ...slotPriorityOrder(profile, state, slot, settings).map((key) => {
       if (key === 'skill' && !profile.conditions.levelBalance) return 0
       if (key === 'groupRepeat' && !profile.conditions.groupRepeat) return 0
       if (key === 'partnerRepeat' && !profile.conditions.partnerRepeat) return 0
@@ -1062,6 +1247,7 @@ const hardCandidateAllowed = (
   state: EngineState,
   profile: MeetingRuleProfile,
   isSpecial: boolean,
+  isWarmup: boolean,
   allowDanger: boolean,
 ) => {
   const maximumStandardGames = state.maximumStandardGames
@@ -1092,7 +1278,7 @@ const hardCandidateAllowed = (
   ) {
     return false
   }
-  if (profile.hard.strictSkillLimit && !isSpecial) {
+  if (profile.hard.strictSkillLimit && !isSpecial && !isWarmup) {
     const skillGap = Math.max(pairing.teamSkillGap, pairing.fixedSkillSpread)
     if (skillGap > MEETING_SKILL_DANGER_GAP) return false
     if (
@@ -1106,6 +1292,7 @@ const hardCandidateAllowed = (
     !allowDanger &&
     !isSpecial &&
     profile.conditions.levelBalance &&
+    !isWarmup &&
     Math.max(pairing.teamSkillGap, pairing.fixedSkillSpread) >
       MEETING_SKILL_DANGER_GAP
   ) {
@@ -1130,6 +1317,9 @@ const makeCandidate = (
     profile,
     slot.kind === 'special',
   )
+  const isWarmup =
+    slot.kind === 'general' &&
+    players.some((player) => (state.games.get(player.id) ?? 0) === 0)
   if (
     !hardCandidateAllowed(
       players,
@@ -1137,6 +1327,7 @@ const makeCandidate = (
       state,
       profile,
       slot.kind === 'special',
+      isWarmup,
       allowDanger,
     )
   ) {
@@ -1145,6 +1336,17 @@ const makeCandidate = (
   const skillGap = slot.kind === 'special'
     ? 0
     : Math.max(pairing.teamSkillGap, pairing.fixedSkillSpread)
+  const genderTier = genderTierForPairing(
+    players,
+    pairing.teamA,
+    pairing.teamB,
+  )
+  const isTight =
+    state.clubQualityEnabled &&
+    slot.kind === 'general' &&
+    !isWarmup &&
+    skillGap < MEETING_SKILL_CAUTION_GAP &&
+    genderTier < 2
   return {
     players,
     pairing,
@@ -1158,6 +1360,9 @@ const makeCandidate = (
       activePlayers,
     ),
     skillGap,
+    isWarmup,
+    isTight,
+    genderTier,
   } satisfies GroupCandidate
 }
 
@@ -1185,7 +1390,13 @@ const limitCandidateFrontier = (
       : candidate.skillGap >= MEETING_SKILL_CAUTION_GAP
         ? 1
         : 0
-    const key = `${coveredRequiredIds}:${skillTier}`
+    const key = [
+      coveredRequiredIds,
+      skillTier,
+      Number(candidate.isWarmup),
+      Number(candidate.isTight),
+      candidate.genderTier,
+    ].join(':')
     if (!representatives.has(key)) representatives.set(key, candidate)
   }
   return [...new Map(
@@ -1305,8 +1516,14 @@ const generalCandidates = (
       }
     }
   }
-  const preferredCandidates =
-    safeCandidates.length > 0 ? safeCandidates : fallbackCandidates
+  const hasUnplayedRegulars = regulars.some(
+    (player) => (state.games.get(player.id) ?? 0) === 0,
+  )
+  const preferredCandidates = hasUnplayedRegulars
+    ? [...safeCandidates, ...fallbackCandidates]
+    : safeCandidates.length > 0
+      ? safeCandidates
+      : fallbackCandidates
   const safelyCoveredRequiredIds = new Set(
     safeCandidates.flatMap((candidate) =>
       candidate.players
@@ -1400,6 +1617,10 @@ const specialCandidates = (
   if (candidates.length < 3) return []
 
   const ranked = [...candidates].sort((left, right) => {
+    const firstGameDifference =
+      Number((state.games.get(left.id) ?? 0) > 0) -
+      Number((state.games.get(right.id) ?? 0) > 0)
+    if (firstGameDifference !== 0) return firstGameDifference
     const leftCoverage = Number(
       !left.isGuest && !state.specialParticipantIds.has(left.id),
     )
@@ -1499,7 +1720,7 @@ const chooseBatch = (
     start,
     settings,
   )
-  const scoreLength = profile.priorityOrder.length + 7
+  const scoreLength = profile.priorityOrder.length + 14
   let beams: BatchBeam[] = [{
     selections: [],
     usedIds: new Set(),
@@ -1593,7 +1814,7 @@ const chooseBatch = (
 const updateState = (
   state: EngineState,
   match: Match,
-  skillGap: number,
+  candidate: GroupCandidate,
 ) => {
   const players = [...match.teamA, ...match.teamB]
   const start = match.startOffsetMinutes ?? 0
@@ -1608,6 +1829,9 @@ const updateState = (
   }
   for (const player of players) {
     increment(state.games, player.id)
+    if (candidate.isTight && !player.isGuest) {
+      increment(state.tightGames, player.id)
+    }
     if (match.isSpecial) {
       increment(state.specialGames, player.id)
       if (player.isGuest) increment(state.guestGames, player.id)
@@ -1628,7 +1852,7 @@ const updateState = (
     state.lastEnd.set(player.id, end)
     state.availableAt.set(player.id, end)
   }
-  if (!match.isSpecial && skillGap >= MEETING_SKILL_CAUTION_GAP) {
+  if (!match.isSpecial && candidate.skillGap >= MEETING_SKILL_CAUTION_GAP) {
     state.strictCautionMatches += 1
   }
 }
@@ -1711,6 +1935,11 @@ const repairStandardGameSpread = (
   )
   if (standardPlayers.length < 2) return schedule
   let repaired = schedule
+  const initialWaitLimit = analyzeMeetingScheduleV2(
+    schedule,
+    players,
+    settings,
+  ).maximumInitialWaitMinutes
   let allowSkillDangerIncrease = false
   let pass = 0
   const maximumPasses = Math.min(12, standardPlayers.length)
@@ -1805,17 +2034,9 @@ const repairStandardGameSpread = (
             continue
           }
           if (metrics.zeroGameStandardParticipants > 0) continue
+          if (metrics.maximumInitialWaitMinutes > initialWaitLimit) continue
           if (metrics.maximumWaitMinutes > MEETING_MAX_WAIT_MINUTES) continue
-          if (
-            settings.conditionOptions.groupRepeat &&
-            metrics.maximumGroupMeetings > 2
-          ) {
-            continue
-          }
-          if (
-            settings.conditionOptions.strictSkillLimit &&
-            (metrics.skillDangerMatches > 0 || metrics.skillCautionMatches > 5)
-          ) {
+          if (metrics.maximumGroupMeetings > 2) {
             continue
           }
           if (
@@ -1861,9 +2082,21 @@ const scheduleWarnings = (
   plannedSlots: PlannedMeetingSlot[],
 ) => {
   const warnings: string[] = []
-  const specialEnabled =
-    settings.conditionOptions.specialMatchCreation &&
-    activePlayers.some((player) => player.isGuest)
+  const regularCount = activePlayers.filter((player) => !player.isGuest).length
+  if (regularCount > 35) {
+    warnings.push('35명 초과 · 대규모 모임은 최선 배치로 생성했습니다.')
+  }
+  const specialEnabled = activePlayers.some((player) => player.isGuest)
+  if (!specialEnabled && regularCount <= 35) {
+    const earliestFirstStart =
+      (Math.ceil(regularCount / Math.max(4, settings.courtCount * 4)) - 1) *
+      settings.normalGameMinutes
+    if (earliestFirstStart > MEETING_MAX_WAIT_MINUTES) {
+      warnings.push(
+        `첫 경기 최단 예상 ${earliestFirstStart}분 · 12분 경기 권장`,
+      )
+    }
+  }
   if (specialEnabled) {
     const target = specialParticipantTarget(activePlayers, settings)
     const eligibleCount = activePlayers.filter(
@@ -1902,7 +2135,6 @@ const scheduleWarnings = (
     (sum, round) => sum + round.matches.length,
     0,
   )
-  const regularCount = activePlayers.filter((player) => !player.isGuest).length
   const uniqueFourPlayerGroups = regularCount < 4
     ? 0
     : regularCount * (regularCount - 1) * (regularCount - 2) *
@@ -1913,7 +2145,6 @@ const scheduleWarnings = (
   const maximumProtectedGeneralMatches =
     uniqueFourPlayerGroups * 2
   if (
-    settings.conditionOptions.groupRepeat &&
     scheduledMatchCount < plannedSlots.length &&
     plannedGeneralMatchCount > maximumProtectedGeneralMatches
   ) {
@@ -1988,7 +2219,7 @@ export const generateMeetingScheduleV2 = (
         startOffsetMinutes: slot.start,
         durationMinutes: slot.duration,
       }
-      updateState(state, match, candidate.skillGap)
+      updateState(state, match, candidate)
       return match
     })
     if (matches.length > 0) {
@@ -2012,6 +2243,37 @@ export const generateMeetingScheduleV2 = (
     activePlayers,
     effectiveSettings,
   )
+  const qualityMetrics = analyzeMeetingScheduleV2(
+    schedule,
+    activePlayers,
+    effectiveSettings,
+  )
+  const tightMinimumPendingNames = activePlayers
+    .filter(
+      (player) =>
+        !player.isGuest &&
+        !player.gameCountFlexible &&
+        (qualityMetrics.tightGameCounts[player.id] ?? 0) <
+          MEETING_TIGHT_GAME_MINIMUM,
+    )
+    .map((player) => player.name.trim() || player.id)
+  const clubQualityWarnings = state.clubQualityEnabled
+    ? [
+        ...qualityMetrics.qualityIssues.filter(
+          (issue) =>
+            !issue.startsWith(
+              `타이트 경기 ${MEETING_TIGHT_GAME_MINIMUM}회 미달`,
+            ),
+        ),
+        ...(tightMinimumPendingNames.length > 0
+          ? [
+              `타이트 경기 ${MEETING_TIGHT_GAME_MINIMUM}회 미달: ` +
+              `${tightMinimumPendingNames.join(', ')} · ` +
+              '유사 실력·성별 또는 운영 여건 확인',
+            ]
+          : []),
+      ]
+    : []
   schedule.warnings = [
     ...preflightIssues
       .filter((issue) =>
@@ -2026,6 +2288,7 @@ export const generateMeetingScheduleV2 = (
       effectiveSettings,
       slots,
     ),
+    ...clubQualityWarnings,
   ]
   return schedule
 }
@@ -2036,6 +2299,9 @@ const candidateScore = (candidate: GenerationCandidate) => [
   candidate.metrics.zeroGameStandardParticipants,
   candidate.metrics.standardGameSpread,
   candidate.metrics.maximumWaitMinutes,
+  candidate.metrics.participantsBelowTightMinimum,
+  -candidate.metrics.participantsAtTightTarget,
+  candidate.metrics.postWarmupGenderExceptionMatches,
   candidate.metrics.skillDangerMatches,
   candidate.metrics.skillCautionMatches,
   candidate.metrics.repeatedGroupAssignments,
@@ -2054,6 +2320,26 @@ const isSuccessfulCandidate = (candidate: GenerationCandidate) =>
     warning.startsWith('스페셜 경기 미배정:'),
   )
 
+const meetsClubQualityTarget = (
+  candidate: GenerationCandidate,
+  players: Player[],
+) => {
+  const activePlayers = players.filter((player) => player.active)
+  if (
+    activePlayers.some((player) => player.isGuest) ||
+    activePlayers.filter((player) => !player.isGuest).length > 35
+  ) {
+    return true
+  }
+  const standardPlayerCount = players.filter(
+    (player) =>
+      player.active && !player.isGuest && !player.gameCountFlexible,
+  ).length
+  return candidate.metrics.participantsBelowTightMinimum === 0 &&
+    candidate.metrics.participantsAtTightTarget >=
+      Math.ceil(standardPlayerCount * 0.8)
+}
+
 export const generateMeetingScheduleV2Optimized = (
   players: Player[],
   settings: MatchSettings,
@@ -2069,7 +2355,12 @@ export const generateMeetingScheduleV2Optimized = (
       index,
     }
     candidates.push(candidate)
-    if (isSuccessfulCandidate(candidate)) break
+    if (
+      isSuccessfulCandidate(candidate) &&
+      meetsClubQualityTarget(candidate, players)
+    ) {
+      break
+    }
   }
   return [...candidates].sort((left, right) =>
     compareNumberTuples(candidateScore(left), candidateScore(right)),

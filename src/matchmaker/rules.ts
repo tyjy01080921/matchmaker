@@ -12,6 +12,8 @@ export const MEETING_MAX_GROUP_MEETINGS = 2
 export const MEETING_SKILL_CAUTION_GAP = 30
 export const MEETING_SKILL_DANGER_GAP = 40
 export const MEETING_STRICT_CAUTION_LIMIT = 5
+export const MEETING_TIGHT_GAME_MINIMUM = 2
+export const MEETING_TIGHT_GAME_TARGET = 3
 export const SPECIAL_GAME_MINUTES = 15
 
 export type MeetingHardRules = {
@@ -120,9 +122,18 @@ export const resolveMeetingRuleProfile = (
     ...settings.conditionOptions,
     fairGames: true,
     waitPriority: true,
-    levelBalance:
-      settings.conditionOptions.levelBalance ||
-      settings.conditionOptions.strictSkillLimit,
+    levelBalance: true,
+    ageBalance: true,
+    genderBalance: true,
+    restBalance: true,
+    partnerRepeat: true,
+    opponentRepeat: true,
+    groupRepeat: true,
+    specialMatchCreation: true,
+    specialPriority: true,
+    guestPartnerRepeat: true,
+    femaleLevelFit: false,
+    strictSkillLimit: false,
   }
   return {
     conditions,
@@ -131,7 +142,7 @@ export const resolveMeetingRuleProfile = (
       maxGroupMeetings: conditions.groupRepeat
         ? MEETING_MAX_GROUP_MEETINGS
         : null,
-      strictSkillLimit: conditions.strictSkillLimit,
+      strictSkillLimit: false,
       maxStrictCautionMatches: MEETING_STRICT_CAUTION_LIMIT,
     },
     success: {
@@ -139,7 +150,7 @@ export const resolveMeetingRuleProfile = (
       maxStandardGameSpread: MEETING_MAX_STANDARD_GAME_SPREAD,
       maxWaitMinutes: MEETING_MAX_WAIT_MINUTES,
     },
-    priorityOrder: priorityOrder(settings.shuffleDirection ?? 'balanced'),
+    priorityOrder: priorityOrder('balanced'),
   }
 }
 
@@ -214,8 +225,7 @@ export const preflightMeetingGeneration = (
   const activePlayers = players.filter((player) => player.active)
   const activeRegulars = activePlayers.filter((player) => !player.isGuest)
   const activeGuests = activePlayers.filter((player) => player.isGuest)
-  const specialEnabled =
-    settings.conditionOptions.specialMatchCreation && activeGuests.length > 0
+  const specialEnabled = activeGuests.length > 0
   const issues: MeetingPreflightIssue[] = []
 
   if (activePlayers.length < 4) {

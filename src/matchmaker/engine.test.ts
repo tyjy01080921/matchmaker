@@ -49,6 +49,19 @@ const makePlayers = (
   })),
 ]
 
+const makeClubPlayers = (regularCount: number): Player[] =>
+  Array.from({ length: regularCount }, (_, index): Player => ({
+    id: `club-${index + 1}`,
+    name: `동호인 ${index + 1}`,
+    level: 'C',
+    ageGroup: '30대',
+    gender: index % 2 === 0 ? 'male' : 'female',
+    active: true,
+    specialRequired: false,
+    isGuest: false,
+    guestGameLimit: 0,
+  }))
+
 const largeSettings: MatchSettings = {
   ...defaultSettings,
   courtCount: 6,
@@ -82,15 +95,17 @@ describe('meeting V2 rules', () => {
     expect(profile.conditions.fairGames).toBe(true)
     expect(profile.conditions.waitPriority).toBe(true)
     expect(profile.conditions.levelBalance).toBe(true)
-    expect(profile.hard.strictSkillLimit).toBe(true)
+    expect(profile.conditions.genderBalance).toBe(true)
+    expect(profile.conditions.groupRepeat).toBe(true)
+    expect(profile.hard.strictSkillLimit).toBe(false)
     expect(profile.success).toMatchObject({
       requireEveryStandardPlayer: true,
       maxStandardGameSpread: 1,
       maxWaitMinutes: 25,
     })
     expect(profile.priorityOrder.slice(0, 3)).toEqual([
-      'wait',
       'games',
+      'wait',
       'skill',
     ])
   })
@@ -116,6 +131,184 @@ describe('meeting V2 slot planning', () => {
 })
 
 describe('meeting V2 generation', () => {
+  it.each([
+    { regularCount: 20, courtCount: 3 },
+    { regularCount: 30, courtCount: 4 },
+    { regularCount: 35, courtCount: 3 },
+  ])(
+    'automatically moves $regularCount players from warmup to tight matches on $courtCount courts',
+    ({ regularCount, courtCount }) => {
+      const players = makeClubPlayers(regularCount)
+      const settings: MatchSettings = {
+        ...defaultSettings,
+        courtCount,
+        startTime: '18:00',
+        endTime: '21:00',
+        normalGameMinutes: 12,
+        targetRoundCount: 15,
+        pacingRoundCount: 15,
+        roundCountLocked: true,
+        conditionOptions: {
+          ...defaultMatchConditionOptions,
+          specialMatchCreation: false,
+        },
+      }
+      const schedule = generateMeetingScheduleV2(players, settings)
+      const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+      const earliestCompleteStart =
+        (Math.ceil(regularCount / (courtCount * 4)) - 1) *
+        settings.normalGameMinutes
+
+      expect(metrics.structuralIssues).toEqual([])
+      expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(
+        earliestCompleteStart,
+      )
+      expect(metrics.participantsBelowTightMinimum).toBe(0)
+      expect(metrics.participantsAtTightTarget).toBeGreaterThanOrEqual(
+        Math.ceil(regularCount * 0.8),
+      )
+      expect(metrics.postWarmupGenderExceptionMatches).toBe(0)
+      expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
+    },
+    20000,
+  )
+
+  it('uses the first match as warmup even when strict skill limits are enabled', () => {
+    const players = [
+      ...makePlayers(2).map((player) => ({
+        ...player,
+        level: 'A' as const,
+        gender: 'male' as const,
+      })),
+      ...makePlayers(2).map((player, index) => ({
+        ...player,
+        id: `warmup-e-${index + 1}`,
+        level: 'E' as const,
+        gender: 'female' as const,
+      })),
+    ]
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 1,
+      startTime: '18:00',
+      endTime: '18:15',
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        strictSkillLimit: true,
+      },
+    }
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+
+    expect(schedule.rounds.flatMap((round) => round.matches)).toHaveLength(1)
+    expect(metrics.warmupMatches).toBe(1)
+    expect(metrics.tightMatches).toBe(0)
+  })
+
+  it('names a participant when two tight matches are impossible', () => {
+    const players = makeClubPlayers(20).map((player, index) => ({
+      ...player,
+      level: index === 0 ? ('A' as const) : ('C' as const),
+      matchLevelTier: index === 0 ? 1 : 6,
+    }))
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 3,
+      startTime: '18:00',
+      endTime: '21:00',
+      normalGameMinutes: 12,
+      targetRoundCount: 15,
+      pacingRoundCount: 15,
+      roundCountLocked: true,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        specialMatchCreation: false,
+      },
+    }
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+
+    expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(12)
+    expect(metrics.tightGameCounts[players[0].id]).toBeLessThan(2)
+    expect(schedule.warnings).toContain(
+      '타이트 경기 2회 미달: 동호인 1 · 유사 실력·성별 또는 운영 여건 확인',
+    )
+  }, 20000)
+
+  it('pairs balanced mixed matches as one man and one woman per team', () => {
+    const players = makeClubPlayers(4)
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 1,
+      startTime: '18:00',
+      endTime: '18:30',
+      normalGameMinutes: 15,
+      targetRoundCount: 2,
+      pacingRoundCount: 2,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        specialMatchCreation: false,
+      },
+    }
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const matches = schedule.rounds.flatMap((round) => round.matches)
+    const second = matches[1]
+    const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+
+    expect(second.teamA.map((player) => player.gender).sort()).toEqual([
+      'female',
+      'male',
+    ])
+    expect(second.teamB.map((player) => player.gender).sort()).toEqual([
+      'female',
+      'male',
+    ])
+    expect(metrics.postWarmupBalancedMixedMatches).toBe(1)
+    expect(metrics.postWarmupGenderExceptionMatches).toBe(0)
+  })
+
+  it('prioritizes two preferred pairings without counting their repetition', () => {
+    const players = makeClubPlayers(4).map((player) => ({ ...player }))
+    players[0].preferredPartnerIds = [players[1].id]
+    players[2].preferredPartnerIds = [players[3].id]
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 1,
+      startTime: '18:00',
+      endTime: '18:30',
+      normalGameMinutes: 15,
+      targetRoundCount: 2,
+      pacingRoundCount: 2,
+      roundCountLocked: true,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        specialMatchCreation: false,
+      },
+    }
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const matches = schedule.rounds.flatMap((round) => round.matches)
+    const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+
+    const usesBothPreferredTeams = (match: (typeof matches)[number]) =>
+      [match.teamA, match.teamB].every((team) =>
+        (
+          team.some((player) => player.id === players[0].id) &&
+          team.some((player) => player.id === players[1].id)
+        ) ||
+        (
+          team.some((player) => player.id === players[2].id) &&
+          team.some((player) => player.id === players[3].id)
+        ),
+      )
+
+    expect(matches).toHaveLength(2)
+    expect(matches.every(usesBothPreferredTeams)).toBe(true)
+    expect(metrics.maximumPartnerMeetings).toBe(0)
+    expect(metrics.repeatedPartnerAssignments).toBe(0)
+  })
+
   it('satisfies structural, fairness, and wait requirements for a normal meeting', () => {
     const players = makePlayers(16)
     const settings: MatchSettings = {
@@ -180,6 +373,7 @@ describe('meeting V2 generation', () => {
       courtCount: 4,
       startTime: '18:00',
       endTime: '19:00',
+      normalGameMinutes: 15,
       conditionOptions: {
         ...defaultMatchConditionOptions,
         specialMatchCreation: false,
@@ -198,34 +392,9 @@ describe('meeting V2 generation', () => {
         (recommendation) => !recommendation.verified,
       ),
     ).toBe(true)
-  })
+  }, 10000)
 
-  it('treats strict skill danger as a hard candidate constraint', () => {
-    const players = [
-      ...makePlayers(2).map((player) => ({ ...player, level: 'A' as const })),
-      ...makePlayers(2).map((player, index) => ({
-        ...player,
-        id: `strict-e-${index + 1}`,
-        level: 'E' as const,
-      })),
-    ]
-    const settings: MatchSettings = {
-      ...defaultSettings,
-      courtCount: 1,
-      startTime: '18:00',
-      endTime: '18:15',
-      targetRoundCount: 1,
-      pacingRoundCount: 1,
-      conditionOptions: {
-        ...defaultMatchConditionOptions,
-        strictSkillLimit: true,
-      },
-    }
-    const schedule = generateMeetingScheduleV2(players, settings)
-    expect(schedule.rounds.flatMap((round) => round.matches)).toHaveLength(0)
-  })
-
-  it('keeps a large strict meeting within skill, fairness, and wait limits', () => {
+  it('keeps a large legacy meeting within fairness and wait limits', () => {
     const players = makePlayers(40)
     const settings: MatchSettings = {
       ...defaultSettings,
@@ -246,13 +415,11 @@ describe('meeting V2 generation', () => {
     const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
 
     expect(metrics.structuralIssues).toEqual([])
-    expect(metrics.skillDangerMatches).toBe(0)
-    expect(metrics.skillCautionMatches).toBeLessThanOrEqual(5)
     expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
     expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(25)
   }, 20000)
 
-  it('keeps the exact-capacity 30-player special schedule within wait limits', () => {
+  it('uses the 15-minute special match for every available unplayed participant', () => {
     let regularIndex = 0
     const players = makePlayers(30, 1).map((player) => {
       if (player.isGuest) return player
@@ -294,18 +461,120 @@ describe('meeting V2 generation', () => {
     const schedule = generateMeetingScheduleV2(players, settings)
     const matches = schedule.rounds.flatMap((round) => round.matches)
     const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+    const firstFifteenMinuteSpecial = matches.find(
+      (match) =>
+        match.isSpecial &&
+        match.startOffsetMinutes === 15,
+    )
+    const playedBeforeFifteen = new Set(
+      matches
+        .filter((match) => (match.startOffsetMinutes ?? 0) < 15)
+        .flatMap((match) => [...match.teamA, ...match.teamB])
+        .filter((player) => !player.isGuest)
+        .map((player) => player.id),
+    )
+    const unplayedBeforeFifteen = players.filter(
+      (player) =>
+        !player.isGuest &&
+        !playedBeforeFifteen.has(player.id),
+    )
+    const specialRegularIds = new Set(
+      firstFifteenMinuteSpecial
+        ? [...firstFifteenMinuteSpecial.teamA, ...firstFifteenMinuteSpecial.teamB]
+            .filter((player) => !player.isGuest)
+            .map((player) => player.id)
+        : [],
+    )
 
     expect(matches).toHaveLength(58)
     expect(matches.filter((match) => match.isSpecial)).toHaveLength(8)
     expect(schedule.specialCompletedIds).toHaveLength(24)
+    expect(firstFifteenMinuteSpecial).toBeDefined()
+    expect(unplayedBeforeFifteen.length).toBeGreaterThan(0)
+    expect(unplayedBeforeFifteen.length).toBeLessThanOrEqual(3)
+    expect(
+      unplayedBeforeFifteen.every((player) =>
+        specialRegularIds.has(player.id),
+      ),
+    ).toBe(true)
     expect(metrics.structuralIssues).toEqual([])
     expect(metrics.successIssues).toEqual([])
-    expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(25)
+    expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(15)
     expect(metrics.maximumBetweenWaitMinutes).toBeLessThanOrEqual(25)
     expect(metrics.maximumFinalIdleMinutes).toBeLessThanOrEqual(25)
     expect(metrics.participantsOverWaitLimit).toBe(0)
     expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
     expect(metrics.maximumGroupMeetings).toBeLessThanOrEqual(2)
+  }, 20000)
+
+  it('fills the remaining special seat with a previously played participant', () => {
+    const players = makePlayers(29, 1)
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 4,
+      startTime: '18:00',
+      endTime: '21:00',
+      normalGameMinutes: 12,
+      targetRoundCount: 12,
+      pacingRoundCount: 12,
+      roundCountLocked: true,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 8,
+      specialParticipantTarget: 24,
+      specialTimeLimitEnabled: true,
+      specialTimeLimitMinutes: 120,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        strictSkillLimit: false,
+      },
+    }
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const matches = schedule.rounds.flatMap((round) => round.matches)
+    const secondSpecial = matches.find(
+      (match) =>
+        match.isSpecial &&
+        match.startOffsetMinutes === 15,
+    )
+    const playedBeforeFifteen = new Set(
+      matches
+        .filter((match) => (match.startOffsetMinutes ?? 0) < 15)
+        .flatMap((match) => [...match.teamA, ...match.teamB])
+        .filter((player) => !player.isGuest)
+        .map((player) => player.id),
+    )
+    const unplayedBeforeFifteen = players.filter(
+      (player) =>
+        !player.isGuest &&
+        !playedBeforeFifteen.has(player.id),
+    )
+    const secondSpecialRegulars = secondSpecial
+      ? [...secondSpecial.teamA, ...secondSpecial.teamB].filter(
+          (player) => !player.isGuest,
+        )
+      : []
+    const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+
+    expect(unplayedBeforeFifteen).toHaveLength(2)
+    expect(
+      unplayedBeforeFifteen.every((player) =>
+        secondSpecialRegulars.some((candidate) => candidate.id === player.id),
+      ),
+    ).toBe(true)
+    expect(
+      secondSpecialRegulars.filter((player) =>
+        playedBeforeFifteen.has(player.id),
+      ),
+    ).toHaveLength(1)
+    expect(matches.filter((match) => match.isSpecial)).toHaveLength(8)
+    expect(schedule.specialCompletedIds).toHaveLength(24)
+    expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(15)
+    expect(metrics.maximumBetweenWaitMinutes).toBeLessThanOrEqual(25)
+    expect(metrics.maximumFinalIdleMinutes).toBeLessThanOrEqual(25)
+    expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
+    expect(metrics.maximumGroupMeetings).toBeLessThanOrEqual(2)
+    expect(metrics.structuralIssues).toEqual([])
+    expect(metrics.successIssues).toEqual([])
   }, 20000)
 
   it('stops at two identical four-player meetings when repetition protection is on', () => {

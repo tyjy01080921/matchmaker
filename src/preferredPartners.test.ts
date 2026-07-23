@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isPreferredPartnerPair,
+  preferredPartnerBonusStage,
+  preferredPartnerStrength,
   preferredPartnerNames,
   resolvePreferredPartnerNames,
 } from './preferredPartners'
@@ -46,5 +49,20 @@ describe('preferred partners', () => {
       { ...players[0], preferredPartnerIds: ['p2', 'p3'] },
       players,
     )).toBe('이둘, 박셋')
+  })
+
+  it('treats one-sided and mutual selections as the same preferred pair', () => {
+    const oneSided = { ...players[0], preferredPartnerIds: ['p2'] }
+    const mutual = { ...players[1], preferredPartnerIds: ['p1'] }
+
+    expect(isPreferredPartnerPair(oneSided, players[1])).toBe(true)
+    expect(preferredPartnerStrength(oneSided, players[1])).toBe(1)
+    expect(isPreferredPartnerPair(oneSided, mutual)).toBe(true)
+    expect(preferredPartnerStrength(oneSided, mutual)).toBe(2)
+    expect(isPreferredPartnerPair(oneSided, players[2])).toBe(false)
+    expect(preferredPartnerBonusStage(oneSided, players[1], 0)).toBe('first')
+    expect(preferredPartnerBonusStage(oneSided, players[1], 1)).toBe('second')
+    expect(preferredPartnerBonusStage(oneSided, players[1], 2)).toBe('none')
+    expect(preferredPartnerBonusStage(oneSided, players[2], 0)).toBe('none')
   })
 })

@@ -1,4 +1,5 @@
 import { getBookingDurationMinutes } from '../scheduleTime'
+import { isPreferredPartnerPair } from '../preferredPartners'
 import type {
   Match,
   MatchSettings,
@@ -12,7 +13,8 @@ import {
   MEETING_MAX_WAIT_MINUTES,
   MEETING_SKILL_CAUTION_GAP,
   MEETING_SKILL_DANGER_GAP,
-  MEETING_STRICT_CAUTION_LIMIT,
+  MEETING_TIGHT_GAME_MINIMUM,
+  MEETING_TIGHT_GAME_TARGET,
 } from './rules'
 
 type TimeWindow = { start: number; end: number }
@@ -20,9 +22,19 @@ type TimeWindow = { start: number; end: number }
 export type MeetingV2Metrics = {
   structuralIssues: string[]
   successIssues: string[]
+  qualityIssues: string[]
   gameCounts: Record<string, number>
+  tightGameCounts: Record<string, number>
   standardGameSpread: number
   zeroGameStandardParticipants: number
+  warmupMatches: number
+  tightMatches: number
+  participantsBelowTightMinimum: number
+  participantsAtTightTarget: number
+  postWarmupSameGenderMatches: number
+  postWarmupBalancedMixedMatches: number
+  postWarmupGenderExceptionMatches: number
+  genderUnknownParticipants: number
   maximumWaitMinutes: number
   maximumInitialWaitMinutes: number
   maximumBetweenWaitMinutes: number
@@ -37,6 +49,8 @@ export type MeetingV2Metrics = {
   repeatedOpponentAssignments: number
   skillCautionMatches: number
   skillDangerMatches: number
+  postWarmupSkillCautionMatches: number
+  postWarmupSkillDangerMatches: number
   averageWaitMinutes: number
 }
 
@@ -118,6 +132,30 @@ const teamSkillGap = (match: Match, settings: MatchSettings) => {
 
 const matchSkillGap = (match: Match, settings: MatchSettings) =>
   Math.max(fixedSkillSpread(match, settings), teamSkillGap(match, settings))
+
+type MeetingGenderKind = 'same' | 'mixed' | 'exception' | 'unknown'
+
+const teamIsMixed = (team: Match['teamA']) =>
+  team.some((player) => player.gender === 'male') &&
+  team.some((player) => player.gender === 'female')
+
+const matchGenderKind = (match: Match): MeetingGenderKind => {
+  const regulars = matchPlayers(match).filter((player) => !player.isGuest)
+  if (regulars.some((player) => player.gender === 'none')) return 'unknown'
+  const men = regulars.filter((player) => player.gender === 'male').length
+  const women = regulars.filter((player) => player.gender === 'female').length
+  if (men === 0 || women === 0) return 'same'
+  if (
+    regulars.length === 4 &&
+    men === 2 &&
+    women === 2 &&
+    teamIsMixed(match.teamA) &&
+    teamIsMixed(match.teamB)
+  ) {
+    return 'mixed'
+  }
+  return 'exception'
+}
 
 const playerAnalysisEnd = (
   player: Player,
@@ -283,27 +321,77 @@ export const analyzeMeetingScheduleV2 = (
   }
 
   const gameCounts = Object.fromEntries(activePlayers.map((player) => [player.id, 0]))
+  const tightGameCounts = Object.fromEntries(
+    activePlayers.map((player) => [player.id, 0]),
+  )
   const groupCounts = new Map<string, number>()
   const partnerCounts = new Map<string, number>()
   const opponentCounts = new Map<string, number>()
   let skillCautionMatches = 0
   let skillDangerMatches = 0
-  for (const match of matches) {
+  let postWarmupSkillCautionMatches = 0
+  let postWarmupSkillDangerMatches = 0
+  let warmupMatches = 0
+  let tightMatches = 0
+  let postWarmupSameGenderMatches = 0
+  let postWarmupBalancedMixedMatches = 0
+  let postWarmupGenderExceptionMatches = 0
+  const orderedMatches = [...matches].sort(
+    (left, right) =>
+      matchWindow(left).start - matchWindow(right).start ||
+      left.court - right.court ||
+      left.id.localeCompare(right.id),
+  )
+  for (const match of orderedMatches) {
     const assignedPlayers = matchPlayers(match)
+    const regulars = assignedPlayers.filter((player) => !player.isGuest)
+    const isWarmup =
+      !match.isSpecial &&
+      regulars.some((player) => (gameCounts[player.id] ?? 0) === 0)
+    const genderKind = matchGenderKind(match)
+    const skillGap = matchSkillGap(match, settings)
+    const isTight =
+      !match.isSpecial &&
+      !isWarmup &&
+      skillGap < MEETING_SKILL_CAUTION_GAP &&
+      genderKind !== 'exception'
+    if (isWarmup) warmupMatches += 1
+    if (!match.isSpecial && !isWarmup) {
+      if (genderKind === 'same') postWarmupSameGenderMatches += 1
+      if (genderKind === 'mixed') postWarmupBalancedMixedMatches += 1
+      if (genderKind === 'exception') postWarmupGenderExceptionMatches += 1
+    }
+    if (isTight) {
+      tightMatches += 1
+      for (const player of regulars) {
+        tightGameCounts[player.id] = (tightGameCounts[player.id] ?? 0) + 1
+      }
+    }
     for (const player of assignedPlayers) {
       gameCounts[player.id] = (gameCounts[player.id] ?? 0) + 1
     }
     increment(groupCounts, groupKey(assignedPlayers))
-    increment(partnerCounts, pairKey(match.teamA[0].id, match.teamA[1].id))
-    increment(partnerCounts, pairKey(match.teamB[0].id, match.teamB[1].id))
+    if (!isPreferredPartnerPair(match.teamA[0], match.teamA[1])) {
+      increment(partnerCounts, pairKey(match.teamA[0].id, match.teamA[1].id))
+    }
+    if (!isPreferredPartnerPair(match.teamB[0], match.teamB[1])) {
+      increment(partnerCounts, pairKey(match.teamB[0].id, match.teamB[1].id))
+    }
     for (const left of match.teamA) {
       for (const right of match.teamB) {
         increment(opponentCounts, pairKey(left.id, right.id))
       }
     }
-    const skillGap = matchSkillGap(match, settings)
     if (skillGap >= MEETING_SKILL_CAUTION_GAP) skillCautionMatches += 1
     if (skillGap > MEETING_SKILL_DANGER_GAP) skillDangerMatches += 1
+    if (!match.isSpecial && !isWarmup) {
+      if (skillGap >= MEETING_SKILL_CAUTION_GAP) {
+        postWarmupSkillCautionMatches += 1
+      }
+      if (skillGap > MEETING_SKILL_DANGER_GAP) {
+        postWarmupSkillDangerMatches += 1
+      }
+    }
   }
 
   const standardPlayers = activePlayers.filter(
@@ -314,6 +402,18 @@ export const analyzeMeetingScheduleV2 = (
     ? Math.max(...standardCounts) - Math.min(...standardCounts)
     : 0
   const zeroGameStandardParticipants = standardCounts.filter((count) => count === 0).length
+  const standardTightCounts = standardPlayers.map(
+    (player) => tightGameCounts[player.id] ?? 0,
+  )
+  const participantsBelowTightMinimum = standardTightCounts.filter(
+    (count) => count < MEETING_TIGHT_GAME_MINIMUM,
+  ).length
+  const participantsAtTightTarget = standardTightCounts.filter(
+    (count) => count >= MEETING_TIGHT_GAME_TARGET,
+  ).length
+  const genderUnknownParticipants = standardPlayers.filter(
+    (player) => player.gender === 'none',
+  ).length
   const waits = activePlayers.map((player) =>
     waitDetails(player, matches, bookingMinutes, settings),
   )
@@ -332,6 +432,7 @@ export const analyzeMeetingScheduleV2 = (
   const partnerMetrics = repeatMetrics(partnerCounts)
   const opponentMetrics = repeatMetrics(opponentCounts)
   const successIssues: string[] = []
+  const qualityIssues: string[] = []
   if (zeroGameStandardParticipants > 0) {
     successIssues.push(`0경기 일반 참가자 ${zeroGameStandardParticipants}명`)
   }
@@ -343,27 +444,39 @@ export const analyzeMeetingScheduleV2 = (
       `최장 대기 ${Math.max(...participantViolations.map((item) => item.waitMinutes))}분`,
     )
   }
-  if (
-    settings.conditionOptions.groupRepeat &&
-    groupMetrics.maximum > MEETING_MAX_GROUP_MEETINGS
-  ) {
+  if (groupMetrics.maximum > MEETING_MAX_GROUP_MEETINGS) {
     successIssues.push(`동일 4인 최대 ${groupMetrics.maximum}경기`)
   }
-  if (settings.conditionOptions.strictSkillLimit) {
-    if (skillDangerMatches > 0) {
-      successIssues.push(`실력 차 위험 ${skillDangerMatches}경기`)
-    }
-    if (skillCautionMatches > MEETING_STRICT_CAUTION_LIMIT) {
-      successIssues.push(`실력 차 주의 ${skillCautionMatches}경기`)
-    }
+  if (participantsBelowTightMinimum > 0) {
+    qualityIssues.push(
+      `타이트 경기 ${MEETING_TIGHT_GAME_MINIMUM}회 미달 ${participantsBelowTightMinimum}명`,
+    )
+  }
+  if (postWarmupGenderExceptionMatches > 0) {
+    qualityIssues.push(
+      `워밍업 이후 성별 예외 ${postWarmupGenderExceptionMatches}경기`,
+    )
+  }
+  if (genderUnknownParticipants > 0) {
+    qualityIssues.push(`성별 정보 없음 ${genderUnknownParticipants}명`)
   }
 
   return {
     structuralIssues: [...structuralIssues],
     successIssues,
+    qualityIssues,
     gameCounts,
+    tightGameCounts,
     standardGameSpread,
     zeroGameStandardParticipants,
+    warmupMatches,
+    tightMatches,
+    participantsBelowTightMinimum,
+    participantsAtTightTarget,
+    postWarmupSameGenderMatches,
+    postWarmupBalancedMixedMatches,
+    postWarmupGenderExceptionMatches,
+    genderUnknownParticipants,
     maximumWaitMinutes: Math.max(0, ...waits.map((wait) => wait.maximum)),
     maximumInitialWaitMinutes: Math.max(0, ...waits.map((wait) => wait.initial)),
     maximumBetweenWaitMinutes: Math.max(0, ...waits.map((wait) => wait.between)),
@@ -378,6 +491,8 @@ export const analyzeMeetingScheduleV2 = (
     repeatedOpponentAssignments: opponentMetrics.repeated,
     skillCautionMatches,
     skillDangerMatches,
+    postWarmupSkillCautionMatches,
+    postWarmupSkillDangerMatches,
     averageWaitMinutes:
       waits.length > 0
         ? waits.reduce((sum, wait) => sum + wait.average, 0) / waits.length

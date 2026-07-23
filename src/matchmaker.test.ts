@@ -591,6 +591,51 @@ describe('generateSchedule', () => {
     })
   })
 
+  it('excludes a one-sided preferred pair from partner repetition metrics', () => {
+    const players = Array.from({ length: 8 }, (_, index) =>
+      makeTestPlayer(`반복-${index + 1}`, 'B'),
+    )
+    players[0].preferredPartnerIds = [players[1].id]
+    const opponentPairs = [
+      [players[2], players[3]],
+      [players[4], players[5]],
+      [players[6], players[7]],
+    ] as const
+    const schedule: Schedule = {
+      rounds: opponentPairs.map((opponents, index) => ({
+        id: `preferred-repeat-round-${index + 1}`,
+        number: index + 1,
+        resting: players.filter(
+          (player) =>
+            ![players[0], players[1], ...opponents].some(
+              (playing) => playing.id === player.id,
+            ),
+        ),
+        matches: [{
+          id: `preferred-repeat-${index + 1}`,
+          round: index + 1,
+          court: 1,
+          teamA: [players[0], players[1]],
+          teamB: [opponents[0], opponents[1]],
+          isSpecial: false,
+          startOffsetMinutes: index * 15,
+          durationMinutes: 15,
+        }],
+      })),
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+
+    expect(analyzeScheduleQuality(schedule, players)).toMatchObject({
+      maximumPartnerMeetings: 1,
+      repeatedPartnerAssignments: 0,
+      preferredPartnerRequests: 1,
+      preferredPartnerFulfilled: 1,
+      preferredPartnerUnfulfilled: 0,
+    })
+  })
+
   it('adds one general game after the last game on every court when time is extended', () => {
     const players = Array.from({ length: 12 }, (_, index) =>
       makeTestPlayer(`extension-${index + 1}`, 'B'),

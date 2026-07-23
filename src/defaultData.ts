@@ -47,7 +47,7 @@ export const defaultMatchConditionOptions: MatchConditionOptions = {
   specialMatchCreation: true,
   specialPriority: true,
   guestPartnerRepeat: true,
-  femaleLevelFit: true,
+  femaleLevelFit: false,
   strictSkillLimit: false,
 }
 
