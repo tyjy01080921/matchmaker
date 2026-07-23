@@ -252,6 +252,62 @@ describe('meeting V2 generation', () => {
     expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(25)
   }, 20000)
 
+  it('keeps the exact-capacity 30-player special schedule within wait limits', () => {
+    let regularIndex = 0
+    const players = makePlayers(30, 1).map((player) => {
+      if (player.isGuest) return player
+      const index = regularIndex
+      regularIndex += 1
+      return {
+        ...player,
+        level: index < 2
+          ? 'A' as const
+          : index >= 28
+            ? 'E' as const
+            : 'C' as const,
+      }
+    })
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 4,
+      startTime: '18:00',
+      endTime: '21:00',
+      normalGameMinutes: 12,
+      seed: 1,
+      targetRoundCount: 12,
+      pacingRoundCount: 12,
+      roundCountLocked: true,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 8,
+      specialParticipantTarget: 24,
+      specialTimeLimitEnabled: true,
+      specialTimeLimitMinutes: 120,
+      specialLowPriorityEnabled: false,
+      specialHighPriorityEnabled: true,
+      specialHighPriorityPercent: 70,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        strictSkillLimit: false,
+      },
+    }
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const matches = schedule.rounds.flatMap((round) => round.matches)
+    const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+
+    expect(matches).toHaveLength(58)
+    expect(matches.filter((match) => match.isSpecial)).toHaveLength(8)
+    expect(schedule.specialCompletedIds).toHaveLength(24)
+    expect(metrics.structuralIssues).toEqual([])
+    expect(metrics.successIssues).toEqual([])
+    expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(25)
+    expect(metrics.maximumBetweenWaitMinutes).toBeLessThanOrEqual(25)
+    expect(metrics.maximumFinalIdleMinutes).toBeLessThanOrEqual(25)
+    expect(metrics.participantsOverWaitLimit).toBe(0)
+    expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
+    expect(metrics.maximumGroupMeetings).toBeLessThanOrEqual(2)
+  }, 20000)
+
   it('stops at two identical four-player meetings when repetition protection is on', () => {
     const players = makePlayers(4)
     const settings: MatchSettings = {

@@ -56,10 +56,7 @@ type EngineState = {
   specialParticipantIds: Set<string>
   plannedSpecialStarts: Map<string, number[]>
   remainingPlannedSpecials: Map<string, number>
-  requiredPlayDeadlinesByStart: Map<
-    number,
-    Array<{ playerId: string; deadline: number }>
-  >
+  playOpportunityStarts: Map<string, number[]>
   maximumStandardGames: number | null
   strictCautionMatches: number
 }
@@ -344,7 +341,6 @@ export const planMeetingSlotsV2 = (
 const initializeState = (
   activePlayers: Player[],
   plannedSlots: PlannedMeetingSlot[],
-  settings: MatchSettings,
 ): EngineState => {
   const plannedSpecialStarts = new Map<string, number[]>()
   for (const slot of plannedSlots.filter(
@@ -361,38 +357,24 @@ const initializeState = (
     starts.sort((left, right) => left - right)
   }
   const generalSlots = plannedSlots.filter((slot) => slot.kind === 'general')
-  const requiredPlayDeadlinesByStart = new Map<
-    number,
-    Array<{ playerId: string; deadline: number }>
-  >()
-  const registerDeadline = (playerId: string, deadline: number) => {
-    const plannedStarts = plannedSpecialStarts.get(playerId) ?? []
-    const lastOpportunity = generalSlots
+  const playOpportunityStarts = new Map<string, number[]>()
+  for (const player of activePlayers.filter((candidate) => !candidate.isGuest)) {
+    const plannedStarts = plannedSpecialStarts.get(player.id) ?? []
+    const generalStarts = generalSlots
       .filter(
         (slot) =>
-          slot.start + slot.duration <= deadline &&
           !plannedStarts.some(
             (start) =>
               start < slot.start + slot.duration &&
               slot.start < start + SPECIAL_GAME_MINUTES,
           ),
       )
-      .sort((left, right) => right.start - left.start)[0]
-    if (!lastOpportunity) return
-    requiredPlayDeadlinesByStart.set(lastOpportunity.start, [
-      ...(requiredPlayDeadlinesByStart.get(lastOpportunity.start) ?? []),
-      { playerId, deadline },
-    ])
-  }
-  const schedulingMinutes = meetingSchedulingMinutes(settings)
-  for (const player of activePlayers.filter((candidate) => !candidate.isGuest)) {
-    const specialStarts = plannedSpecialStarts.get(player.id) ?? []
-    for (const start of specialStarts) registerDeadline(player.id, start)
-    if (!specialStarts.some(
-      (start) => start >= schedulingMinutes - MEETING_MAX_WAIT_MINUTES,
-    )) {
-      registerDeadline(player.id, schedulingMinutes)
-    }
+      .map((slot) => slot.start)
+    playOpportunityStarts.set(
+      player.id,
+      [...new Set([...generalStarts, ...plannedStarts])]
+        .sort((left, right) => left - right),
+    )
   }
   const standardPlayerCount = activePlayers.filter(
     (player) => !player.isGuest && !player.gameCountFlexible,
@@ -425,7 +407,7 @@ const initializeState = (
         starts.length,
       ]),
     ),
-    requiredPlayDeadlinesByStart,
+    playOpportunityStarts,
     maximumStandardGames: standardPlayerCount > 0
       ? Math.ceil(plannedRegularAppearances / standardPlayerCount)
       : null,
@@ -563,12 +545,37 @@ const playerWait = (player: Player, state: EngineState, start: number) => {
   return Math.max(0, start - (lastEnd ?? 0))
 }
 
-const effectiveGameCount = (player: Player, state: EngineState) =>
+const projectedGameCount = (player: Player, state: EngineState) =>
   (state.games.get(player.id) ?? 0) +
   (!player.isGuest && player.gameCountFlexible ? 1 : 0)
   + (!player.isGuest
     ? state.remainingPlannedSpecials.get(player.id) ?? 0
     : 0)
+
+const requiredPlayerIdsForBatch = (
+  activePlayers: Player[],
+  state: EngineState,
+  start: number,
+  settings: MatchSettings,
+) => {
+  const schedulingMinutes = meetingSchedulingMinutes(settings)
+  return new Set(
+    activePlayers
+      .filter(
+        (player) =>
+          !player.isGuest &&
+          (state.availableAt.get(player.id) ?? 0) <= start,
+      )
+      .filter((player) => {
+        const lastEnd = state.lastEnd.get(player.id) ?? 0
+        const nextStart = (state.playOpportunityStarts.get(player.id) ?? [])
+          .find((opportunityStart) => opportunityStart > start)
+        return (nextStart ?? schedulingMinutes) - lastEnd >
+          MEETING_MAX_WAIT_MINUTES
+      })
+      .map((player) => player.id),
+  )
+}
 
 const slotPriorityOrder = (
   profile: MeetingRuleProfile,
@@ -627,18 +634,10 @@ const individualPriority = (
   slot: PlannedMeetingSlot,
   profile: MeetingRuleProfile,
   settings: MatchSettings,
+  requiredIds: Set<string>,
 ) => {
-  const requiredIds = new Set(
-    (state.requiredPlayDeadlinesByStart.get(slot.start) ?? [])
-      .filter(
-        ({ playerId, deadline }) =>
-          deadline - (state.lastEnd.get(playerId) ?? 0) >
-          MEETING_MAX_WAIT_MINUTES,
-      )
-      .map(({ playerId }) => playerId),
-  )
   const categories: Record<MeetingPreferenceKey, number> = {
-    games: effectiveGameCount(player, state),
+    games: projectedGameCount(player, state),
     wait: -playerWait(player, state, slot.start),
     skill: 0,
     groupRepeat: 0,
@@ -687,11 +686,12 @@ const candidatePool = (
   slot: PlannedMeetingSlot,
   profile: MeetingRuleProfile,
   settings: MatchSettings,
+  requiredIds: Set<string>,
 ) => {
   const ranked = [...players].sort((left, right) =>
     compareNumberTuples(
-      individualPriority(left, state, slot, profile, settings),
-      individualPriority(right, state, slot, profile, settings),
+      individualPriority(left, state, slot, profile, settings, requiredIds),
+      individualPriority(right, state, slot, profile, settings, requiredIds),
     ),
   )
   const anchors = ranked.slice(0, 2)
@@ -703,8 +703,22 @@ const candidatePool = (
           Math.abs(playerScore(left, settings) - playerScore(anchor, settings)) -
             Math.abs(playerScore(right, settings) - playerScore(anchor, settings)) ||
           compareNumberTuples(
-            individualPriority(left, state, slot, profile, settings),
-            individualPriority(right, state, slot, profile, settings),
+            individualPriority(
+              left,
+              state,
+              slot,
+              profile,
+              settings,
+              requiredIds,
+            ),
+            individualPriority(
+              right,
+              state,
+              slot,
+              profile,
+              settings,
+              requiredIds,
+            ),
           ),
       )
       .slice(0, 3),
@@ -897,7 +911,7 @@ const categoryValues = (
   settings: MatchSettings,
   activePlayers: Player[],
 ) => {
-  const gameCounts = players.map((player) => effectiveGameCount(player, state))
+  const gameCounts = players.map((player) => projectedGameCount(player, state))
   const waits = players.map((player) => playerWait(player, state, slot.start))
   const ages = players
     .filter((player) => !player.isGuest && player.ageGroup !== '무관')
@@ -1018,22 +1032,9 @@ const scoreCandidate = (
     criticalWaits.length * 1000 +
     criticalWaits.reduce((sum, wait) => sum + wait, 0)
   )
-  const requiredIds = new Set(
-    (state.requiredPlayDeadlinesByStart.get(slot.start) ?? [])
-      .filter(
-        ({ playerId, deadline }) =>
-          deadline - (state.lastEnd.get(playerId) ?? 0) >
-          MEETING_MAX_WAIT_MINUTES,
-      )
-      .map(({ playerId }) => playerId),
-  )
-  const requiredCoveragePriority = -players.filter((player) =>
-    requiredIds.has(player.id),
-  ).length
   return [
     0,
     coveragePenalty,
-    requiredCoveragePriority,
     waitDeadlinePriority,
     categories.games,
     skillDangerTier,
@@ -1086,7 +1087,7 @@ const hardCandidateAllowed = (
       (player) =>
         !player.isGuest &&
         !player.gameCountFlexible &&
-        effectiveGameCount(player, state) >= maximumStandardGames,
+        projectedGameCount(player, state) >= maximumStandardGames,
     )
   ) {
     return false
@@ -1160,19 +1161,31 @@ const makeCandidate = (
   } satisfies GroupCandidate
 }
 
-const limitCandidateFrontier = (candidates: GroupCandidate[]) => {
+const requiredCoverageCount = (
+  candidate: GroupCandidate,
+  requiredIds: Set<string>,
+) => candidate.players.filter((player) => requiredIds.has(player.id)).length
+
+const limitCandidateFrontier = (
+  candidates: GroupCandidate[],
+  requiredIds: Set<string>,
+) => {
   const sorted = [...candidates].sort(
     (left, right) => compareNumberTuples(left.score, right.score),
   )
   const representatives = new Map<string, GroupCandidate>()
   for (const candidate of sorted) {
-    const requiredCount = Math.max(0, -(candidate.score[2] ?? 0))
+    const coveredRequiredIds = candidate.players
+      .filter((player) => requiredIds.has(player.id))
+      .map((player) => player.id)
+      .sort()
+      .join(':')
     const skillTier = candidate.skillGap > MEETING_SKILL_DANGER_GAP
       ? 2
       : candidate.skillGap >= MEETING_SKILL_CAUTION_GAP
         ? 1
         : 0
-    const key = `${requiredCount}:${skillTier}`
+    const key = `${coveredRequiredIds}:${skillTier}`
     if (!representatives.has(key)) representatives.set(key, candidate)
   }
   return [...new Map(
@@ -1190,6 +1203,7 @@ const generalCandidates = (
   usedIds: Set<string>,
   profile: MeetingRuleProfile,
   settings: MatchSettings,
+  requiredIds: Set<string>,
 ) => {
   const regulars = availablePlayers(
     activePlayers.filter((player) => !player.isGuest),
@@ -1198,14 +1212,33 @@ const generalCandidates = (
     usedIds,
   )
   if (regulars.length < 4) return []
-  const pool = candidatePool(regulars, state, slot, profile, settings)
+  const pool = candidatePool(
+    regulars,
+    state,
+    slot,
+    profile,
+    settings,
+    requiredIds,
+  )
   const safeCandidates: GroupCandidate[] = []
   const fallbackCandidates: GroupCandidate[] = []
+  const candidateKeys = new Set<string>()
+  const addCandidate = (candidate: GroupCandidate | null) => {
+    if (!candidate) return
+    const key = groupKey(candidate.players)
+    if (candidateKeys.has(key)) return
+    candidateKeys.add(key)
+    if (candidate.skillGap <= MEETING_SKILL_DANGER_GAP) {
+      safeCandidates.push(candidate)
+    } else {
+      fallbackCandidates.push(candidate)
+    }
+  }
   for (let a = 0; a < pool.length - 3; a += 1) {
     for (let b = a + 1; b < pool.length - 2; b += 1) {
       for (let c = b + 1; c < pool.length - 1; c += 1) {
         for (let d = c + 1; d < pool.length; d += 1) {
-          const candidate = makeCandidate(
+          addCandidate(makeCandidate(
             [pool[a], pool[b], pool[c], pool[d]],
             state,
             slot,
@@ -1213,19 +1246,93 @@ const generalCandidates = (
             settings,
             activePlayers,
             true,
-          )
-          if (!candidate) continue
-          if (candidate.skillGap <= MEETING_SKILL_DANGER_GAP) {
-            safeCandidates.push(candidate)
-          } else {
-            fallbackCandidates.push(candidate)
-          }
+          ))
         }
       }
     }
   }
+  const initiallySafeRequiredIds = new Set(
+    safeCandidates.flatMap((candidate) =>
+      candidate.players
+        .filter((player) => requiredIds.has(player.id))
+        .map((player) => player.id),
+    ),
+  )
+  const uncoveredRequiredPlayers = regulars.filter(
+    (player) =>
+      requiredIds.has(player.id) && !initiallySafeRequiredIds.has(player.id),
+  )
+  for (const anchor of uncoveredRequiredPlayers) {
+    const companions = regulars
+      .filter((player) => player.id !== anchor.id)
+      .sort(
+        (left, right) =>
+          Math.abs(playerScore(left, settings) - playerScore(anchor, settings)) -
+            Math.abs(playerScore(right, settings) - playerScore(anchor, settings)) ||
+          compareNumberTuples(
+            individualPriority(
+              left,
+              state,
+              slot,
+              profile,
+              settings,
+              requiredIds,
+            ),
+            individualPriority(
+              right,
+              state,
+              slot,
+              profile,
+              settings,
+              requiredIds,
+            ),
+          ),
+      )
+      .slice(0, 7)
+    for (let a = 0; a < companions.length - 2; a += 1) {
+      for (let b = a + 1; b < companions.length - 1; b += 1) {
+        for (let c = b + 1; c < companions.length; c += 1) {
+          addCandidate(makeCandidate(
+            [anchor, companions[a], companions[b], companions[c]],
+            state,
+            slot,
+            profile,
+            settings,
+            activePlayers,
+            true,
+          ))
+        }
+      }
+    }
+  }
+  const preferredCandidates =
+    safeCandidates.length > 0 ? safeCandidates : fallbackCandidates
+  const safelyCoveredRequiredIds = new Set(
+    safeCandidates.flatMap((candidate) =>
+      candidate.players
+        .filter((player) => requiredIds.has(player.id))
+        .map((player) => player.id),
+    ),
+  )
+  const uncoveredRequiredIds = new Set(
+    [...requiredIds].filter(
+      (playerId) => !safelyCoveredRequiredIds.has(playerId),
+    ),
+  )
+  const requiredCandidates = [
+    ...safeCandidates.filter(
+      (candidate) => requiredCoverageCount(candidate, requiredIds) > 0,
+    ),
+    ...fallbackCandidates.filter(
+      (candidate) =>
+        candidate.players.some((player) => uncoveredRequiredIds.has(player.id)),
+    ),
+  ]
   return limitCandidateFrontier(
-    safeCandidates.length > 0 ? safeCandidates : fallbackCandidates,
+    requiredCandidates.length > 0
+      ? [...requiredCandidates, ...preferredCandidates]
+      : preferredCandidates,
+    requiredIds,
   )
 }
 
@@ -1236,6 +1343,7 @@ const specialCandidates = (
   usedIds: Set<string>,
   profile: MeetingRuleProfile,
   settings: MatchSettings,
+  requiredIds: Set<string>,
 ) => {
   const guest = activePlayers.find((player) => player.id === slot.guestId)
   if (!guest || usedIds.has(guest.id)) return []
@@ -1303,8 +1411,8 @@ const specialCandidates = (
       Number(left.gender === 'none') - Number(right.gender === 'none')
     if (genderDifference !== 0) return genderDifference
     return compareNumberTuples(
-      individualPriority(left, state, slot, profile, settings),
-      individualPriority(right, state, slot, profile, settings),
+      individualPriority(left, state, slot, profile, settings, requiredIds),
+      individualPriority(right, state, slot, profile, settings, requiredIds),
     )
   })
   const pool = uniquePlayers([
@@ -1346,7 +1454,7 @@ const specialCandidates = (
       }
     }
   }
-  return limitCandidateFrontier(groups)
+  return limitCandidateFrontier(groups, requiredIds)
 }
 
 const candidatesForSlot = (
@@ -1356,6 +1464,7 @@ const candidatesForSlot = (
   usedIds: Set<string>,
   profile: MeetingRuleProfile,
   settings: MatchSettings,
+  requiredIds: Set<string>,
 ) => slot.kind === 'special'
   ? specialCandidates(
       activePlayers,
@@ -1364,6 +1473,7 @@ const candidatesForSlot = (
       usedIds,
       profile,
       settings,
+      requiredIds,
     )
   : generalCandidates(
       activePlayers,
@@ -1372,6 +1482,7 @@ const candidatesForSlot = (
       usedIds,
       profile,
       settings,
+      requiredIds,
     )
 
 const chooseBatch = (
@@ -1381,7 +1492,14 @@ const chooseBatch = (
   profile: MeetingRuleProfile,
   settings: MatchSettings,
 ) => {
-  const scoreLength = profile.priorityOrder.length + 8
+  const start = slots[0]?.start ?? 0
+  const requiredIds = requiredPlayerIdsForBatch(
+    activePlayers,
+    state,
+    start,
+    settings,
+  )
+  const scoreLength = profile.priorityOrder.length + 7
   let beams: BatchBeam[] = [{
     selections: [],
     usedIds: new Set(),
@@ -1389,7 +1507,18 @@ const chooseBatch = (
     cautionMatches: 0,
   }]
 
-  for (const slot of slots) {
+  const requiredIdsMissingFrom = (beam: BatchBeam) =>
+    [...requiredIds].filter((playerId) => !beam.usedIds.has(playerId)).length
+  const remainingRegularCapacity = (slotIndex: number) =>
+    slots
+      .slice(slotIndex + 1)
+      .reduce(
+        (sum, slot) => sum + (slot.kind === 'general' ? 4 : 3),
+        0,
+      )
+
+  for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
+    const slot = slots[slotIndex]
     const expanded: BatchBeam[] = []
     for (const beam of beams) {
       const candidates = candidatesForSlot(
@@ -1399,6 +1528,7 @@ const chooseBatch = (
         beam.usedIds,
         profile,
         settings,
+        requiredIds,
       )
       for (const candidate of candidates) {
         const cautionAdded =
@@ -1429,11 +1559,35 @@ const chooseBatch = (
         })
       }
     }
+    const remainingCapacity = remainingRegularCapacity(slotIndex)
     beams = expanded
-      .sort((left, right) => compareNumberTuples(left.score, right.score))
+      .sort((left, right) =>
+        compareNumberTuples(
+          [
+            Math.max(
+              0,
+              requiredIdsMissingFrom(left) - remainingCapacity,
+            ),
+            ...left.score,
+          ],
+          [
+            Math.max(
+              0,
+              requiredIdsMissingFrom(right) - remainingCapacity,
+            ),
+            ...right.score,
+          ],
+        ),
+      )
       .slice(0, MAX_BATCH_BEAM)
   }
-  return beams[0]?.selections ?? []
+  return [...beams]
+    .sort((left, right) =>
+      compareNumberTuples(
+        [requiredIdsMissingFrom(left), ...left.score],
+        [requiredIdsMissingFrom(right), ...right.score],
+      ),
+    )[0]?.selections ?? []
 }
 
 const updateState = (
@@ -1557,6 +1711,8 @@ const repairStandardGameSpread = (
   )
   if (standardPlayers.length < 2) return schedule
   let repaired = schedule
+  let allowSkillDangerIncrease = false
+  let pass = 0
   const maximumPasses = Math.min(12, standardPlayers.length)
   const balanceScore = (metrics: MeetingV2Metrics) => {
     const counts = standardPlayers.map(
@@ -1570,7 +1726,7 @@ const repairStandardGameSpread = (
     return [metrics.standardGameSpread, deviation]
   }
 
-  for (let pass = 0; pass < maximumPasses; pass += 1) {
+  while (pass < maximumPasses) {
     const base = analyzeMeetingScheduleV2(repaired, players, settings)
     if (base.standardGameSpread <= 1) break
     const counts = standardPlayers.map(
@@ -1662,12 +1818,17 @@ const repairStandardGameSpread = (
           ) {
             continue
           }
-          if (metrics.skillDangerMatches > base.skillDangerMatches) continue
+          if (
+            !allowSkillDangerIncrease &&
+            metrics.skillDangerMatches > base.skillDangerMatches
+          ) {
+            continue
+          }
           const score = [
             ...balanceScore(metrics),
-            metrics.maximumWaitMinutes,
             metrics.skillDangerMatches,
             metrics.skillCautionMatches,
+            metrics.maximumWaitMinutes,
             metrics.repeatedGroupAssignments,
             metrics.repeatedPartnerAssignments,
             metrics.repeatedOpponentAssignments,
@@ -1679,8 +1840,15 @@ const repairStandardGameSpread = (
         }
       }
     }
-    if (best === null) break
+    if (best === null) {
+      if (!allowSkillDangerIncrease) {
+        allowSkillDangerIncrease = true
+        continue
+      }
+      break
+    }
     repaired = best.schedule
+    pass += 1
   }
   return repaired
 }
@@ -1789,7 +1957,7 @@ export const generateMeetingScheduleV2 = (
     activePlayers,
     effectiveSettings,
   )
-  const state = initializeState(activePlayers, slots, effectiveSettings)
+  const state = initializeState(activePlayers, slots)
   const slotsByStart = new Map<number, PlannedMeetingSlot[]>()
   for (const slot of slots) {
     slotsByStart.set(slot.start, [...(slotsByStart.get(slot.start) ?? []), slot])
