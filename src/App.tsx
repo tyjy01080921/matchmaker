@@ -176,7 +176,7 @@ const MEETING_GENERATION_MESSAGES = [
   '준비운동 중요한 거 아시죠?! 꼭 하세요!',
   '즐거운 배드민턴, 고성현&신백철의 A.M.A와 함께 하세요!',
 ] as const
-const MEETING_GENERATION_ATTEMPTS = 5
+const MEETING_GENERATION_ATTEMPTS = 3
 
 type MeetingGenerationWorkerResponse = {
   requestId: number
@@ -308,19 +308,53 @@ const fixedMatchConditionKeys: MatchConditionKey[] = [
   'waitPriority',
 ]
 
-const optionalMatchConditionKeys: MatchConditionKey[] = [
+const conditionalHardMatchConditionKeys: MatchConditionKey[] = [
+  'groupRepeat',
+  'strictSkillLimit',
+]
+
+const preferenceMatchConditionKeys: MatchConditionKey[] = [
   'levelBalance',
   'genderBalance',
   'restBalance',
   'partnerRepeat',
   'opponentRepeat',
-  'groupRepeat',
+  'ageBalance',
+  'femaleLevelFit',
+]
+
+const specialMatchConditionKeys: MatchConditionKey[] = [
   'specialMatchCreation',
   'specialPriority',
   'guestPartnerRepeat',
-  'ageBalance',
-  'femaleLevelFit',
-  'strictSkillLimit',
+]
+
+const optionalMatchConditionKeys: MatchConditionKey[] = [
+  ...conditionalHardMatchConditionKeys,
+  ...preferenceMatchConditionKeys,
+  ...specialMatchConditionKeys,
+]
+
+const matchConditionSections: Array<{
+  title: string
+  description: string
+  keys: MatchConditionKey[]
+}> = [
+  {
+    title: '선택 필수 조건',
+    description: '사용하면 위반 대진을 만들지 않습니다.',
+    keys: conditionalHardMatchConditionKeys,
+  },
+  {
+    title: '우선 조건',
+    description: '필수 조건을 통과한 후보끼리 비교합니다.',
+    keys: preferenceMatchConditionKeys,
+  },
+  {
+    title: '스페셜 운영',
+    description: '스페셜 경기 생성과 배치 방식을 정합니다.',
+    keys: specialMatchConditionKeys,
+  },
 ]
 
 const matchConditionKeys: MatchConditionKey[] = [
@@ -331,9 +365,9 @@ const matchConditionKeys: MatchConditionKey[] = [
 const matchConditionLabels: Record<MatchConditionKey, string> = {
   levelBalance: '팀 레벨 균형',
   genderBalance: '동일 성별 우선',
-  fairGames: '경기 수 1경기 이내 (필수)',
+  fairGames: '일반 경기 수 차이 1 이하',
   restBalance: '연속 경기 방지',
-  waitPriority: '전체 대기 25분 제한 (필수)',
+  waitPriority: '최장 대기 25분 이하',
   partnerRepeat: '파트너 반복 최소',
   opponentRepeat: '상대 반복 최소',
   groupRepeat: '같은 4인 최대 2경기',
@@ -6859,41 +6893,53 @@ function App() {
                   </div>
                 </div>
                 <div className="fixed-condition-summary">
-                  <strong>고정 품질 기준</strong>
+                  <strong>항상 지키는 필수 조건</strong>
                   <span>
                     {fixedMatchConditionKeys
                       .map((key) => matchConditionLabels[key])
                       .join(' · ')}
                   </span>
                 </div>
-                {optionalMatchConditionKeys.map((key) => (
-                  <label className="condition-row" key={key}>
-                    <input
-                      type="checkbox"
-                      disabled={
-                        (key === 'levelBalance' && Boolean(
-                          settings.conditionOptions?.strictSkillLimit,
-                        )) ||
-                        (key === 'ageBalance' && !hasComparableAgeData) ||
-                        (key === 'specialPriority' && !(
-                          settings.conditionOptions?.specialMatchCreation ??
-                          defaultMatchConditionOptions.specialMatchCreation
-                        )) ||
-                        (key === 'guestPartnerRepeat' && !(
-                          settings.conditionOptions?.specialMatchCreation ??
-                          defaultMatchConditionOptions.specialMatchCreation
-                        ))
-                      }
-                      checked={
-                        settings.conditionOptions?.[key] ??
-                        defaultMatchConditionOptions[key]
-                      }
-                      onChange={(event) => updateMatchCondition(key, event.target.checked)}
-                    />
-                    {key === 'ageBalance' && !hasComparableAgeData
-                      ? '연령대 균형 (연령 정보 없음)'
-                      : matchConditionLabels[key]}
-                  </label>
+                {matchConditionSections.map((section) => (
+                  <section className="condition-section" key={section.title}>
+                    <div className="condition-section-heading">
+                      <strong>{section.title}</strong>
+                      <span>{section.description}</span>
+                    </div>
+                    <div className="condition-grid">
+                      {section.keys.map((key) => (
+                        <label className="condition-row" key={key}>
+                          <input
+                            type="checkbox"
+                            disabled={
+                              (key === 'levelBalance' && Boolean(
+                                settings.conditionOptions?.strictSkillLimit,
+                              )) ||
+                              (key === 'ageBalance' && !hasComparableAgeData) ||
+                              (key === 'specialPriority' && !(
+                                settings.conditionOptions?.specialMatchCreation ??
+                                defaultMatchConditionOptions.specialMatchCreation
+                              )) ||
+                              (key === 'guestPartnerRepeat' && !(
+                                settings.conditionOptions?.specialMatchCreation ??
+                                defaultMatchConditionOptions.specialMatchCreation
+                              ))
+                            }
+                            checked={
+                              settings.conditionOptions?.[key] ??
+                              defaultMatchConditionOptions[key]
+                            }
+                            onChange={(event) =>
+                              updateMatchCondition(key, event.target.checked)
+                            }
+                          />
+                          {key === 'ageBalance' && !hasComparableAgeData
+                            ? '연령대 균형 (연령 정보 없음)'
+                            : matchConditionLabels[key]}
+                        </label>
+                      ))}
+                    </div>
+                  </section>
                 ))}
               </div>
             ) : null}

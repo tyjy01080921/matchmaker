@@ -1,4 +1,4 @@
-import { generateScheduleWithWaitResolution } from './matchmaker'
+import { generateMeetingScheduleV2WithWaitResolution } from './matchmaker'
 import type {
   MatchSettings,
   MeetingWaitLimitFailure,
@@ -24,7 +24,7 @@ type MeetingGenerationWorkerResponse = {
 self.onmessage = (event: MessageEvent<MeetingGenerationWorkerRequest>) => {
   const { requestId, players, settings, attemptCount } = event.data
   try {
-    const result = generateScheduleWithWaitResolution(
+    const result = generateMeetingScheduleV2WithWaitResolution(
       players,
       settings,
       attemptCount,
@@ -36,7 +36,13 @@ self.onmessage = (event: MessageEvent<MeetingGenerationWorkerRequest>) => {
         self.postMessage(response)
       },
     )
-    const response: MeetingGenerationWorkerResponse = result.waitLimitFailure
+    const response: MeetingGenerationWorkerResponse = result.failureIssues.length > 0 &&
+      !result.waitLimitFailure
+      ? {
+          requestId,
+          error: result.failureIssues.join(' · '),
+        }
+      : result.waitLimitFailure
       ? {
           requestId,
           schedule: result.schedule,

@@ -1130,7 +1130,7 @@ describe('generateSchedule', () => {
     expect(wait.maximumFinalIdleMinutes).toBeLessThanOrEqual(25)
   })
 
-  it('blocks an over-limit plan and returns a recalculated resolution', () => {
+  it('blocks an over-limit plan and returns lightweight resolution options', () => {
     const players = Array.from({ length: 16 }, (_, index) =>
       makeTestPlayer(`wait-resolution-fail-${index + 1}`, 'B'),
     )
@@ -1160,7 +1160,7 @@ describe('generateSchedule', () => {
       expect.arrayContaining([
         expect.objectContaining({
           kind: 'more-courts',
-          verified: true,
+          verified: false,
         }),
       ]),
     )
