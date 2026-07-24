@@ -1875,7 +1875,7 @@ function App() {
     ? meetingV2Metrics.postWarmupSkillCautionMatches
     : scheduleQualityAnalysis.teamSkillWarningMatches
   const skillBalanceWarning = reviewedSkillWarningMatches > 0
-    ? `${meetingUsesClubQuality ? '워밍업 이후 ' : ''}실력 차 주의 ${reviewedSkillWarningMatches}경기 · 대진 카드 확인`
+    ? `실력 차 주의 ${reviewedSkillWarningMatches}경기 · 대진 카드 확인`
     : null
   const genderCompositionReviewNotice =
     (
@@ -1883,7 +1883,7 @@ function App() {
         ? meetingV2Metrics.postWarmupGenderExceptionMatches
         : scheduleQualityAnalysis.genderCompositionReviewMatches
     ) > 0
-      ? `${meetingUsesClubQuality ? '워밍업 이후 ' : ''}성별 조합 확인 ${
+      ? `성별 조합 확인 ${
           meetingUsesClubQuality
             ? meetingV2Metrics.postWarmupGenderExceptionMatches
             : scheduleQualityAnalysis.genderCompositionReviewMatches
@@ -5562,7 +5562,7 @@ function App() {
                   상대 반복 최대 <strong>{scheduleQualityAnalysis.maximumOpponentMeetings}회</strong>
                 </span>
                 <span className={reviewedSkillWarningMatches > 0 ? 'wait-warning' : ''}>
-                  {meetingUsesClubQuality ? '워밍업 이후 실력 차' : '실력 차'}{' '}
+                  실력 차{' '}
                   <strong>{reviewedSkillWarningMatches}경기</strong>
                 </span>
                 <span className={
@@ -5574,9 +5574,7 @@ function App() {
                     ? 'gender-review-summary'
                     : ''
                 }>
-                  {meetingUsesClubQuality
-                    ? '워밍업 이후 성별 예외'
-                    : '성별 조합 확인'}{' '}
+                  성별 조합 확인{' '}
                   <strong>
                     {meetingUsesClubQuality
                       ? meetingV2Metrics.postWarmupGenderExceptionMatches
@@ -5630,9 +5628,6 @@ function App() {
                 </span>
                 {meetingUsesClubQuality ? (
                   <>
-                    <span>
-                      워밍업 <strong>{meetingV2Metrics.warmupMatches}경기</strong>
-                    </span>
                     <span className={
                       meetingV2Metrics.participantsBelowTightMinimum > 0
                         ? 'wait-warning'
