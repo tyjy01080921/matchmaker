@@ -1339,74 +1339,13 @@ h2 {
   font-weight: 850;
 }
 
-.condition-section {
-  display: grid;
-  grid-column: 1 / -1;
-  gap: 6px;
-}
-
-.condition-section-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 2px 1px 0;
-}
-
-.condition-section-heading strong {
-  color: var(--ink);
-  font-size: 11px;
-  font-weight: 950;
-}
-
-.condition-section-heading span {
-  color: var(--muted);
-  font-size: 9px;
-  font-weight: 800;
-  text-align: right;
-}
-
-.condition-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.automatic-condition-grid {
-  grid-column: 1 / -1;
-}
-
 .automatic-condition-note {
   grid-column: 1 / -1;
+  margin: 0;
   color: var(--muted);
   font-size: 10px;
   font-weight: 800;
-}
-
-.condition-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 34px;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  color: var(--ink);
-  background: var(--paper);
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.condition-row input {
-  width: 15px;
-  min-height: 15px;
-  margin: 0;
-  accent-color: var(--mint);
-}
-
-.condition-row:has(input:disabled) {
-  color: var(--muted);
-  background: #f4f7f7;
+  line-height: 1.5;
 }
 
 .format-list {
@@ -4577,18 +4516,6 @@ textarea {
     gap: 5px;
     margin-bottom: 8px;
     padding: 8px;
-  }
-
-  .condition-row {
-    min-height: 30px;
-    padding: 5px 6px;
-    font-size: 11px;
-    line-height: 1.2;
-  }
-
-  .condition-row input {
-    width: 14px;
-    min-height: 14px;
   }
 
   .number-control {

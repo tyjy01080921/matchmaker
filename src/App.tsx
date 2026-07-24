@@ -1895,9 +1895,6 @@ function App() {
   const groupRepeatWarning = scheduleQualityAnalysis.maximumGroupMeetings > 2
     ? `동일 4인 최대 ${scheduleQualityAnalysis.maximumGroupMeetings}경기`
     : null
-  const partnerRepeatWarning = scheduleQualityAnalysis.maximumPartnerMeetings > 3
-    ? `비선호 파트너 반복 최대 ${scheduleQualityAnalysis.maximumPartnerMeetings}회`
-    : null
   const opponentRepeatWarning = scheduleQualityAnalysis.maximumOpponentMeetings > 6
     ? `같은 상대 최대 ${scheduleQualityAnalysis.maximumOpponentMeetings}회`
     : null
@@ -1908,7 +1905,6 @@ function App() {
     scheduleWaitAnalysis.exceedsLimit ||
     gameSpreadWarning ||
     groupRepeatWarning ||
-    partnerRepeatWarning ||
     opponentRepeatWarning ||
     skillBalanceWarning ||
     (
@@ -1930,7 +1926,6 @@ function App() {
       ...(genderCompositionReviewNotice ? [genderCompositionReviewNotice] : []),
       ...(gameSpreadWarning ? [gameSpreadWarning] : []),
       ...(groupRepeatWarning ? [groupRepeatWarning] : []),
-      ...(partnerRepeatWarning ? [partnerRepeatWarning] : []),
       ...(opponentRepeatWarning ? [opponentRepeatWarning] : []),
     ],
     [
@@ -1938,7 +1933,6 @@ function App() {
       genderCompositionReviewNotice,
       groupRepeatWarning,
       opponentRepeatWarning,
-      partnerRepeatWarning,
       reconciledSpecialWarnings,
       scheduleWaitAnalysis.warning,
       scheduleWarningsForStatus,
@@ -1975,7 +1969,6 @@ function App() {
           scheduleWaitAnalysis.warning,
           gameSpreadWarning,
           groupRepeatWarning,
-          partnerRepeatWarning,
           opponentRepeatWarning,
           skillBalanceWarning,
           genderCompositionReviewNotice,
@@ -2001,7 +1994,6 @@ function App() {
     genderCompositionReviewNotice,
     groupRepeatWarning,
     opponentRepeatWarning,
-    partnerRepeatWarning,
     candidateQualityWarning,
     hasMeetingQualityWarning,
     skillBalanceWarning,
@@ -3759,7 +3751,6 @@ function App() {
         scheduleWaitAnalysis.exceedsLimit,
         scheduleQualityAnalysis.standardGameSpread > 1,
         scheduleQualityAnalysis.maximumGroupMeetings > 2,
-        scheduleQualityAnalysis.maximumPartnerMeetings > 3,
         scheduleQualityAnalysis.maximumOpponentMeetings > 6,
         scheduleQualityAnalysis.teamSkillWarningMatches > 0,
         scheduleQualityAnalysis.genderCompositionReviewMatches > 0,
@@ -5567,9 +5558,6 @@ function App() {
                   경기 <strong>{minimumParticipantGames}~{maximumParticipantGames}경기</strong>
                 </span>
                 <span>동일 4인 최대 <strong>{maximumMeetingGroupCount}경기</strong></span>
-                <span className={scheduleQualityAnalysis.maximumPartnerMeetings > 2 ? 'wait-warning' : ''}>
-                  비선호 파트너 반복 최대 <strong>{scheduleQualityAnalysis.maximumPartnerMeetings}회</strong>
-                </span>
                 <span className={scheduleQualityAnalysis.maximumOpponentMeetings > 6 ? 'wait-warning' : ''}>
                   상대 반복 최대 <strong>{scheduleQualityAnalysis.maximumOpponentMeetings}회</strong>
                 </span>
@@ -6715,7 +6703,7 @@ function App() {
                   type="button"
                   onClick={() => setConditionsOpen((open) => !open)}
                 >
-                  대진 조건
+                  대진 안내
                 </button>
               </div>
             </div>
@@ -6728,21 +6716,12 @@ function App() {
                     첫 경기 워밍업 · 이후 유사 실력과 동일 성별 우선
                   </span>
                 </div>
-                <div className="condition-grid automatic-condition-grid">
-                  <div className="condition-row">첫 경기 최단 배치</div>
-                  <div className="condition-row">최장 대기 25분 우선</div>
-                  <div className="condition-row">타이트 경기 최소 2회</div>
-                  <div className="condition-row">타이트 경기 3회 목표</div>
-                  <div className="condition-row">남복·여복 우선</div>
-                  <div className="condition-row">혼복은 남2·여2</div>
-                  <div className="condition-row">경기 수 차이 1 이하</div>
-                  <div className="condition-row">같은 4인 최대 2회</div>
-                </div>
-                {activeGuests.length > 0 ? (
-                  <small className="automatic-condition-note">
-                    스페셜 참가자는 위 설정의 스페셜 운영 기준을 함께 적용합니다.
-                  </small>
-                ) : null}
+                <p className="automatic-condition-note">
+                  *참가자들의 연령과 실력이 다양할 경우, 실력차가 큰 대진이
+                  조합될 수 있습니다. 대진 생성 후, "실력차"라고 표시된 대진
+                  카드를 직접 수정을 하셔서 최적의 조합을 만드시길
+                  부탁드립니다.
+                </p>
               </div>
             ) : null}
 
