@@ -6713,7 +6713,7 @@ function App() {
                 <div className="fixed-condition-summary">
                   <strong>자동 운영 기준</strong>
                   <span>
-                    첫 경기 워밍업 · 이후 유사 실력과 동일 성별 우선
+                    비슷한 실력과 동일 성별 우선
                   </span>
                 </div>
                 <p className="automatic-condition-note">
