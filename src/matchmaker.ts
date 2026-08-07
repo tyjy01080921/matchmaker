@@ -235,7 +235,7 @@ const scheduleEndMinutes = (matches: Match[]) => Math.max(
   ...matches.map((match) => matchTimeWindow(match).end),
 )
 
-const playerCompleteWaitGaps = (
+const playerOperationalWaitGaps = (
   matches: Match[],
   playerId: string,
   endMinutes: number,
@@ -245,7 +245,6 @@ const playerCompleteWaitGaps = (
   return [
     Math.max(0, windows[0].start),
     ...playerWaitGaps(matches, playerId),
-    Math.max(0, endMinutes - windows[windows.length - 1].end),
   ]
 }
 
@@ -253,7 +252,7 @@ const playerMaximumWaitMinutes = (
   matches: Match[],
   playerId: string,
   endMinutes = scheduleEndMinutes(matches),
-) => Math.max(0, ...playerCompleteWaitGaps(matches, playerId, endMinutes))
+) => Math.max(0, ...playerOperationalWaitGaps(matches, playerId, endMinutes))
 
 const playerWaitAnalysisEndMinutes = (
   player: Player,
@@ -491,19 +490,6 @@ export const analyzeParticipantWaitLimitViolations = (
         nextMatchId: nextMatch.id,
       })
     }
-    const lastMatch = scheduledMatches[scheduledMatches.length - 1]
-    const finalWait = Math.max(
-      0,
-      analysisEndMinutes - matchTimeWindow(lastMatch).end,
-    )
-    if (finalWait > WAIT_PRIORITY_MINUTES) {
-      candidates.push({
-        playerId: player.id,
-        waitMinutes: finalWait,
-        phase: 'final',
-        previousMatchId: lastMatch.id,
-      })
-    }
     const maximumViolation = candidates.sort(
       (left, right) => right.waitMinutes - left.waitMinutes,
     )[0]
@@ -669,7 +655,7 @@ export const analyzeScheduleQuality = (
     ]),
   )
   const waitsByPlayer = activePlayers.map((player) =>
-    playerCompleteWaitGaps(
+    playerOperationalWaitGaps(
       matches,
       player.id,
       analysisEndByPlayer.get(player.id) ?? analysisEndMinutes,

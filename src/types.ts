@@ -156,14 +156,22 @@ export type Schedule = {
 export type WaitLimitRecommendationKind =
   | 'shorter-game'
   | 'more-courts'
-  | 'relax-conditions'
-  | 'reduce-participants'
+  | 'extend-time'
+
+export type WaitLimitRecommendationOutcome = {
+  maximumWaitMinutes: number
+  maximumInitialWaitMinutes: number
+  maximumBetweenWaitMinutes: number
+  participantsOverLimit: number
+}
 
 export type WaitLimitRecommendation = {
   kind: WaitLimitRecommendationKind
   title: string
   detail: string
   verified: boolean
+  settings: MatchSettings
+  outcome: WaitLimitRecommendationOutcome
 }
 
 export type WaitLimitViolationPhase =

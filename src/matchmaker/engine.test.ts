@@ -334,6 +334,27 @@ describe('meeting V2 generation', () => {
     expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(25)
   })
 
+  it('keeps final idle as information instead of an operational failure', () => {
+    const players = makeClubPlayers(8)
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '20:00',
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
+      roundCountLocked: true,
+    }
+    const generated = generateMeetingScheduleV2(players, settings)
+    const schedule = { ...generated, rounds: generated.rounds.slice(0, 2) }
+    const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+
+    expect(metrics.maximumFinalIdleMinutes).toBeGreaterThan(25)
+    expect(metrics.maximumWaitMinutes).toBe(0)
+    expect(metrics.participantsOverWaitLimit).toBe(0)
+    expect(metrics.successIssues).toEqual([])
+  })
+
   it('fills the mixed-duration large schedule and reaches the special target', () => {
     const players = makePlayers(56, 1)
     const schedule = generateMeetingScheduleV2(players, largeSettings)
@@ -366,7 +387,7 @@ describe('meeting V2 generation', () => {
     expect(second).toEqual(first)
   })
 
-  it('reports an operational failure without recalculating every alternative', () => {
+  it('reports an operational failure with recalculated alternatives only', () => {
     const players = makePlayers(47)
     const settings: MatchSettings = {
       ...defaultSettings,
@@ -387,12 +408,15 @@ describe('meeting V2 generation', () => {
 
     expect(result.waitLimitFailure).not.toBeNull()
     expect(result.waitLimitFailure?.searchedScheduleCount).toBeLessThanOrEqual(3)
+    expect(result.waitLimitFailure?.recommendations.length).toBeGreaterThan(0)
     expect(
       result.waitLimitFailure?.recommendations.every(
-        (recommendation) => !recommendation.verified,
+        (recommendation) =>
+          recommendation.verified &&
+          recommendation.outcome.participantsOverLimit === 0,
       ),
     ).toBe(true)
-  }, 10000)
+  }, 20000)
 
   it('keeps a large legacy meeting within fairness and wait limits', () => {
     const players = makePlayers(40)

@@ -3849,11 +3849,34 @@ function App() {
     resetMeetingTargetRounds()
   }
 
-  const handleReset = () => {
+  const resetParticipants = () => {
+    if (players.length === 0) {
+      setNotice('초기화할 참가자 없음')
+      return
+    }
     const confirmed = window.confirm(
-      '초기화하면 참가자, 설정, 경기 결과가 기본값으로 돌아갑니다.\n계속 초기화할까요?',
+      '참가자 명단을 모두 비울까요?\n현재 대진표, 설정과 경품 정보는 유지됩니다.',
     )
     if (!confirmed) return
+
+    setPlayers(defaultPlayers)
+    setPlayerDetailsOpen(false)
+    setBulkOpen(false)
+    setBulkText('')
+    setPreferredPartnerDrafts({})
+    setNotice('참가자 초기화됨 · 생성 필요')
+  }
+
+  const handleReset = () => {
+    const confirmed = window.confirm(
+      '참가자, 설정, 대진표, 경기 결과, 수동 수정과 경품 정보가 모두 삭제됩니다.\n전체 초기화할까요?',
+    )
+    if (!confirmed) return
+
+    if (rouletteTimerRef.current !== null) {
+      window.clearTimeout(rouletteTimerRef.current)
+      rouletteTimerRef.current = null
+    }
 
     setPlayers(defaultPlayers)
     setSettings(meetingDefaultSettings)
@@ -3866,6 +3889,14 @@ function App() {
     setPairMixes({})
     setMatchNameOverrides({})
     setMeetingLineups({})
+    setPrizeDraw({
+      ...defaultPrizeDrawState,
+      results: [],
+      missionResults: [],
+      matchMissions: {},
+    })
+    setIsRouletteSpinning(false)
+    setRouletteWinnerName('')
     setPlayerDetailsOpen(false)
     setBulkOpen(false)
     setBulkText('')
@@ -3954,13 +3985,17 @@ function App() {
             failGeneration('검토할 대진을 생성하지 못했습니다.')
             return
           }
+          const unassignedCount = response.waitLimitFailure.participantViolations
+            .filter((violation) => violation.phase === 'unassigned').length
           finishWorker()
           setScheduleOverride(response.schedule)
           setMeetingWaitLimitFailure(response.waitLimitFailure)
           setMeetingOperationLabel('대진 검증 실패')
           setMeetingGenerationMessage(
-            `최장 대기 ${response.waitLimitFailure.maximumWaitMinutes}분 · ` +
-            `25분 초과 ${response.waitLimitFailure.participantsOverLimit}명`,
+            unassignedCount > 0
+              ? `0경기 ${unassignedCount}명 · 현재 운영 조건에서 전원 배정 불가`
+              : `운영 중 최장 대기 ${response.waitLimitFailure.maximumWaitMinutes}분 · ` +
+                `조정 필요 ${response.waitLimitFailure.participantsOverLimit}명`,
           )
           setNotice('25분 제한으로 대진 생성 불가')
           return
@@ -4000,13 +4035,13 @@ function App() {
     setNotice(meetingGenerationCompletedNoticeRef.current)
   }
 
-  const regenerateReviewedMeeting = () => {
+  const generateAlternativeMeeting = () => {
     startMeetingGeneration(
       {
         ...generatedMeetingSettings,
         seed: generatedMeetingSettings.seed + MEETING_GENERATION_ATTEMPTS,
       },
-      '새 대진 생성됨',
+      '다른 대진 생성됨',
       true,
     )
   }
@@ -5015,6 +5050,16 @@ function App() {
     )
   }
 
+  const applyWaitLimitRecommendation = (
+    recommendation: MeetingWaitLimitFailure['recommendations'][number],
+  ) => {
+    startMeetingGeneration(
+      recommendation.settings,
+      `${recommendation.title} 적용됨`,
+      true,
+    )
+  }
+
   const acceptWaitLimitOverride = () => {
     const failure = meetingWaitLimitFailure
     if (!failure) return
@@ -5479,20 +5524,51 @@ function App() {
                       {meetingWaitLimitFailure.maximumBetweenWaitMinutes}분
                     </strong>
                   </span>
-                  <span className={
-                    meetingWaitLimitFailure.maximumFinalIdleMinutes > 25
-                      ? 'over-limit'
-                      : ''
-                  }>
-                    마지막 경기 후
+                  <span>
+                    종료 후 여유
                     <strong>
                       {meetingWaitLimitFailure.maximumFinalIdleMinutes}분
                     </strong>
                   </span>
                 </div>
+                <div className="generation-wait-reasons">
+                  <strong>실패 원인</strong>
+                  <div>
+                    {meetingWaitLimitFailure.participantViolations.some(
+                      (violation) => violation.phase === 'unassigned',
+                    ) ? (
+                      <span>
+                        <b>0경기</b>{' '}
+                        {meetingWaitLimitFailure.participantViolations.filter(
+                          (violation) => violation.phase === 'unassigned',
+                        ).length}명
+                      </span>
+                    ) : null}
+                    {meetingWaitLimitFailure.participantViolations.some(
+                      (violation) => violation.phase === 'initial',
+                    ) ? (
+                      <span>
+                        <b>첫 경기 지연</b>{' '}
+                        {meetingWaitLimitFailure.participantViolations.filter(
+                          (violation) => violation.phase === 'initial',
+                        ).length}명
+                      </span>
+                    ) : null}
+                    {meetingWaitLimitFailure.participantViolations.some(
+                      (violation) => violation.phase === 'between',
+                    ) ? (
+                      <span>
+                        <b>경기 간 대기</b>{' '}
+                        {meetingWaitLimitFailure.participantViolations.filter(
+                          (violation) => violation.phase === 'between',
+                        ).length}명
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
                 <div className="generation-wait-participants">
                   <strong>
-                    25분 초과 참가자 {meetingWaitLimitFailure.participantViolations.length}명
+                    조정 필요 참가자 {meetingWaitLimitFailure.participantViolations.length}명
                   </strong>
                   <div>
                     {meetingWaitLimitFailure.participantViolations.map(
@@ -5522,7 +5598,7 @@ function App() {
                   </div>
                 </div>
                 <div className="generation-wait-recommendations">
-                  <strong>해결 방법</strong>
+                  <strong>재계산 통과 변경안</strong>
                   {meetingWaitLimitFailure.recommendations.length > 0 ? (
                     meetingWaitLimitFailure.recommendations.map(
                       (recommendation) => (
@@ -5531,23 +5607,28 @@ function App() {
                             <b>{recommendation.title}</b>
                             <span>{recommendation.detail}</span>
                           </div>
-                          <em className={recommendation.verified ? 'verified' : ''}>
-                            {recommendation.verified
-                              ? '재계산 통과'
-                              : '계산상 권장'}
-                          </em>
+                          <em className="verified">재계산 통과</em>
+                          <button
+                            type="button"
+                            onClick={() => applyWaitLimitRecommendation(recommendation)}
+                          >
+                            적용 후 생성
+                          </button>
                         </article>
                       ),
                     )
                   ) : (
-                    <small>
-                      코트 수, 경기 시간 또는 참가 인원을 조정해 주세요.
-                    </small>
+                    <div className="generation-wait-no-resolution">
+                      <b>자동으로 통과하는 변경안을 찾지 못했습니다.</b>
+                      <small>
+                        참가 인원 조정은 마지막 수단으로 검토하고, 먼저 수동 수정이나
+                        직접 설정을 이용해 주세요.
+                      </small>
+                    </div>
                   )}
                 </div>
                 <small className="generation-search-count">
-                  최대 {meetingWaitLimitFailure.searchedScheduleCount}개 후보를
-                  자동 탐색했습니다.
+                  변경안마다 새 대진을 만들어 25분 제한을 다시 검증했습니다.
                 </small>
               </div>
             ) : null}
@@ -5611,12 +5692,8 @@ function App() {
                 }>
                   경기 간 대기 <strong>{scheduleWaitAnalysis.maximumBetweenWaitMinutes}분</strong>
                 </span>
-                <span className={
-                  scheduleWaitAnalysis.maximumFinalIdleMinutes > 25
-                    ? 'wait-warning'
-                    : ''
-                }>
-                  마지막 경기 후 여유 <strong>{scheduleWaitAnalysis.maximumFinalIdleMinutes}분</strong>
+                <span>
+                  종료 후 여유 <strong>{scheduleWaitAnalysis.maximumFinalIdleMinutes}분</strong>
                 </span>
                 <span className={scheduleQualityAnalysis.participantsOverWaitLimit > 0 ? 'wait-warning' : ''}>
                   25분 초과 <strong>{scheduleQualityAnalysis.participantsOverWaitLimit}명</strong>
@@ -5653,8 +5730,8 @@ function App() {
                 <button type="button" className="primary-action" onClick={acceptGeneratedMeeting}>
                   이 대진 사용
                 </button>
-                <button type="button" onClick={regenerateReviewedMeeting}>
-                  다시 생성
+                <button type="button" onClick={generateAlternativeMeeting}>
+                  다른 대진 보기
                 </button>
               </div>
             ) : meetingOperationLabel === '대진 검증 실패' ? (
@@ -5952,23 +6029,20 @@ function App() {
                 >
                   진행
                 </button>
-                <button
-                  type="button"
-                  disabled={isMeetingGenerating || totalMatches === 0}
-                  title={
-                    totalMatches === 0
-                      ? '먼저 기본 대진을 생성해 주세요.'
-                      : '같은 운영 기준으로 새 대진 생성'
-                  }
-                  onClick={regenerateReviewedMeeting}
-                >
-                  다시 생성
-                </button>
                 <button type="button" onClick={handleCopyShareLink}>
                   공유
                 </button>
                 <button type="button" onClick={handlePrintSchedule}>
                   저장
+                </button>
+                <button
+                  type="button"
+                  className="danger-action"
+                  disabled={isMeetingGenerating}
+                  title="참가자, 설정, 대진표, 경기 결과와 경품 정보 전체 삭제"
+                  onClick={handleReset}
+                >
+                  전체 초기화
                 </button>
                 {hasMeetingDraftChanges ? (
                   <span className="header-status draft-status">변경사항 있음</span>
@@ -6691,7 +6765,7 @@ function App() {
                 <button type="button" onClick={() => setBulkOpen((open) => !open)}>
                   {bulkOpen && players.length > 0 ? '닫기' : '명단'}
                 </button>
-                <button type="button" onClick={handleReset}>
+                <button type="button" onClick={resetParticipants}>
                   초기화
                 </button>
                 <button

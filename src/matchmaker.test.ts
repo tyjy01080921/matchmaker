@@ -1086,7 +1086,7 @@ describe('generateSchedule', () => {
     expect(participantViolations[0].nextMatchId).toBeTruthy()
   })
 
-  it('includes first-game and final idle time in the 25-minute wait limit', () => {
+  it('reports final idle time without treating it as an operational wait failure', () => {
     const players = Array.from({ length: 8 }, (_, index) =>
       makeTestPlayer(`wait-range-${index + 1}`, 'B'),
     )
@@ -1101,20 +1101,20 @@ describe('generateSchedule', () => {
     }
     const schedule = generateSchedule(players, settings)
     for (const match of schedule.rounds[0].matches) {
-      match.startOffsetMinutes = 45
+      match.startOffsetMinutes = 0
       match.durationMinutes = 15
     }
 
     const analysis = analyzeScheduleWait(schedule, players, settings)
     const quality = analyzeScheduleQuality(schedule, players, settings)
 
-    expect(analysis.maximumWaitMinutes).toBe(60)
-    expect(analysis.maximumInitialWaitMinutes).toBe(45)
+    expect(analysis.maximumWaitMinutes).toBe(0)
+    expect(analysis.maximumInitialWaitMinutes).toBe(0)
     expect(analysis.maximumBetweenWaitMinutes).toBe(0)
-    expect(analysis.maximumFinalIdleMinutes).toBe(60)
+    expect(analysis.maximumFinalIdleMinutes).toBe(105)
     expect(analysis.zeroGameParticipantCount).toBe(0)
-    expect(analysis.exceedsLimit).toBe(true)
-    expect(quality.participantsOverWaitLimit).toBe(8)
+    expect(analysis.exceedsLimit).toBe(false)
+    expect(quality.participantsOverWaitLimit).toBe(0)
   })
 
   it('links an excessive first-game wait to the participant first match', () => {
@@ -1175,7 +1175,7 @@ describe('generateSchedule', () => {
     expect(wait.maximumFinalIdleMinutes).toBeLessThanOrEqual(25)
   })
 
-  it('blocks an over-limit plan and returns lightweight resolution options', () => {
+  it('blocks an over-limit plan and returns only verified resolution options', () => {
     const players = Array.from({ length: 16 }, (_, index) =>
       makeTestPlayer(`wait-resolution-fail-${index + 1}`, 'B'),
     )
@@ -1205,10 +1205,20 @@ describe('generateSchedule', () => {
       expect.arrayContaining([
         expect.objectContaining({
           kind: 'more-courts',
-          verified: false,
+          verified: true,
+          settings: expect.objectContaining({ courtCount: 2 }),
+          outcome: expect.objectContaining({
+            participantsOverLimit: 0,
+            maximumWaitMinutes: 15,
+          }),
         }),
       ]),
     )
+    expect(
+      result.waitLimitFailure?.recommendations.some(
+        (recommendation) => recommendation.kind === 'shorter-game',
+      ),
+    ).toBe(false)
   })
 
   it('blocks zero-game participants and a standard game spread over one', () => {

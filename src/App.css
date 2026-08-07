@@ -224,6 +224,35 @@
   color: #b42318;
 }
 
+.generation-wait-reasons {
+  display: grid;
+  gap: 5px;
+}
+
+.generation-wait-reasons > strong {
+  color: var(--navy);
+  font-size: 13px;
+  letter-spacing: 0;
+}
+
+.generation-wait-reasons > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.generation-wait-reasons span {
+  padding: 5px 7px;
+  border-radius: 999px;
+  color: #8a4b08;
+  background: #fff2cd;
+  font-size: 11px;
+}
+
+.generation-wait-reasons b {
+  color: #b42318;
+}
+
 .generation-wait-participants {
   display: grid;
   gap: 6px;
@@ -292,7 +321,7 @@
 
 .generation-wait-recommendations article {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
@@ -333,6 +362,25 @@
 .generation-wait-recommendations em.verified {
   color: #087668;
   background: #e4faf5;
+}
+
+.generation-wait-recommendations article > button {
+  min-height: 32px;
+  padding: 5px 8px;
+  border-color: #86d7c8;
+  color: var(--navy);
+  background: var(--soft-green);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.generation-wait-no-resolution {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
 }
 
 .generation-search-count {
@@ -444,8 +492,14 @@
   }
 
   .generation-wait-participants > strong,
-  .generation-wait-participants b {
+  .generation-wait-participants b,
+  .generation-wait-reasons > strong {
     font-size: 10px;
+  }
+
+  .generation-wait-reasons span {
+    padding: 3px 5px;
+    font-size: 8px;
   }
 
   .generation-wait-participants > div {
@@ -466,7 +520,13 @@
   }
 
   .generation-wait-recommendations article {
+    grid-template-columns: minmax(0, 1fr) auto;
     padding: 5px 7px;
+  }
+
+  .generation-wait-recommendations article > button {
+    grid-column: 1 / -1;
+    min-height: 28px;
   }
 
   .generation-wait-recommendations b {
@@ -679,6 +739,17 @@ input:disabled {
 
 .primary-action:hover {
   color: #fff;
+}
+
+.danger-action {
+  border-color: rgba(177, 61, 61, 0.42);
+  color: var(--red);
+  background: var(--soft-red);
+}
+
+.danger-action:hover {
+  border-color: var(--red);
+  color: var(--red);
 }
 
 .app-shell {

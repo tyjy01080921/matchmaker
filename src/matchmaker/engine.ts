@@ -30,6 +30,12 @@ import {
   analyzeMeetingScheduleV2,
   type MeetingV2Metrics,
 } from './validation'
+import {
+  MAX_BOOKING_MINUTES,
+  clockTimeAtOffset,
+  getBookingDurationMinutes,
+  getBookingRoundCount,
+} from '../scheduleTime'
 
 export type MeetingSlotKind = 'general' | 'special'
 
@@ -2389,51 +2395,97 @@ const recommendedParticipantCount = (
     : capacity
 }
 
-const lightweightRecommendations = (
+const recommendationOutcome = (
+  metrics: MeetingV2Metrics,
+) => ({
+  maximumWaitMinutes: metrics.maximumWaitMinutes,
+  maximumInitialWaitMinutes: metrics.maximumInitialWaitMinutes,
+  maximumBetweenWaitMinutes: metrics.maximumBetweenWaitMinutes,
+  participantsOverLimit: metrics.participantsOverWaitLimit,
+})
+
+const verifyRecommendation = (
   players: Player[],
   settings: MatchSettings,
-  metrics: MeetingV2Metrics,
-  recommendedCount: number,
+  kind: MeetingWaitLimitFailure['recommendations'][number]['kind'],
+  title: string,
+  context: string,
+): MeetingWaitLimitFailure['recommendations'][number] | null => {
+  const candidate = generateMeetingScheduleV2Optimized(players, settings, 1)
+  if (!isSuccessfulCandidate(candidate)) return null
+  return {
+    kind,
+    title,
+    detail:
+      `${context} · 재계산 결과 첫 경기 최대 ` +
+      `${candidate.metrics.maximumInitialWaitMinutes}분, 경기 간 최대 ` +
+      `${candidate.metrics.maximumBetweenWaitMinutes}분`,
+    verified: true,
+    settings,
+    outcome: recommendationOutcome(candidate.metrics),
+  }
+}
+
+const verifiedRecommendations = (
+  players: Player[],
+  settings: MatchSettings,
 ): MeetingWaitLimitFailure['recommendations'] => {
   const recommendations: MeetingWaitLimitFailure['recommendations'] = []
-  const shorterDuration = ([12, 10] as const).find(
-    (duration) => duration < settings.normalGameMinutes,
+
+  for (const duration of [12, 10] as const) {
+    if (duration >= settings.normalGameMinutes) continue
+    const verified = verifyRecommendation(
+      players,
+      { ...settings, normalGameMinutes: duration },
+      'shorter-game',
+      `일반 경기를 ${duration}분으로 운영`,
+      '경기 시간을 줄일 수 있을 때 적용',
+    )
+    if (verified) {
+      recommendations.push(verified)
+      break
+    }
+  }
+
+  const bookingMinutes = getBookingDurationMinutes(
+    settings.startTime,
+    settings.endTime,
   )
-  if (shorterDuration) {
-    recommendations.push({
-      kind: 'shorter-game',
-      title: `경기 시간을 ${shorterDuration}분으로 단축`,
-      detail: '설정에 적용한 뒤 대진을 다시 생성해 주세요.',
-      verified: false,
-    })
+  for (const extensionMinutes of [10, 20, 30]) {
+    if (bookingMinutes + extensionMinutes > MAX_BOOKING_MINUTES) break
+    const endTime = clockTimeAtOffset(settings.endTime, extensionMinutes)
+    const targetRoundCount = getBookingRoundCount(settings.startTime, endTime)
+    const verified = verifyRecommendation(
+      players,
+      {
+        ...settings,
+        endTime,
+        targetRoundCount,
+        pacingRoundCount: targetRoundCount,
+        roundCountLocked: true,
+      },
+      'extend-time',
+      `운영 종료를 ${extensionMinutes}분 연장`,
+      `${endTime} 종료가 가능할 때 적용`,
+    )
+    if (verified) {
+      recommendations.push(verified)
+      break
+    }
   }
+
   if (settings.courtCount < 12) {
-    recommendations.push({
-      kind: 'more-courts',
-      title: `코트를 ${settings.courtCount + 1}개로 확대`,
-      detail: '설정에 적용한 뒤 대진을 다시 생성해 주세요.',
-      verified: false,
-    })
+    const courtCount = settings.courtCount + 1
+    const verified = verifyRecommendation(
+      players,
+      { ...settings, courtCount },
+      'more-courts',
+      `코트를 ${courtCount}개로 운영`,
+      '추가 코트를 확보할 수 있을 때 적용',
+    )
+    if (verified) recommendations.push(verified)
   }
-  if (recommendedCount < players.filter((player) => player.active).length) {
-    recommendations.push({
-      kind: 'reduce-participants',
-      title: `참가 인원 ${recommendedCount}명 이하 검토`,
-      detail: '현재 코트 회전율과 최장 대기를 기준으로 계산했습니다.',
-      verified: false,
-    })
-  }
-  if (
-    metrics.maximumWaitMinutes > MEETING_MAX_WAIT_MINUTES &&
-    Object.values(settings.conditionOptions).some(Boolean)
-  ) {
-    recommendations.push({
-      kind: 'relax-conditions',
-      title: '선택 균형 조건 완화',
-      detail: '필수 조건은 유지하고 우선 조건만 줄입니다.',
-      verified: false,
-    })
-  }
+
   return recommendations
 }
 
@@ -2485,7 +2537,7 @@ export const generateMeetingScheduleV2WithWaitResolution = (
     }
   }
 
-  onProgress?.('충족하지 못한 운영 조건과 해결 방법을 정리하고 있습니다.')
+  onProgress?.('설정 변경안을 다시 계산해 통과 여부를 확인하고 있습니다.')
   const recommendedCount = recommendedParticipantCount(
     players,
     settings,
@@ -2501,12 +2553,7 @@ export const generateMeetingScheduleV2WithWaitResolution = (
       participantsOverLimit: selected.metrics.participantsOverWaitLimit,
       recommendedParticipantCount: recommendedCount,
       searchedScheduleCount: selected.index + 1,
-      recommendations: lightweightRecommendations(
-        players,
-        settings,
-        selected.metrics,
-        recommendedCount,
-      ),
+      recommendations: verifiedRecommendations(players, settings),
       participantViolations: selected.metrics.participantViolations,
     },
     failureIssues: [...new Set(scheduleFailureIssues)],

@@ -212,7 +212,7 @@ const waitDetails = (
     }
   }
 
-  const gaps: Array<{
+  const operationalGaps: Array<{
     waitMinutes: number
     phase: WaitLimitParticipantViolation['phase']
     previousMatchId?: string
@@ -225,33 +225,33 @@ const waitDetails = (
     },
   ]
   for (let index = 1; index < windows.length; index += 1) {
-    gaps.push({
+    operationalGaps.push({
       waitMinutes: Math.max(0, windows[index].start - windows[index - 1].end),
       phase: 'between',
       previousMatchId: playerMatches[index - 1].id,
       nextMatchId: playerMatches[index].id,
     })
   }
-  gaps.push({
-    waitMinutes: Math.max(0, analysisEnd - windows[windows.length - 1].end),
-    phase: 'final',
-    previousMatchId: playerMatches[playerMatches.length - 1].id,
-  })
-  const maximumGap = [...gaps].sort(
+  const finalIdleMinutes = Math.max(
+    0,
+    analysisEnd - windows[windows.length - 1].end,
+  )
+  const maximumGap = [...operationalGaps].sort(
     (left, right) => right.waitMinutes - left.waitMinutes,
   )[0]
   return {
-    initial: gaps[0].waitMinutes,
+    initial: operationalGaps[0].waitMinutes,
     between: Math.max(
       0,
-      ...gaps
+      ...operationalGaps
         .filter((gap) => gap.phase === 'between')
         .map((gap) => gap.waitMinutes),
     ),
-    final: gaps[gaps.length - 1].waitMinutes,
+    final: finalIdleMinutes,
     maximum: maximumGap.waitMinutes,
     average:
-      gaps.reduce((sum, gap) => sum + gap.waitMinutes, 0) / gaps.length,
+      operationalGaps.reduce((sum, gap) => sum + gap.waitMinutes, 0) /
+      operationalGaps.length,
     violation:
       maximumGap.waitMinutes > MEETING_MAX_WAIT_MINUTES
         ? ({
