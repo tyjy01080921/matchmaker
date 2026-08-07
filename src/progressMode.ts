@@ -70,6 +70,17 @@ export const toggleProgressWinner = (
   }
 }
 
+export const toggleMeetingWinner = (
+  result: MatchResult | undefined,
+  winnerSide: MatchWinnerSide,
+): MatchResult => {
+  const current = result ?? emptyProgressResult()
+  return {
+    ...current,
+    winnerSide: current.winnerSide === winnerSide ? undefined : winnerSide,
+  }
+}
+
 export type MeetingCourtLane = {
   court: number
   pending: Match[]

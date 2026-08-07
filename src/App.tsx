@@ -75,6 +75,7 @@ import {
   getProgressWinnerSide,
   getUndoableTournamentMatchId,
   initializeAvailableMeetingAssignments,
+  toggleMeetingWinner,
   toggleProgressWinner,
   updateProgressScore,
 } from './progressMode'
@@ -4742,26 +4743,10 @@ function App() {
   }
 
   const updateMatchWinner = (matchId: string, winnerSide: MatchWinnerSide) => {
-    setResults((current) => {
-      const previous = current[matchId] ?? {
-        teamAScore: '',
-        teamBScore: '',
-        completed: false,
-        note: '',
-      }
-      const currentWinnerSide = resultWinnerSide(previous)
-      const nextWinnerSide =
-        currentWinnerSide === winnerSide ? undefined : winnerSide
-
-      return {
-        ...current,
-        [matchId]: {
-          ...previous,
-          completed: true,
-          winnerSide: nextWinnerSide,
-        },
-      }
-    })
+    setResults((current) => ({
+      ...current,
+      [matchId]: toggleMeetingWinner(current[matchId], winnerSide),
+    }))
   }
 
   const applyBulkPlayers = (mode: 'append' | 'replace') => {
@@ -6402,7 +6387,11 @@ function App() {
             </button>
           </div>
 
-          <div className={`header-actions ${isSharedMode ? '' : 'operator-actions'}`}>
+          <div
+            className={`header-actions ${
+              isSharedMode ? '' : `operator-actions ${appMode}-operator-actions`
+            }`}
+          >
             {isSharedMode ? (
               <>
                 <div className="header-action-with-help">

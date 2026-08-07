@@ -15,6 +15,7 @@ import {
   hasTournamentWinner,
   hasProgressScorePair,
   initializeAvailableMeetingAssignments,
+  toggleMeetingWinner,
   toggleProgressWinner,
   updateProgressScore,
 } from './progressMode'
@@ -115,6 +116,21 @@ describe('progress mode helpers', () => {
     expect(getProgressWinnerSide(selected)).toBe('B')
     expect(cleared.winnerSide).toBeUndefined()
     expect(cleared.completed).toBe(false)
+  })
+
+  it('keeps meeting winner selection separate from completion', () => {
+    const pending = toggleMeetingWinner(undefined, 'A')
+    const completed = toggleMeetingWinner(
+      { ...pending, completed: true },
+      'B',
+    )
+
+    expect(pending).toMatchObject({ winnerSide: 'A', completed: false })
+    expect(completed).toMatchObject({ winnerSide: 'B', completed: true })
+    expect(toggleMeetingWinner(completed, 'B')).toMatchObject({
+      winnerSide: undefined,
+      completed: true,
+    })
   })
 
   it('does not derive a winner from a tied score', () => {
