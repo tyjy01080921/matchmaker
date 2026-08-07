@@ -34,6 +34,7 @@ import {
   getMatchSkillWarningLevel,
   generateTournamentLineups,
   generateTournamentSchedule,
+  makeDefaultMeetingContinuationState,
   makeNumberedTournamentPlayers,
   getTournamentMatchWinnerId as tournamentWinnerTeamId,
   rankMeetingSwapCandidates,
@@ -68,6 +69,7 @@ import {
   buildTournamentCourtLanes,
   canUndoAvailableMeetingMatch,
   getMeetingMatchSequence,
+  getMeetingReplanLockedMatchIds,
   getMeetingSequenceNumber,
   getNextAvailableMeetingMatch,
   getProgressWinnerSide,
@@ -113,9 +115,11 @@ import type {
   MatchResult,
   MatchWinnerSide,
   MatchSettings,
+  MeetingContinuationState,
   MeetingCourtAssignments,
   MeetingWaitLimitFailure,
   MeetingLineupsByMatch,
+  MeetingReplanResolution,
   Player,
   PrizeDrawState,
   ResultsByMatch,
@@ -146,6 +150,10 @@ import {
 
 const STORAGE_KEY = 'badminton-matchmaker-v1'
 const LAST_MEETING_SCHEDULE_KEY = 'badminton-matchmaker-last-meeting-v1'
+const LAST_MEETING_SCHEDULE_BACKUP_KEY =
+  'badminton-matchmaker-last-meeting-backup-v2'
+const PARTICIPANT_REPLAN_HELP =
+  '진행 중 참가자 명단을 변경한 뒤 남은 대진을 재생성할 수 있습니다.'
 const CONTACT_EMAIL = 'ama_official@naver.com'
 const APP_VERSION = '0.0.1'
 const meetingDefaultSettings: MatchSettings = {
@@ -186,6 +194,7 @@ type MeetingGenerationWorkerResponse = {
   requestId: number
   schedule?: Schedule
   waitLimitFailure?: MeetingWaitLimitFailure
+  replan?: MeetingReplanResolution
   progress?: string
   error?: string
 }
@@ -235,6 +244,7 @@ type StoredState = {
   pairMixes: Record<string, number>
   matchNameOverrides: MatchNameOverrides
   meetingLineups: MeetingLineupsByMatch
+  meetingContinuation: MeetingContinuationState
   prizeDraw: PrizeDrawState
   tournamentTeams: TournamentTeam[]
   tournamentSettings: TournamentSettings
@@ -244,7 +254,7 @@ type StoredState = {
 }
 
 type StoredMeetingSchedule = {
-  version: 1
+  version: 1 | 2
   savedAt: string
   players: Player[]
   settings: MatchSettings
@@ -254,6 +264,7 @@ type StoredMeetingSchedule = {
   pairMixes: Record<string, number>
   matchNameOverrides: MatchNameOverrides
   meetingLineups: MeetingLineupsByMatch
+  meetingContinuation?: MeetingContinuationState
   prizeDraw: PrizeDrawState
 }
 
@@ -994,14 +1005,58 @@ const legacyMeetingEventNames = new Set([
   legacyEnglishTitle,
 ])
 
-const readStoredMeetingSchedule = (): Partial<StoredMeetingSchedule> | null => {
+const normalizeMeetingContinuationState = (
+  value: Partial<MeetingContinuationState> | undefined,
+): MeetingContinuationState => {
+  const fallback = makeDefaultMeetingContinuationState()
+  if (!value || value.version !== 1) return fallback
+  return {
+    version: 1,
+    revision: Math.max(0, Math.floor(Number(value.revision) || 0)),
+    mode: value.mode === 'late-special-unlimited'
+      ? 'late-special-unlimited'
+      : 'standard',
+    ...(typeof value.activatedAtOffsetMinutes === 'number'
+      ? {
+          activatedAtOffsetMinutes: Math.max(
+            0,
+            Math.floor(value.activatedAtOffsetMinutes),
+          ),
+        }
+      : {}),
+    players: Object.fromEntries(
+      Object.entries(value.players ?? {}).map(([playerId, state]) => [
+        playerId,
+        {
+          eligibleFromOffsetMinutes: Math.max(
+            0,
+            Math.floor(Number(state?.eligibleFromOffsetMinutes) || 0),
+          ),
+          fairnessGameCredit: Math.max(
+            0,
+            Math.floor(Number(state?.fairnessGameCredit) || 0),
+          ),
+          guestGameCredit: Math.max(
+            0,
+            Math.floor(Number(state?.guestGameCredit) || 0),
+          ),
+        },
+      ]),
+    ),
+  }
+}
+
+const readStoredMeetingSchedule = (
+  storageKey = LAST_MEETING_SCHEDULE_KEY,
+): Partial<StoredMeetingSchedule> | null => {
   if (typeof window === 'undefined') return null
 
   try {
-    const raw = window.localStorage.getItem(LAST_MEETING_SCHEDULE_KEY)
+    const raw = window.localStorage.getItem(storageKey)
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<StoredMeetingSchedule>
-    return parsed.version === 1 && Array.isArray(parsed.players)
+    return (parsed.version === 1 || parsed.version === 2) &&
+      Array.isArray(parsed.players)
       ? parsed
       : null
   } catch {
@@ -1057,6 +1112,7 @@ const readStoredState = (): StoredState => {
       pairMixes: {},
       matchNameOverrides: {},
       meetingLineups: {},
+      meetingContinuation: makeDefaultMeetingContinuationState(),
       prizeDraw: defaultPrizeDrawState,
       tournamentTeams: defaultTournamentTeams,
       tournamentSettings: defaultTournamentSettings,
@@ -1116,6 +1172,11 @@ const readStoredState = (): StoredState => {
       meetingLineups: savedMeetingPlayers
         ? (savedMeetingSchedule?.meetingLineups ?? {})
         : {},
+      meetingContinuation: savedMeetingPlayers
+        ? normalizeMeetingContinuationState(
+            savedMeetingSchedule?.meetingContinuation,
+          )
+        : normalizeMeetingContinuationState(parsed.meetingContinuation),
       prizeDraw: savedMeetingPlayers
         ? normalizePrizeDrawState(savedMeetingSchedule?.prizeDraw)
         : storedPlayersAreLegacySample
@@ -1144,6 +1205,7 @@ const readStoredState = (): StoredState => {
       pairMixes: {},
       matchNameOverrides: {},
       meetingLineups: {},
+      meetingContinuation: makeDefaultMeetingContinuationState(),
       prizeDraw: defaultPrizeDrawState,
       tournamentTeams: defaultTournamentTeams,
       tournamentSettings: defaultTournamentSettings,
@@ -1176,6 +1238,7 @@ const storedStateFromSharePayload = (payload: SharePayload): StoredState => {
     pairMixes: cachedMeetingSchedule ? {} : (payload.pairMixes ?? {}),
     matchNameOverrides: payload.matchNameOverrides ?? {},
     meetingLineups: cachedMeetingSchedule ? {} : (payload.meetingLineups ?? {}),
+    meetingContinuation: makeDefaultMeetingContinuationState(),
     prizeDraw: normalizePrizeDrawState(payload.prizeDraw),
     tournamentTeams: payload.tournamentTeams?.length
       ? payload.tournamentTeams.map((team, index) =>
@@ -1600,6 +1663,8 @@ function App() {
   const [meetingLineups, setMeetingLineups] = useState<MeetingLineupsByMatch>(
     initialState.meetingLineups,
   )
+  const [meetingContinuation, setMeetingContinuation] =
+    useState<MeetingContinuationState>(initialState.meetingContinuation)
   const [prizeDraw, setPrizeDraw] = useState<PrizeDrawState>(
     initialState.prizeDraw,
   )
@@ -1637,6 +1702,9 @@ function App() {
   const [tournamentTeamsOpen, setTournamentTeamsOpen] = useState(true)
   const [conditionsOpen, setConditionsOpen] = useState(false)
   const [levelHelpOpen, setLevelHelpOpen] = useState(false)
+  const [participantReplanHelpOpen, setParticipantReplanHelpOpen] = useState<
+    'add' | 'input' | null
+  >(null)
   const [levelTierEditorOpen, setLevelTierEditorOpen] = useState(false)
   const [levelTierDraft, setLevelTierDraft] = useState<LevelTierTable>(
     () => normalizeLevelTiers(initialState.settings.levelTiers),
@@ -1665,6 +1733,10 @@ function App() {
   const [rouletteWinnerName, setRouletteWinnerName] = useState('')
   const [isRouletteSpinning, setIsRouletteSpinning] = useState(false)
   const [isMeetingGenerating, setIsMeetingGenerating] = useState(false)
+  const [isMeetingReplanning, setIsMeetingReplanning] = useState(false)
+  const [hasMeetingBackup, setHasMeetingBackup] = useState(
+    () => Boolean(window.localStorage.getItem(LAST_MEETING_SCHEDULE_BACKUP_KEY)),
+  )
   const [isMeetingStatusRefreshing, setIsMeetingStatusRefreshing] = useState(false)
   const [isShortShareLoading, setIsShortShareLoading] = useState(
     Boolean(initialContext.shortShareId),
@@ -1693,15 +1765,16 @@ function App() {
   const meetingGenerationCompletedNoticeRef = useRef('대진 완료')
   const isRosterDrafting = !playerDetailsOpen || players.length === 0
   const showBulkPlayerInput = bulkOpen || isRosterDrafting
-  const hasMeetingDraftChanges = useMemo(
-    () =>
-      JSON.stringify({ players, settings }) !==
-      JSON.stringify({
-        players: generatedMeetingPlayers,
-        settings: generatedMeetingSettings,
-      }),
-    [generatedMeetingPlayers, generatedMeetingSettings, players, settings],
+  const hasPlayerDraftChanges = useMemo(
+    () => JSON.stringify(players) !== JSON.stringify(generatedMeetingPlayers),
+    [generatedMeetingPlayers, players],
   )
+  const hasMeetingSettingsDraftChanges = useMemo(
+    () => JSON.stringify(settings) !== JSON.stringify(generatedMeetingSettings),
+    [generatedMeetingSettings, settings],
+  )
+  const hasMeetingDraftChanges =
+    hasPlayerDraftChanges || hasMeetingSettingsDraftChanges
 
   const rawSchedule = scheduleOverride ?? emptyMeetingSchedule
   const schedule = useMemo(() => applyMeetingLineups(
@@ -1710,7 +1783,7 @@ function App() {
     meetingLineups,
   ), [generatedMeetingPlayers, meetingLineups, pairMixes, rawSchedule])
   const storedMeetingScheduleSnapshot = useMemo<StoredMeetingSchedule>(() => ({
-    version: 1,
+    version: 2,
     savedAt: new Date().toISOString(),
     players: generatedMeetingPlayers,
     settings: generatedMeetingSettings,
@@ -1721,12 +1794,14 @@ function App() {
     pairMixes: {},
     matchNameOverrides,
     meetingLineups: {},
+    meetingContinuation,
     prizeDraw,
   }), [
     generatedMeetingPlayers,
     generatedMeetingSettings,
     matchNameOverrides,
     meetingCourtAssignments,
+    meetingContinuation,
     prizeDraw,
     results,
     schedule,
@@ -1734,29 +1809,61 @@ function App() {
   useEffect(() => {
     setMeetingWarningsReconciled(false)
   }, [generatedMeetingPlayers, generatedMeetingSettings])
+  const meetingAnalysisOptions = useMemo(() => ({
+    eligibleFromOffsetMinutesByPlayer: Object.fromEntries(
+      Object.entries(meetingContinuation.players).map(([playerId, state]) => [
+        playerId,
+        state.eligibleFromOffsetMinutes,
+      ]),
+    ),
+    fairnessGameCreditsByPlayer: Object.fromEntries(
+      Object.entries(meetingContinuation.players).map(([playerId, state]) => [
+        playerId,
+        state.fairnessGameCredit,
+      ]),
+    ),
+  }), [meetingContinuation.players])
   const scheduleWaitAnalysis = useMemo(
     () => analyzeScheduleWait(
       schedule,
       generatedMeetingPlayers,
       generatedMeetingSettings,
+      meetingAnalysisOptions,
     ),
-    [generatedMeetingPlayers, generatedMeetingSettings, schedule],
+    [
+      generatedMeetingPlayers,
+      generatedMeetingSettings,
+      meetingAnalysisOptions,
+      schedule,
+    ],
   )
   const participantWaitLimitViolations = useMemo(
     () => analyzeParticipantWaitLimitViolations(
       schedule,
       generatedMeetingPlayers,
       generatedMeetingSettings,
+      meetingAnalysisOptions,
     ),
-    [generatedMeetingPlayers, generatedMeetingSettings, schedule],
+    [
+      generatedMeetingPlayers,
+      generatedMeetingSettings,
+      meetingAnalysisOptions,
+      schedule,
+    ],
   )
   const scheduleQualityAnalysis = useMemo(
     () => analyzeScheduleQuality(
       schedule,
       generatedMeetingPlayers,
       generatedMeetingSettings,
+      meetingAnalysisOptions,
     ),
-    [generatedMeetingPlayers, generatedMeetingSettings, schedule],
+    [
+      generatedMeetingPlayers,
+      generatedMeetingSettings,
+      meetingAnalysisOptions,
+      schedule,
+    ],
   )
   const meetingV2Metrics = useMemo(
     () => analyzeMeetingScheduleV2(
@@ -1767,6 +1874,7 @@ function App() {
     [generatedMeetingPlayers, generatedMeetingSettings, schedule],
   )
   const meetingUsesClubQuality =
+    meetingContinuation.revision === 0 &&
     generatedMeetingPlayers.filter(
       (player) => player.active && !player.isGuest,
     ).length <= 35 &&
@@ -1951,8 +2059,13 @@ function App() {
           schedule,
           generatedMeetingPlayers,
           generatedMeetingSettings,
+          meetingAnalysisOptions,
         ),
-        ...validateMeetingFairness(schedule, generatedMeetingPlayers),
+        ...validateMeetingFairness(
+          schedule,
+          generatedMeetingPlayers,
+          meetingAnalysisOptions,
+        ),
       ]
       if (issues.length > 0) {
         setMeetingOperationLabel('대진 검증 실패')
@@ -1989,6 +2102,7 @@ function App() {
     generatedMeetingSettings,
     isMeetingGenerating,
     meetingOperationLabel,
+    meetingAnalysisOptions,
     schedule,
     gameSpreadWarning,
     genderCompositionReviewNotice,
@@ -2295,6 +2409,27 @@ function App() {
     .filter((match) => results[match.id]?.completed).length
   const allScheduledMatches = getMeetingMatchSequence(schedule)
   const totalMatches = allScheduledMatches.length
+  const meetingReplanLockedMatchIds = useMemo(
+    () => getMeetingReplanLockedMatchIds(
+      schedule,
+      results,
+      meetingCourtAssignments,
+      generatedMeetingSettings.courtAssignmentMode,
+    ),
+    [
+      generatedMeetingSettings.courtAssignmentMode,
+      meetingCourtAssignments,
+      results,
+      schedule,
+    ],
+  )
+  const canReplanMeeting =
+    hasPlayerDraftChanges &&
+    !hasMeetingSettingsDraftChanges &&
+    completedMatches > 0 &&
+    completedMatches < totalMatches &&
+    !isMeetingGenerating &&
+    !isMeetingReplanning
   const courtSchedules: Round[] = Array.from(
     { length: generatedMeetingSettings.courtCount },
     (_, index) => {
@@ -2661,6 +2796,7 @@ function App() {
         pairMixes,
         matchNameOverrides,
         meetingLineups,
+        meetingContinuation,
         prizeDraw,
         tournamentTeams,
         tournamentSettings,
@@ -2691,6 +2827,7 @@ function App() {
     progressMode,
     matchNameOverrides,
     meetingLineups,
+    meetingContinuation,
     prizeDraw,
     tournamentTeams,
     tournamentSettings,
@@ -2752,6 +2889,7 @@ function App() {
       setPairMixes(sharedState.pairMixes)
       setMatchNameOverrides(sharedState.matchNameOverrides)
       setMeetingLineups(sharedState.meetingLineups)
+      setMeetingContinuation(sharedState.meetingContinuation)
       setPrizeDraw(sharedState.prizeDraw)
       setTournamentTeams(sharedState.tournamentTeams)
       setTournamentSettings(sharedState.tournamentSettings)
@@ -2799,6 +2937,7 @@ function App() {
         setPairMixes(sharedState.pairMixes)
         setMatchNameOverrides(sharedState.matchNameOverrides)
         setMeetingLineups(sharedState.meetingLineups)
+        setMeetingContinuation(sharedState.meetingContinuation)
         setPrizeDraw(sharedState.prizeDraw)
         setTournamentTeams(sharedState.tournamentTeams)
         setTournamentSettings(sharedState.tournamentSettings)
@@ -2906,6 +3045,7 @@ function App() {
     setPairMixes({})
     setMatchNameOverrides({})
     setMeetingLineups({})
+    setMeetingContinuation(makeDefaultMeetingContinuationState())
     setMatchNameDrafts({})
     setEditingMatchIds({})
     setMatchEditorErrors({})
@@ -2913,6 +3053,8 @@ function App() {
     setPrizeDraw((current) => ({ ...current, matchMissions: {} }))
     setPrintImageUrls([])
     setMeetingWarningsReconciled(false)
+    window.localStorage.removeItem(LAST_MEETING_SCHEDULE_BACKUP_KEY)
+    setHasMeetingBackup(false)
   }
 
   const resetMeetingTargetRounds = () => {
@@ -2932,6 +3074,11 @@ function App() {
             roundCountLocked: true,
           }
     })
+  }
+
+  const resetMeetingTargetRoundsForRosterChange = () => {
+    if (completedMatches > 0) return
+    resetMeetingTargetRounds()
   }
 
   const updateMeetingStartTime = (value: string) => {
@@ -3046,6 +3193,17 @@ function App() {
     if (document.fullscreenElement) {
       void document.exitFullscreen().catch(() => undefined)
     }
+  }
+
+  const manageProgressParticipants = () => {
+    setProgressMode(false)
+    setPlayersOpen(true)
+    setPlayerDetailsOpen(true)
+    setNotice('참가자 변경 후 남은 대진을 다시 생성하세요.')
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => undefined)
+    }
+    window.setTimeout(() => scrollToSection('meeting-players'), 0)
   }
 
   const toggleProgressFullscreen = () => {
@@ -3578,11 +3736,19 @@ function App() {
       swapped.schedule,
       generatedMeetingPlayers,
       generatedMeetingSettings,
+      {
+        ...meetingAnalysisOptions,
+        allowedInactiveMatchIds: meetingReplanLockedMatchIds,
+      },
     )
     const baseValidationIssues = new Set(validateMeetingSchedule(
       schedule,
       generatedMeetingPlayers,
       generatedMeetingSettings,
+      {
+        ...meetingAnalysisOptions,
+        allowedInactiveMatchIds: meetingReplanLockedMatchIds,
+      },
     ))
     const introducedValidationIssues = validationIssues.filter(
       (issue) => !baseValidationIssues.has(issue),
@@ -3605,21 +3771,25 @@ function App() {
       schedule,
       generatedMeetingPlayers,
       generatedMeetingSettings,
+      meetingAnalysisOptions,
     )
     const nextQuality = analyzeScheduleQuality(
       swapped.schedule,
       generatedMeetingPlayers,
       generatedMeetingSettings,
+      meetingAnalysisOptions,
     )
     const baseWait = analyzeScheduleWait(
       schedule,
       generatedMeetingPlayers,
       generatedMeetingSettings,
+      meetingAnalysisOptions,
     )
     const nextWait = analyzeScheduleWait(
       swapped.schedule,
       generatedMeetingPlayers,
       generatedMeetingSettings,
+      meetingAnalysisOptions,
     )
     const forcedWarnings = [
       ...introducedValidationIssues.filter(
@@ -3744,8 +3914,16 @@ function App() {
           schedule,
           generatedMeetingPlayers,
           generatedMeetingSettings,
+          {
+            ...meetingAnalysisOptions,
+            allowedInactiveMatchIds: meetingReplanLockedMatchIds,
+          },
         ),
-        ...validateMeetingFairness(schedule, generatedMeetingPlayers),
+        ...validateMeetingFairness(
+          schedule,
+          generatedMeetingPlayers,
+          meetingAnalysisOptions,
+        ),
       ]
       const qualityWarningCount = [
         scheduleWaitAnalysis.exceedsLimit,
@@ -3794,7 +3972,7 @@ function App() {
     if (countChanged) {
       setPlayerDetailsOpen(keepDetailsVisible)
       setBulkOpen(!keepDetailsVisible)
-      resetMeetingTargetRounds()
+      resetMeetingTargetRoundsForRosterChange()
     }
   }
 
@@ -3820,7 +3998,7 @@ function App() {
     if (countChanged) {
       setPlayerDetailsOpen(keepDetailsVisible)
       setBulkOpen(!keepDetailsVisible)
-      resetMeetingTargetRounds()
+      resetMeetingTargetRoundsForRosterChange()
     }
   }
 
@@ -3846,7 +4024,7 @@ function App() {
       delete next[id]
       return next
     })
-    resetMeetingTargetRounds()
+    resetMeetingTargetRoundsForRosterChange()
   }
 
   const resetParticipants = () => {
@@ -3889,6 +4067,7 @@ function App() {
     setPairMixes({})
     setMatchNameOverrides({})
     setMeetingLineups({})
+    setMeetingContinuation(makeDefaultMeetingContinuationState())
     setPrizeDraw({
       ...defaultPrizeDrawState,
       results: [],
@@ -3903,6 +4082,8 @@ function App() {
     setPreferredPartnerDrafts({})
     setMatchEditorErrors({})
     window.localStorage.removeItem(LAST_MEETING_SCHEDULE_KEY)
+    window.localStorage.removeItem(LAST_MEETING_SCHEDULE_BACKUP_KEY)
+    setHasMeetingBackup(false)
     setNotice('초기화됨')
   }
 
@@ -4078,6 +4259,242 @@ function App() {
       },
       '예약 시간 대진 생성됨',
     )
+  }
+
+  const startMeetingReplan = () => {
+    if (!canReplanMeeting) {
+      if (hasMeetingSettingsDraftChanges) {
+        setNotice('설정 변경은 전체 대진을 다시 생성해 주세요.')
+      } else if (completedMatches === 0) {
+        setNotice('완료 경기 1개부터 남은 대진을 다시 생성할 수 있습니다.')
+      } else if (!hasPlayerDraftChanges) {
+        setNotice('변경된 참가자 명단이 없습니다.')
+      } else {
+        setNotice('다시 생성할 예정 경기가 없습니다.')
+      }
+      return
+    }
+
+    const lockedCount = meetingReplanLockedMatchIds.length
+    const currentCount = Math.max(0, lockedCount - completedMatches)
+    const replacementCount = Math.max(0, totalMatches - lockedCount)
+    const previousActiveGuestIds = new Set(
+      generatedMeetingPlayers
+        .filter((player) => player.active && player.isGuest)
+        .map((player) => player.id),
+    )
+    const lateGuestCount = players.filter(
+      (player) =>
+        player.active &&
+        player.isGuest &&
+        !previousActiveGuestIds.has(player.id),
+    ).length
+    const confirmed = window.confirm(
+      [
+        `완료 ${completedMatches}경기와 현재 ${currentCount}경기를 유지합니다.`,
+        `예정 ${replacementCount}경기를 변경된 명단으로 다시 생성할까요?`,
+        lateGuestCount > 0
+          ? `스페셜 ${lateGuestCount}명 추가 · 남은 모든 경기에 일반 경기 시간을 적용합니다.`
+          : '',
+      ].filter(Boolean).join('\n'),
+    )
+    if (!confirmed) return
+
+    try {
+      window.localStorage.setItem(
+        LAST_MEETING_SCHEDULE_BACKUP_KEY,
+        JSON.stringify(storedMeetingScheduleSnapshot),
+      )
+      setHasMeetingBackup(true)
+    } catch {
+      setNotice('자동 백업 실패 · 브라우저 저장 공간을 확인하세요.')
+      window.alert('자동 백업을 만들지 못해 재생성을 중단했습니다.')
+      return
+    }
+
+    meetingGenerationWorkerRef.current?.terminate()
+    const requestId = meetingGenerationRequestRef.current + 1
+    meetingGenerationRequestRef.current = requestId
+    const worker = new Worker(
+      new URL('./meetingGeneration.worker.ts', import.meta.url),
+      { type: 'module' },
+    )
+    meetingGenerationWorkerRef.current = worker
+    setIsMeetingReplanning(true)
+    setNotice('남은 대진 재생성 중')
+
+    const finishWorker = () => {
+      worker.terminate()
+      if (meetingGenerationWorkerRef.current === worker) {
+        meetingGenerationWorkerRef.current = null
+      }
+    }
+    const failReplan = (message: string) => {
+      if (meetingGenerationRequestRef.current !== requestId) return
+      finishWorker()
+      window.localStorage.removeItem(LAST_MEETING_SCHEDULE_BACKUP_KEY)
+      setHasMeetingBackup(false)
+      setIsMeetingReplanning(false)
+      setNotice(`기존 대진 유지 · ${message}`)
+      window.alert(`남은 대진을 변경하지 않았습니다.\n${message}`)
+    }
+
+    worker.onmessage = (
+      event: MessageEvent<MeetingGenerationWorkerResponse>,
+    ) => {
+      const response = event.data
+      if (
+        response.requestId !== requestId ||
+        meetingGenerationRequestRef.current !== requestId
+      ) return
+      if (!response.replan) {
+        failReplan(response.error || '재생성 결과를 받지 못했습니다.')
+        return
+      }
+      if (response.replan.failureIssues.length > 0) {
+        failReplan(response.replan.failureIssues.join(' · '))
+        return
+      }
+
+      finishWorker()
+      const replan = response.replan
+      const lockedIds = new Set(replan.lockedMatchIds)
+      const nextResults = Object.fromEntries(
+        Object.entries(results).filter(([matchId]) => lockedIds.has(matchId)),
+      )
+      const nextAssignments = Object.fromEntries(
+        Object.entries(meetingCourtAssignments)
+          .filter(([matchId]) => lockedIds.has(matchId)),
+      )
+      const nextMatchNameOverrides = Object.fromEntries(
+        Object.entries(matchNameOverrides)
+          .filter(([matchId]) => lockedIds.has(matchId)),
+      )
+      const nextPrizeDraw: PrizeDrawState = {
+        ...prizeDraw,
+        matchMissions: Object.fromEntries(
+          Object.entries(prizeDraw.matchMissions)
+            .filter(([matchId]) => lockedIds.has(matchId)),
+        ),
+      }
+      const nextSnapshot: StoredMeetingSchedule = {
+        version: 2,
+        savedAt: new Date().toISOString(),
+        players,
+        settings: generatedMeetingSettings,
+        schedule: replan.schedule,
+        results: nextResults,
+        meetingCourtAssignments: nextAssignments,
+        pairMixes: {},
+        matchNameOverrides: nextMatchNameOverrides,
+        meetingLineups: {},
+        meetingContinuation: replan.continuation,
+        prizeDraw: nextPrizeDraw,
+      }
+
+      setGeneratedMeetingPlayers(players)
+      setScheduleOverride(replan.schedule)
+      setResults(nextResults)
+      setMeetingCourtAssignments(nextAssignments)
+      setPairMixes({})
+      setMatchNameOverrides(nextMatchNameOverrides)
+      setMeetingLineups({})
+      setMeetingContinuation(replan.continuation)
+      setPrizeDraw(nextPrizeDraw)
+      setMatchNameDrafts({})
+      setEditingMatchIds({})
+      setMatchEditorErrors({})
+      setCollapsedMatchIds({})
+      setPrintImageUrls([])
+      setMeetingWarningsReconciled(false)
+      setView('schedule')
+      setIsMeetingReplanning(false)
+
+      try {
+        window.localStorage.setItem(
+          LAST_MEETING_SCHEDULE_KEY,
+          JSON.stringify(nextSnapshot),
+        )
+        setNotice(
+          `완료 ${completedMatches}경기 유지 · 남은 ${replan.createdMatchIds.length}경기 재생성됨`,
+        )
+      } catch {
+        setNotice('남은 대진 재생성됨 · 브라우저 저장 실패')
+      }
+    }
+    worker.onerror = () => {
+      failReplan('계산 중 오류가 발생했습니다.')
+    }
+    worker.postMessage({
+      kind: 'replan',
+      requestId,
+      schedule,
+      players,
+      previousPlayers: generatedMeetingPlayers,
+      settings: generatedMeetingSettings,
+      results,
+      assignments: meetingCourtAssignments,
+      lockedMatchIds: meetingReplanLockedMatchIds,
+      continuation: meetingContinuation,
+    })
+  }
+
+  const restoreMeetingBackup = () => {
+    const backup = readStoredMeetingSchedule(LAST_MEETING_SCHEDULE_BACKUP_KEY)
+    if (!backup?.players?.length) {
+      setHasMeetingBackup(false)
+      setNotice('복원할 이전 대진이 없습니다.')
+      return
+    }
+    const confirmed = window.confirm(
+      '남은 대진 재생성 전 상태로 복원할까요?\n현재 재생성 대진은 교체됩니다.',
+    )
+    if (!confirmed) return
+
+    const restoredPlayers = backup.players.map((player) =>
+      normalizeStoredPlayer(player),
+    )
+    const restoredSettings = normalizeMatchSettings(backup.settings)
+    const restoredSchedule = normalizeStoredSchedule(
+      backup.schedule,
+      restoredPlayers,
+    )
+    if (!restoredSchedule) {
+      setNotice('이전 대진 복원 실패')
+      return
+    }
+
+    setProgressMode(false)
+    setPlayers(restoredPlayers)
+    setSettings(restoredSettings)
+    setGeneratedMeetingPlayers(restoredPlayers)
+    setGeneratedMeetingSettings(restoredSettings)
+    setScheduleOverride(restoredSchedule)
+    setResults(backup.results ?? {})
+    setMeetingCourtAssignments(normalizeMeetingCourtAssignments(
+      backup.meetingCourtAssignments,
+    ))
+    setPairMixes(backup.pairMixes ?? {})
+    setMatchNameOverrides(backup.matchNameOverrides ?? {})
+    setMeetingLineups(backup.meetingLineups ?? {})
+    setMeetingContinuation(normalizeMeetingContinuationState(
+      backup.meetingContinuation,
+    ))
+    setPrizeDraw(normalizePrizeDrawState(backup.prizeDraw))
+    setPrintImageUrls([])
+    setMeetingWarningsReconciled(false)
+    try {
+      window.localStorage.setItem(
+        LAST_MEETING_SCHEDULE_KEY,
+        JSON.stringify(backup),
+      )
+      window.localStorage.removeItem(LAST_MEETING_SCHEDULE_BACKUP_KEY)
+    } catch {
+      setNotice('이전 대진 복원됨 · 브라우저 저장 실패')
+      return
+    }
+    setHasMeetingBackup(false)
+    setNotice('남은 대진 재생성 전 상태로 복원됨')
   }
 
   const addCourtGames = () => {
@@ -4357,7 +4774,7 @@ function App() {
     setPlayers((current) =>
       mode === 'replace' ? parsedPlayers : [...current, ...parsedPlayers],
     )
-    resetMeetingTargetRounds()
+    resetMeetingTargetRoundsForRosterChange()
     setPlayerDetailsOpen(true)
     setNotice(`${parsedPlayers.length}명 입력됨`)
   }
@@ -4373,7 +4790,7 @@ function App() {
       setPlayers((current) =>
         mergeParsedPlayersWithRosterDraft(current, parsedPlayers),
       )
-      resetMeetingTargetRounds()
+      resetMeetingTargetRoundsForRosterChange()
     }
 
     setPlayerDetailsOpen(true)
@@ -5361,6 +5778,7 @@ function App() {
               onAssignNext={assignNextMeetingMatch}
               onCancelAssignment={cancelMeetingCourtAssignment}
               onToggleFullscreen={toggleProgressFullscreen}
+              onManageParticipants={manageProgressParticipants}
               onExit={exitProgressMode}
             />
           </div>
@@ -5386,6 +5804,7 @@ function App() {
             onComplete={completeMeetingProgressMatch}
             onUndo={undoMeetingProgressMatch}
             onToggleFullscreen={toggleProgressFullscreen}
+            onManageParticipants={manageProgressParticipants}
             onExit={exitProgressMode}
           />
         </div>
@@ -5456,6 +5875,22 @@ function App() {
                 </button>
               </div>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+      {isMeetingReplanning ? (
+        <div
+          className="generation-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-live="polite"
+          aria-label="남은 대진 재생성 중"
+        >
+          <div className="generation-card">
+            <img src={amaLogo} alt="A.M.A" />
+            <span className="generation-spinner" aria-hidden="true" />
+            <strong>남은 대진 재생성 중</strong>
+            <p>완료 경기와 현재 경기를 보존하고 새 명단을 배정하고 있습니다.</p>
           </div>
         </div>
       ) : null}
@@ -5779,6 +6214,13 @@ function App() {
               <p>O는 모든 레벨을 커버하며, 실력 불균형 완충에 우선 활용합니다.</p>
               <p>스페셜은 초청/게스트 경기 배정용입니다.</p>
             </div>
+            <div className="level-help-replan-note">
+              <strong>진행 중 참가자 변경</strong>
+              <p>
+                참가자를 추가하거나 참석 여부를 변경하면 완료·현재 경기는
+                유지하고 남은 대진을 재생성할 수 있습니다.
+              </p>
+            </div>
             <button type="button" onClick={openLevelTierEditor}>
               레벨 기준 수정
             </button>
@@ -6005,7 +6447,7 @@ function App() {
                 <button
                   type="button"
                   className="primary-action"
-                  disabled={isMeetingGenerating}
+                  disabled={isMeetingGenerating || isMeetingReplanning}
                   onClick={generateBookingSchedule}
                 >
                   {isMeetingGenerating ? '생성 중' : '생성'}
@@ -6015,6 +6457,7 @@ function App() {
                   className="progress-entry-button"
                   disabled={
                     isMeetingGenerating ||
+                    isMeetingReplanning ||
                     hasMeetingDraftChanges ||
                     totalMatches === 0
                   }
@@ -6038,7 +6481,7 @@ function App() {
                 <button
                   type="button"
                   className="danger-action"
-                  disabled={isMeetingGenerating}
+                  disabled={isMeetingGenerating || isMeetingReplanning}
                   title="참가자, 설정, 대진표, 경기 결과와 경품 정보 전체 삭제"
                   onClick={handleReset}
                 >
@@ -6730,7 +7173,7 @@ function App() {
             )}
           </section>
 
-          <section className="panel-section">
+          <section className="panel-section" id="meeting-players">
             <div className="section-heading">
               <div className="section-title-stack">
                 <div className="title-with-controls">
@@ -6753,15 +7196,70 @@ function App() {
                 </div>
                 <span>
                   참가 {activeMembers.length}명 · 스페셜 {activeGuests.length}명 · 생성 {totalMatches}경기
+                  {hasPlayerDraftChanges ? ' · 명단 변경됨' : ''}
                 </span>
               </div>
               <div className="compact-actions">
-                <button type="button" onClick={addPlayer}>
-                  추가
-                </button>
+                <div className="participant-action-with-help">
+                  <button
+                    type="button"
+                    className="participant-action-main"
+                    onClick={() => {
+                      setParticipantReplanHelpOpen(null)
+                      addPlayer()
+                    }}
+                  >
+                    추가
+                  </button>
+                  <button
+                    type="button"
+                    className="participant-action-help"
+                    aria-label="진행 중 참가자 변경 안내"
+                    aria-expanded={participantReplanHelpOpen === 'add'}
+                    aria-controls="participant-add-replan-help"
+                    onClick={() => setParticipantReplanHelpOpen((current) =>
+                      current === 'add' ? null : 'add'
+                    )}
+                  >
+                    ?
+                  </button>
+                  {participantReplanHelpOpen === 'add' ? (
+                    <span
+                      className="participant-action-tooltip"
+                      id="participant-add-replan-help"
+                      role="status"
+                    >
+                      {PARTICIPANT_REPLAN_HELP}
+                    </span>
+                  ) : null}
+                </div>
                 <button type="button" onClick={addGuest}>
                   스페셜
                 </button>
+                <button
+                  type="button"
+                  className={canReplanMeeting ? 'primary-action' : ''}
+                  disabled={!canReplanMeeting}
+                  title={
+                    hasMeetingSettingsDraftChanges
+                      ? '설정 변경은 전체 대진을 다시 생성해 주세요.'
+                      : completedMatches === 0
+                        ? '완료 경기 1개부터 사용할 수 있습니다.'
+                        : !hasPlayerDraftChanges
+                          ? '참가자 명단을 변경하면 활성화됩니다.'
+                          : completedMatches >= totalMatches
+                            ? '다시 생성할 예정 경기가 없습니다.'
+                            : '완료와 현재 경기를 유지하고 남은 대진만 다시 생성합니다.'
+                  }
+                  onClick={startMeetingReplan}
+                >
+                  {isMeetingReplanning ? '재생성 중' : '남은 대진 재생성'}
+                </button>
+                {hasMeetingBackup ? (
+                  <button type="button" onClick={restoreMeetingBackup}>
+                    이전 대진 복원
+                  </button>
+                ) : null}
                 <button type="button" onClick={() => setBulkOpen((open) => !open)}>
                   {bulkOpen && players.length > 0 ? '닫기' : '명단'}
                 </button>
@@ -6812,16 +7310,40 @@ function App() {
                       placeholder={bulkPlayerPlaceholder}
                     />
                     <div className="bulk-actions">
-                      <button
-                        type="button"
-                        onClick={
-                          isRosterDrafting
-                            ? completePlayerRoster
-                            : () => applyBulkPlayers('append')
-                        }
-                      >
-                        {isRosterDrafting ? '명단 입력 완료' : '입력'}
-                      </button>
+                      <div className="participant-action-with-help">
+                        <button
+                          type="button"
+                          className="participant-action-main"
+                          onClick={() => {
+                            setParticipantReplanHelpOpen(null)
+                            if (isRosterDrafting) completePlayerRoster()
+                            else applyBulkPlayers('append')
+                          }}
+                        >
+                          {isRosterDrafting ? '명단 입력 완료' : '입력'}
+                        </button>
+                        <button
+                          type="button"
+                          className="participant-action-help"
+                          aria-label="진행 중 참가자 명단 입력 안내"
+                          aria-expanded={participantReplanHelpOpen === 'input'}
+                          aria-controls="participant-input-replan-help"
+                          onClick={() => setParticipantReplanHelpOpen((current) =>
+                            current === 'input' ? null : 'input'
+                          )}
+                        >
+                          ?
+                        </button>
+                        {participantReplanHelpOpen === 'input' ? (
+                          <span
+                            className="participant-action-tooltip"
+                            id="participant-input-replan-help"
+                            role="status"
+                          >
+                            {PARTICIPANT_REPLAN_HELP}
+                          </span>
+                        ) : null}
+                      </div>
                       {playerDetailsOpen && players.length > 0 ? (
                         <button type="button" onClick={() => applyBulkPlayers('replace')}>
                           전체 교체
@@ -6855,7 +7377,7 @@ function App() {
                                 checked={player.active}
                                 onChange={(event) => {
                                   updatePlayer(player.id, { active: event.target.checked })
-                                  resetMeetingTargetRounds()
+                                  resetMeetingTargetRoundsForRosterChange()
                                 }}
                               />
                               참석
@@ -7003,7 +7525,7 @@ function App() {
                                       }),
                                 })
                                 if (guestStateChanged) {
-                                  resetMeetingTargetRounds()
+                                  resetMeetingTargetRoundsForRosterChange()
                                 }
                               }}
                             >

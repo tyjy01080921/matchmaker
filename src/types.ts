@@ -219,6 +219,33 @@ export type MeetingCourtAssignment = {
 
 export type MeetingCourtAssignments = Record<string, MeetingCourtAssignment>
 
+export type MeetingContinuationMode = 'standard' | 'late-special-unlimited'
+
+export type MeetingContinuationPlayerState = {
+  eligibleFromOffsetMinutes: number
+  fairnessGameCredit: number
+  guestGameCredit: number
+}
+
+export type MeetingContinuationState = {
+  version: 1
+  revision: number
+  mode: MeetingContinuationMode
+  activatedAtOffsetMinutes?: number
+  players: Record<string, MeetingContinuationPlayerState>
+}
+
+export type MeetingReplanResolution = {
+  schedule: Schedule
+  continuation: MeetingContinuationState
+  lockedMatchIds: string[]
+  replacedMatchIds: string[]
+  createdMatchIds: string[]
+  progressOffsetMinutes: number
+  warnings: string[]
+  failureIssues: string[]
+}
+
 export type PrizeDrawResult = {
   prize: string
   winnerId: string

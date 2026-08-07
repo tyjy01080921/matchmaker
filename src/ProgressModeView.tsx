@@ -45,6 +45,7 @@ type ProgressHeaderProps = {
   fullscreenSupported: boolean
   completedPanelOpen?: boolean
   onToggleCompletedPanel?: () => void
+  onManageParticipants?: () => void
   onToggleFullscreen: () => void
   onExit: () => void
 }
@@ -58,6 +59,7 @@ const ProgressHeader = ({
   fullscreenSupported,
   completedPanelOpen,
   onToggleCompletedPanel,
+  onManageParticipants,
   onToggleFullscreen,
   onExit,
 }: ProgressHeaderProps) => {
@@ -87,6 +89,11 @@ const ProgressHeader = ({
         </div>
       </div>
       <div className="progress-mode-header-actions">
+        {onManageParticipants ? (
+          <button type="button" onClick={onManageParticipants}>
+            참가자 변경
+          </button>
+        ) : null}
         {onToggleCompletedPanel ? (
           <button
             type="button"

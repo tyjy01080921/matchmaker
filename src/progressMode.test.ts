@@ -6,6 +6,7 @@ import {
   buildTournamentCourtLanes,
   canUndoAvailableMeetingMatch,
   getMeetingMatchSequence,
+  getMeetingReplanLockedMatchIds,
   getUndoableTournamentMatchId,
   getProgressWinnerSide,
   getMeetingCourtMatchNumber,
@@ -236,6 +237,54 @@ describe('progress mode helpers', () => {
       .toBe(true)
     expect(canUndoAvailableMeetingMatch(schedule, 'first', withLater, results))
       .toBe(false)
+  })
+
+  it('locks completed and current matches on each fixed court for replanning', () => {
+    const completed = meetingMatchWithPlayers('completed', 1, 0, ['a', 'b', 'c', 'd'])
+    const currentOne = meetingMatchWithPlayers('current-1', 1, 15, ['e', 'f', 'g', 'h'])
+    const currentTwo = meetingMatchWithPlayers('current-2', 2, 0, ['i', 'j', 'k', 'l'])
+    const future = meetingMatchWithPlayers('future', 2, 15, ['m', 'n', 'o', 'p'])
+    const schedule: Schedule = {
+      rounds: [
+        { id: 'round-1', number: 1, matches: [completed, currentTwo], resting: [] },
+        { id: 'round-2', number: 2, matches: [currentOne, future], resting: [] },
+      ],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+
+    expect(getMeetingReplanLockedMatchIds(
+      schedule,
+      { completed: { teamAScore: '', teamBScore: '', completed: true, note: '' } },
+      {},
+      'fixed',
+    )).toEqual(['completed', 'current-2', 'current-1'])
+  })
+
+  it('locks only completed and actively assigned matches in available-court mode', () => {
+    const completed = meetingMatchWithPlayers('completed', 1, 0, ['a', 'b', 'c', 'd'])
+    const assigned = meetingMatchWithPlayers('assigned', 2, 0, ['e', 'f', 'g', 'h'])
+    const future = meetingMatchWithPlayers('future', 1, 15, ['i', 'j', 'k', 'l'])
+    const schedule: Schedule = {
+      rounds: [
+        { id: 'round-1', number: 1, matches: [completed, assigned], resting: [] },
+        { id: 'round-2', number: 2, matches: [future], resting: [] },
+      ],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+
+    expect(getMeetingReplanLockedMatchIds(
+      schedule,
+      { completed: { teamAScore: '', teamBScore: '', completed: true, note: '' } },
+      {
+        completed: { court: 2, dispatchOrder: 1 },
+        assigned: { court: 1, dispatchOrder: 2 },
+      },
+      'available',
+    )).toEqual(['completed', 'assigned'])
   })
 
   it('accepts a winner selection without requiring scores', () => {

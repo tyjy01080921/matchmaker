@@ -1,4 +1,5 @@
 import type {
+  CourtAssignmentMode,
   Match,
   MatchResult,
   MatchWinnerSide,
@@ -112,6 +113,38 @@ export const getMeetingMatchSequence = (schedule: Schedule) =>
   schedule.rounds
     .flatMap((round) => round.matches)
     .sort(compareMeetingMatches)
+
+export const getMeetingReplanLockedMatchIds = (
+  schedule: Schedule,
+  results: ResultsByMatch,
+  assignments: MeetingCourtAssignments,
+  courtAssignmentMode: CourtAssignmentMode,
+) => {
+  const sequence = getMeetingMatchSequence(schedule)
+  const lockedIds = new Set(
+    sequence
+      .filter((match) => results[match.id]?.completed)
+      .map((match) => match.id),
+  )
+
+  if (courtAssignmentMode === 'available') {
+    for (const matchId of Object.keys(assignments)) {
+      if (!results[matchId]?.completed) lockedIds.add(matchId)
+    }
+  } else {
+    const courts = [...new Set(sequence.map((match) => match.court))]
+    for (const court of courts) {
+      const current = sequence.find(
+        (match) => match.court === court && !results[match.id]?.completed,
+      )
+      if (current) lockedIds.add(current.id)
+    }
+  }
+
+  return sequence
+    .filter((match) => lockedIds.has(match.id))
+    .map((match) => match.id)
+}
 
 export const getMeetingSequenceNumber = (
   schedule: Schedule,

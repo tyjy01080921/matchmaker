@@ -7,7 +7,11 @@ import type {
   Match,
   MatchConditionOptions,
   MatchNameOverrides,
+  MeetingContinuationPlayerState,
+  MeetingContinuationState,
+  MeetingCourtAssignments,
   MeetingLineupsByMatch,
+  MeetingReplanResolution,
   MeetingShuffleDirection,
   MatchSettings,
   MeetingWaitLimitFailure,
@@ -44,6 +48,7 @@ export { generateMeetingScheduleV2WithWaitResolution }
 
 type HistoryState = {
   games: Record<string, number>
+  fairGameCredits: Record<string, number>
   rests: Record<string, number>
   restStreaks: Record<string, number>
   playStreaks: Record<string, number>
@@ -56,6 +61,7 @@ type HistoryState = {
   specialCompleted: Set<string>
   specialGameCounts: Record<string, number>
   guestGameCounts: Record<string, number>
+  guestGameCredits: Record<string, number>
   skillWarningMatches: number
 }
 
@@ -239,11 +245,14 @@ const playerOperationalWaitGaps = (
   matches: Match[],
   playerId: string,
   endMinutes: number,
+  eligibleFromMinutes = 0,
 ) => {
   const windows = playerMatchWindows(matches, playerId)
-  if (windows.length === 0) return [Math.max(0, endMinutes)]
+  if (windows.length === 0) {
+    return [Math.max(0, endMinutes - eligibleFromMinutes)]
+  }
   return [
-    Math.max(0, windows[0].start),
+    Math.max(0, windows[0].start - eligibleFromMinutes),
     ...playerWaitGaps(matches, playerId),
   ]
 }
@@ -252,7 +261,16 @@ const playerMaximumWaitMinutes = (
   matches: Match[],
   playerId: string,
   endMinutes = scheduleEndMinutes(matches),
-) => Math.max(0, ...playerOperationalWaitGaps(matches, playerId, endMinutes))
+  eligibleFromMinutes = 0,
+) => Math.max(
+  0,
+  ...playerOperationalWaitGaps(
+    matches,
+    playerId,
+    endMinutes,
+    eligibleFromMinutes,
+  ),
+)
 
 const playerWaitAnalysisEndMinutes = (
   player: Player,
@@ -327,10 +345,16 @@ export type ScheduleQualityAnalysis = {
   averageSkillWarningStartMinutes: number | null
 }
 
+export type MeetingScheduleAnalysisOptions = {
+  eligibleFromOffsetMinutesByPlayer?: Record<string, number>
+  fairnessGameCreditsByPlayer?: Record<string, number>
+}
+
 export const analyzeScheduleWait = (
   schedule: Schedule,
   players: Player[],
   settings: MatchSettings,
+  options: MeetingScheduleAnalysisOptions = {},
 ): ScheduleWaitAnalysis => {
   const activePlayers = players.filter((player) => player.active)
   const matches = schedule.rounds.flatMap((round) => round.matches)
@@ -352,10 +376,17 @@ export const analyzeScheduleWait = (
   ).length
   const maximumInitialWaitMinutes = Math.max(
     0,
-    ...activePlayers.map((player, index) =>
-      windowsByPlayer[index][0]?.start ??
-        (analysisEndByPlayer.get(player.id) ?? bookingMinutes),
-    ),
+    ...activePlayers.map((player, index) => {
+      const eligibleFrom = Math.max(
+        0,
+        options.eligibleFromOffsetMinutesByPlayer?.[player.id] ?? 0,
+      )
+      return Math.max(
+        0,
+        (windowsByPlayer[index][0]?.start ??
+          (analysisEndByPlayer.get(player.id) ?? bookingMinutes)) - eligibleFrom,
+      )
+    }),
   )
   const maximumFinalIdleMinutes = Math.max(
     0,
@@ -363,9 +394,13 @@ export const analyzeScheduleWait = (
       const windows = windowsByPlayer[index]
       const analysisEndMinutes =
         analysisEndByPlayer.get(player.id) ?? bookingMinutes
+      const eligibleFrom = Math.max(
+        0,
+        options.eligibleFromOffsetMinutesByPlayer?.[player.id] ?? 0,
+      )
       return windows.length > 0
         ? Math.max(0, analysisEndMinutes - windows[windows.length - 1].end)
-        : analysisEndMinutes
+        : Math.max(0, analysisEndMinutes - eligibleFrom)
     }),
   )
   const maximumBetweenWaitMinutes = Math.max(
@@ -379,6 +414,7 @@ export const analyzeScheduleWait = (
         matches,
         player.id,
         analysisEndByPlayer.get(player.id) ?? bookingMinutes,
+        options.eligibleFromOffsetMinutesByPlayer?.[player.id] ?? 0,
       ),
     ),
   )
@@ -436,6 +472,7 @@ export const analyzeParticipantWaitLimitViolations = (
   schedule: Schedule,
   players: Player[],
   settings: MatchSettings,
+  options: MeetingScheduleAnalysisOptions = {},
 ): WaitLimitParticipantViolation[] => {
   const matches = schedule.rounds.flatMap((round) => round.matches)
   const bookingMinutes = getBookingDurationMinutes(
@@ -452,11 +489,16 @@ export const analyzeParticipantWaitLimitViolations = (
       bookingMinutes,
       settings,
     )
+    const eligibleFrom = Math.max(
+      0,
+      options.eligibleFromOffsetMinutesByPlayer?.[player.id] ?? 0,
+    )
     if (scheduledMatches.length === 0) {
-      if (analysisEndMinutes > WAIT_PRIORITY_MINUTES) {
+      const waitMinutes = Math.max(0, analysisEndMinutes - eligibleFrom)
+      if (waitMinutes > WAIT_PRIORITY_MINUTES) {
         violations.push({
           playerId: player.id,
-          waitMinutes: analysisEndMinutes,
+          waitMinutes,
           phase: 'unassigned',
         })
       }
@@ -465,7 +507,10 @@ export const analyzeParticipantWaitLimitViolations = (
 
     const candidates: WaitLimitParticipantViolation[] = []
     const firstMatch = scheduledMatches[0]
-    const initialWait = matchTimeWindow(firstMatch).start
+    const initialWait = Math.max(
+      0,
+      matchTimeWindow(firstMatch).start - eligibleFrom,
+    )
     if (initialWait > WAIT_PRIORITY_MINUTES) {
       candidates.push({
         playerId: player.id,
@@ -598,6 +643,7 @@ export const analyzeScheduleQuality = (
   schedule: Schedule,
   players: Player[],
   settings?: MatchSettings,
+  options: MeetingScheduleAnalysisOptions = {},
 ): ScheduleQualityAnalysis => {
   const matches = schedule.rounds.flatMap((round) => round.matches)
   const activePlayers = players.filter((player) => player.active)
@@ -614,10 +660,15 @@ export const analyzeScheduleQuality = (
   )
   const standardCounts = regulars
     .filter((player) => !player.gameCountFlexible)
-    .map((player) => gameCounts.get(player.id) ?? 0)
+    .map((player) =>
+      (gameCounts.get(player.id) ?? 0) +
+      (options.fairnessGameCreditsByPlayer?.[player.id] ?? 0),
+    )
   const effectiveCounts = regulars.map(
     (player) =>
-      (gameCounts.get(player.id) ?? 0) + (player.gameCountFlexible ? 1 : 0),
+      (gameCounts.get(player.id) ?? 0) +
+      (options.fairnessGameCreditsByPlayer?.[player.id] ?? 0) +
+      (player.gameCountFlexible ? 1 : 0),
   )
   const spread = (counts: number[]) =>
     counts.length > 0 ? Math.max(...counts) - Math.min(...counts) : 0
@@ -659,6 +710,7 @@ export const analyzeScheduleQuality = (
       matches,
       player.id,
       analysisEndByPlayer.get(player.id) ?? analysisEndMinutes,
+      options.eligibleFromOffsetMinutesByPlayer?.[player.id] ?? 0,
     ),
   )
   const windowsByPlayer = activePlayers.map((player) =>
@@ -717,8 +769,12 @@ export const analyzeScheduleQuality = (
     maximumInitialWaitMinutes: Math.max(
       0,
       ...activePlayers.map(
-        (player, index) => windowsByPlayer[index][0]?.start ??
-          (analysisEndByPlayer.get(player.id) ?? analysisEndMinutes),
+        (player, index) => Math.max(
+          0,
+          (windowsByPlayer[index][0]?.start ??
+            (analysisEndByPlayer.get(player.id) ?? analysisEndMinutes)) -
+            (options.eligibleFromOffsetMinutesByPlayer?.[player.id] ?? 0),
+        ),
       ),
     ),
     genderCompositionReviewMatches,
@@ -743,6 +799,7 @@ export const analyzeScheduleQuality = (
           matches,
           player.id,
           analysisEndByPlayer.get(player.id) ?? analysisEndMinutes,
+          options.eligibleFromOffsetMinutesByPlayer?.[player.id] ?? 0,
         ) >
           WAIT_PRIORITY_MINUTES,
     ).length,
@@ -881,12 +938,16 @@ export const validateMeetingSchedule = (
   schedule: Schedule,
   players: Player[],
   settings: MatchSettings,
+  options: MeetingScheduleAnalysisOptions & {
+    allowedInactiveMatchIds?: Iterable<string>
+  } = {},
 ): string[] => {
   const issues = new Set<string>()
   const matches = schedule.rounds.flatMap((round) => round.matches)
   const activeIds = new Set(
     players.filter((player) => player.active).map((player) => player.id),
   )
+  const allowedInactiveMatchIds = new Set(options.allowedInactiveMatchIds ?? [])
 
   if (findScheduleOverlapDetail(schedule)) issues.add('참가자 동시간 중복')
 
@@ -898,7 +959,10 @@ export const validateMeetingSchedule = (
     ) {
       issues.add('경기 인원 구성 오류')
     }
-    if (matchPlayers.some((player) => !activeIds.has(player.id))) {
+    if (
+      !allowedInactiveMatchIds.has(match.id) &&
+      matchPlayers.some((player) => !activeIds.has(player.id))
+    ) {
       issues.add('비활성 참가자 배정')
     }
     if (match.court < 1 || match.court > settings.courtCount) {
@@ -932,7 +996,7 @@ export const validateMeetingSchedule = (
           [...match.teamA, ...match.teamB].some(
             (matchPlayer) => matchPlayer.id === player.id,
           ),
-        ).length,
+        ).length + (options.fairnessGameCreditsByPlayer?.[player.id] ?? 0),
       ]),
   )
   const standardGameCounts = players
@@ -959,6 +1023,7 @@ export const validateMeetingSchedule = (
 export const validateMeetingFairness = (
   schedule: Schedule,
   players: Player[],
+  options: MeetingScheduleAnalysisOptions = {},
 ): string[] => {
   const matches = schedule.rounds.flatMap((round) => round.matches)
   const gameCountByPlayer = new Map(
@@ -970,7 +1035,7 @@ export const validateMeetingFairness = (
           [...match.teamA, ...match.teamB].some(
             (matchPlayer) => matchPlayer.id === player.id,
           ),
-        ).length,
+        ).length + (options.fairnessGameCreditsByPlayer?.[player.id] ?? 0),
       ]),
   )
   const zeroGameCount = [...gameCountByPlayer.values()].filter(
@@ -1258,6 +1323,7 @@ const makeHistory = (
   plannedSpecialIds: Set<string> = new Set<string>(),
 ): HistoryState => ({
   games: emptyCounts(players),
+  fairGameCredits: emptyCounts(players),
   rests: emptyCounts(players),
   restStreaks: emptyCounts(players),
   playStreaks: emptyCounts(players),
@@ -1270,6 +1336,9 @@ const makeHistory = (
   specialCompleted: new Set<string>(),
   specialGameCounts: emptyCounts(players),
   guestGameCounts: Object.fromEntries(
+    players.filter((player) => player.isGuest).map((player) => [player.id, 0]),
+  ),
+  guestGameCredits: Object.fromEntries(
     players.filter((player) => player.isGuest).map((player) => [player.id, 0]),
   ),
   skillWarningMatches: 0,
@@ -2485,6 +2554,7 @@ const waitPriorityValue = (player: Player, history: HistoryState) => {
 
 const fairGameCount = (player: Player, history: HistoryState) =>
   (history.games[player.id] ?? 0) +
+  (history.fairGameCredits[player.id] ?? 0) +
   (!player.isGuest && player.gameCountFlexible ? 1 : 0)
 
 const generalFairGameCount = (player: Player, history: HistoryState) =>
@@ -2588,7 +2658,12 @@ const guestPriority = (
   random: () => number,
   conditions: MatchConditionOptions,
 ) =>
-  (conditions.fairGames ? (history.guestGameCounts[guest.id] ?? 0) * 100 : 0) +
+  (conditions.fairGames
+    ? (
+        (history.guestGameCounts[guest.id] ?? 0) +
+        (history.guestGameCredits[guest.id] ?? 0)
+      ) * 100
+    : 0) +
   (conditions.fairGames ? (history.games[guest.id] ?? 0) * 10 : 0) +
   random()
 
@@ -5674,6 +5749,648 @@ export const generateSchedule = (
   players: Player[],
   settings: MatchSettings,
 ): Schedule => generateScheduleCandidate(players, settings, false)
+
+export const makeDefaultMeetingContinuationState = (): MeetingContinuationState => ({
+  version: 1,
+  revision: 0,
+  mode: 'standard',
+  players: {},
+})
+
+export type ReplanMeetingScheduleInput = {
+  schedule: Schedule
+  players: Player[]
+  previousPlayers: Player[]
+  settings: MatchSettings
+  results: ResultsByMatch
+  assignments: MeetingCourtAssignments
+  lockedMatchIds: string[]
+  continuation?: MeetingContinuationState
+}
+
+type MeetingContinuationSlot = {
+  court: number
+  start: number
+  duration: number
+  preferSpecial: boolean
+}
+
+const continuationMedian = (values: number[]) => {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((left, right) => left - right)
+  const middle = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 0
+    ? Math.floor((sorted[middle - 1] + sorted[middle]) / 2)
+    : sorted[middle]
+}
+
+const normalizeContinuationPlayerState = (
+  value: Partial<MeetingContinuationPlayerState> | undefined,
+): MeetingContinuationPlayerState => ({
+  eligibleFromOffsetMinutes: Math.max(
+    0,
+    Math.floor(Number(value?.eligibleFromOffsetMinutes) || 0),
+  ),
+  fairnessGameCredit: Math.max(
+    0,
+    Math.floor(Number(value?.fairnessGameCredit) || 0),
+  ),
+  guestGameCredit: Math.max(
+    0,
+    Math.floor(Number(value?.guestGameCredit) || 0),
+  ),
+})
+
+const meetingMatchSignature = (match: Match) => JSON.stringify({
+  id: match.id,
+  court: match.court,
+  start: matchTimeWindow(match).start,
+  duration: match.durationMinutes ?? GAME_SLOT_MINUTES,
+  teamA: match.teamA.map((player) => player.id),
+  teamB: match.teamB.map((player) => player.id),
+})
+
+const continuationScheduleMetadata = (rounds: Round[]) => {
+  const matches = rounds.flatMap((round) => round.matches)
+  const specialCompletedIds = [...new Set(
+    matches
+      .filter((match) => match.isSpecial)
+      .flatMap((match) => matchPlayers(match))
+      .filter((player) => !player.isGuest)
+      .map((player) => player.id),
+  )]
+  const guestGameCounts: Record<string, number> = {}
+  for (const match of matches) {
+    for (const guest of matchPlayers(match).filter((player) => player.isGuest)) {
+      guestGameCounts[guest.id] = (guestGameCounts[guest.id] ?? 0) + 1
+    }
+  }
+  return { specialCompletedIds, guestGameCounts }
+}
+
+export const replanMeetingSchedule = (
+  input: ReplanMeetingScheduleInput,
+): MeetingReplanResolution => {
+  const allMatches = input.schedule.rounds
+    .flatMap((round) => round.matches)
+    .sort((left, right) =>
+      matchTimeWindow(left).start - matchTimeWindow(right).start ||
+      left.court - right.court ||
+      left.id.localeCompare(right.id),
+    )
+  const matchesById = new Map(allMatches.map((match) => [match.id, match]))
+  const lockedIdSet = new Set(
+    input.lockedMatchIds.filter((matchId) => matchesById.has(matchId)),
+  )
+  const sourceLockedMatches = allMatches.filter((match) =>
+    lockedIdSet.has(match.id),
+  )
+  const operationalLockedById = new Map<string, Match>()
+  const operationalCourtAvailableAt = new Map<number, number>()
+  const operationalPlayerAvailableAt = new Map<string, number>()
+  for (const match of [...sourceLockedMatches].sort((left, right) => {
+    const leftAssignment = input.assignments[left.id]
+    const rightAssignment = input.assignments[right.id]
+    if (leftAssignment && rightAssignment) {
+      return leftAssignment.dispatchOrder - rightAssignment.dispatchOrder
+    }
+    if (leftAssignment) return -1
+    if (rightAssignment) return 1
+    return matchTimeWindow(left).start - matchTimeWindow(right).start
+  })) {
+    const assignment = input.assignments[match.id]
+    if (!assignment) {
+      operationalLockedById.set(match.id, match)
+      continue
+    }
+    const playerIds = matchPlayers(match).map((player) => player.id)
+    const start = Math.max(
+      operationalCourtAvailableAt.get(assignment.court) ?? 0,
+      ...playerIds.map((playerId) =>
+        operationalPlayerAvailableAt.get(playerId) ?? 0,
+      ),
+    )
+    const duration = match.durationMinutes ?? GAME_SLOT_MINUTES
+    const operationalMatch: Match = {
+      ...match,
+      court: assignment.court,
+      startOffsetMinutes: start,
+      durationMinutes: duration,
+    }
+    const end = start + duration
+    operationalCourtAvailableAt.set(assignment.court, end)
+    for (const playerId of playerIds) {
+      operationalPlayerAvailableAt.set(playerId, end)
+    }
+    operationalLockedById.set(match.id, operationalMatch)
+  }
+  const lockedMatches = sourceLockedMatches.map((match) =>
+    operationalLockedById.get(match.id) ?? match,
+  ).sort((left, right) =>
+    matchTimeWindow(left).start - matchTimeWindow(right).start ||
+    left.court - right.court,
+  )
+  const lockedMatchesById = new Map(
+    lockedMatches.map((match) => [match.id, match]),
+  )
+  const replacedMatches = allMatches.filter((match) => !lockedIdSet.has(match.id))
+  const completedMatches = lockedMatches.filter(
+    (match) => input.results[match.id]?.completed,
+  )
+  const activePlayers = input.players
+    .filter((player) => player.active)
+    .map((player) => ({
+      ...player,
+      matchLevelTier: getPlayerMatchTier(player, input.settings.levelTiers),
+    }))
+  const activePlayerIds = new Set(activePlayers.map((player) => player.id))
+  const activeRegulars = activePlayers.filter((player) => !player.isGuest)
+  const activeGuests = activePlayers.filter((player) => player.isGuest)
+  const previousById = new Map(
+    input.previousPlayers.map((player) => [player.id, player]),
+  )
+  const previousContinuation = input.continuation ??
+    makeDefaultMeetingContinuationState()
+  const historicalActivePlayers = activePlayers.filter((player) => {
+    const previous = previousById.get(player.id)
+    return previous?.active && previous.isGuest === player.isGuest
+  })
+
+  const baseFailureIssues: string[] = []
+  if (completedMatches.length === 0) {
+    baseFailureIssues.push('완료 경기가 없어 남은 대진을 구분할 수 없습니다.')
+  }
+  if (replacedMatches.length === 0) {
+    baseFailureIssues.push('다시 생성할 예정 경기가 없습니다.')
+  }
+  if (activePlayers.length < 4) {
+    baseFailureIssues.push('참석 참가자가 4명 이상이어야 합니다.')
+  }
+  if (
+    input.settings.singleGuestPerMatch &&
+    activeGuests.length > 0 &&
+    activeRegulars.length < 3
+  ) {
+    baseFailureIssues.push('스페셜 1명 경기에는 일반 참가자가 3명 이상 필요합니다.')
+  }
+
+  const completedEnd = Math.max(
+    0,
+    ...completedMatches.map((match) => matchTimeWindow(match).end),
+  )
+  const activeLockedStart = Math.max(
+    0,
+    ...lockedMatches
+      .filter((match) => !input.results[match.id]?.completed)
+      .map((match) => matchTimeWindow(match).start),
+  )
+  const progressOffsetMinutes = Math.max(completedEnd, activeLockedStart)
+  const previousActiveGuestIds = new Set(
+    input.previousPlayers
+      .filter((player) => player.active && player.isGuest)
+      .map((player) => player.id),
+  )
+  const lateGuestAdded = activeGuests.some(
+    (guest) => !previousActiveGuestIds.has(guest.id),
+  )
+  const continuationMode = previousContinuation.mode === 'late-special-unlimited' ||
+    lateGuestAdded
+    ? 'late-special-unlimited'
+    : 'standard'
+  const revision = Math.max(0, previousContinuation.revision) + 1
+
+  const history = makeHistory(activePlayers)
+  const lockedMatchesByStart = new Map<number, Match[]>()
+  for (const match of lockedMatches) {
+    const start = matchTimeWindow(match).start
+    lockedMatchesByStart.set(start, [
+      ...(lockedMatchesByStart.get(start) ?? []),
+      match,
+    ])
+  }
+  for (const start of [...lockedMatchesByStart.keys()].sort((a, b) => a - b)) {
+    history.currentStartOffset = start
+    const usedIds = new Set<string>()
+    for (const match of lockedMatchesByStart.get(start) ?? []) {
+      updateHistoryForMatch(history, match)
+      for (const player of matchPlayers(match)) usedIds.add(player.id)
+    }
+    updateHistoryForRests(history, historicalActivePlayers, usedIds)
+  }
+
+  const continuationPlayers: Record<string, MeetingContinuationPlayerState> = {}
+  const newlyAvailableIds = new Set<string>()
+  for (const player of activePlayers) {
+    const previous = previousById.get(player.id)
+    const sameActiveKind = Boolean(
+      previous?.active && previous.isGuest === player.isGuest,
+    )
+    const retained = sameActiveKind
+      ? normalizeContinuationPlayerState(previousContinuation.players[player.id])
+      : {
+          eligibleFromOffsetMinutes: progressOffsetMinutes,
+          fairnessGameCredit: 0,
+          guestGameCredit: 0,
+        }
+    continuationPlayers[player.id] = retained
+    if (!sameActiveKind) newlyAvailableIds.add(player.id)
+  }
+
+  const incumbentRegularEffectiveCounts = activeRegulars
+    .filter((player) => !newlyAvailableIds.has(player.id))
+    .map((player) =>
+      (history.games[player.id] ?? 0) +
+      (continuationPlayers[player.id]?.fairnessGameCredit ?? 0),
+    )
+  const regularBaseline = continuationMedian(incumbentRegularEffectiveCounts)
+  for (const player of activeRegulars.filter((candidate) =>
+    newlyAvailableIds.has(candidate.id),
+  )) {
+    continuationPlayers[player.id].fairnessGameCredit = Math.max(
+      0,
+      regularBaseline - (history.games[player.id] ?? 0),
+    )
+  }
+
+  if (continuationMode === 'late-special-unlimited') {
+    const effectiveGuestCounts = activeGuests
+      .filter((guest) => !newlyAvailableIds.has(guest.id))
+      .map((guest) =>
+        (history.guestGameCounts[guest.id] ?? 0) +
+        (continuationPlayers[guest.id]?.guestGameCredit ?? 0),
+      )
+    const guestBaseline = Math.max(
+      0,
+      ...effectiveGuestCounts,
+      ...activeGuests.map((guest) => history.guestGameCounts[guest.id] ?? 0),
+    )
+    for (const guest of activeGuests) {
+      if (
+        newlyAvailableIds.has(guest.id) ||
+        previousContinuation.mode !== 'late-special-unlimited'
+      ) {
+        continuationPlayers[guest.id].guestGameCredit = Math.max(
+          0,
+          guestBaseline - (history.guestGameCounts[guest.id] ?? 0),
+        )
+      }
+    }
+  }
+
+  for (const player of activePlayers) {
+    const state = continuationPlayers[player.id]
+    history.fairGameCredits[player.id] = state.fairnessGameCredit
+    history.guestGameCredits[player.id] = state.guestGameCredit
+    if (
+      newlyAvailableIds.has(player.id) &&
+      history.lastMatchEnd[player.id] === undefined
+    ) {
+      history.lastMatchEnd[player.id] = state.eligibleFromOffsetMinutes
+    }
+  }
+
+  const continuation: MeetingContinuationState = {
+    version: 1,
+    revision,
+    mode: continuationMode,
+    ...(continuationMode === 'late-special-unlimited'
+      ? {
+          activatedAtOffsetMinutes:
+            previousContinuation.activatedAtOffsetMinutes ??
+            progressOffsetMinutes,
+        }
+      : {}),
+    players: continuationPlayers,
+  }
+
+  const bookingMinutes = getBookingDurationMinutes(
+    input.settings.startTime,
+    input.settings.endTime,
+  )
+  const normalGameMinutes = [10, 12, 15].includes(input.settings.normalGameMinutes)
+    ? input.settings.normalGameMinutes
+    : GAME_SLOT_MINUTES
+  const courtAvailableAt = Object.fromEntries(
+    Array.from({ length: input.settings.courtCount }, (_, index) => [
+      index + 1,
+      progressOffsetMinutes,
+    ]),
+  ) as Record<number, number>
+  for (const match of lockedMatches) {
+    const operationalCourt = input.assignments[match.id]?.court ?? match.court
+    courtAvailableAt[operationalCourt] = Math.max(
+      courtAvailableAt[operationalCourt] ?? progressOffsetMinutes,
+      matchTimeWindow(match).end,
+    )
+  }
+
+  const slots: MeetingContinuationSlot[] = []
+  if (continuationMode === 'late-special-unlimited') {
+    for (let court = 1; court <= input.settings.courtCount; court += 1) {
+      let cursor = courtAvailableAt[court] ?? progressOffsetMinutes
+      while (cursor + normalGameMinutes <= bookingMinutes) {
+        slots.push({
+          court,
+          start: cursor,
+          duration: normalGameMinutes,
+          preferSpecial: true,
+        })
+        cursor += normalGameMinutes
+      }
+    }
+  } else {
+    const seenSlots = new Set<string>()
+    for (const match of replacedMatches) {
+      const window = matchTimeWindow(match)
+      const duration = match.durationMinutes ?? normalGameMinutes
+      const key = `${match.court}:${window.start}:${duration}`
+      if (
+        seenSlots.has(key) ||
+        window.start < (courtAvailableAt[match.court] ?? progressOffsetMinutes) ||
+        window.start + duration > bookingMinutes
+      ) {
+        continue
+      }
+      seenSlots.add(key)
+      slots.push({
+        court: match.court,
+        start: window.start,
+        duration,
+        preferSpecial: match.isSpecial,
+      })
+    }
+  }
+  slots.sort(
+    (left, right) =>
+      left.start - right.start ||
+      Number(right.preferSpecial) - Number(left.preferSpecial) ||
+      left.court - right.court,
+  )
+
+  const playerAvailableAt = Object.fromEntries(
+    activePlayers.map((player) => [
+      player.id,
+      Math.max(
+        progressOffsetMinutes,
+        history.lastMatchEnd[player.id] ?? 0,
+        continuationPlayers[player.id]?.eligibleFromOffsetMinutes ?? 0,
+      ),
+    ]),
+  ) as Record<string, number>
+  const conditions = matchConditions(input.settings)
+  const random = makeRandom(input.settings.seed + revision * 1009)
+  const unlimitedSettings: MatchSettings = {
+    ...input.settings,
+    specialLimitEnabled: false,
+    specialGameLimitEnabled: false,
+    specialTimeLimitEnabled: false,
+    specialScheduleMode: 'spread',
+    specialLowPriorityEnabled: false,
+    specialHighPriorityEnabled: false,
+  }
+  const schedulerPlayers = continuationMode === 'late-special-unlimited'
+    ? activePlayers.map((player) =>
+        player.isGuest ? { ...player, guestGameLimit: 0 } : player,
+      )
+    : activePlayers
+  const slotsByStart = new Map<number, MeetingContinuationSlot[]>()
+  for (const slot of slots) {
+    slotsByStart.set(slot.start, [...(slotsByStart.get(slot.start) ?? []), slot])
+  }
+
+  const newRounds: Round[] = []
+  const createdMatches: Match[] = []
+  const firstNewRoundNumber = Math.max(
+    0,
+    ...input.schedule.rounds
+      .filter((round) => round.matches.some((match) => lockedIdSet.has(match.id)))
+      .map((round) => round.number),
+  ) + 1
+  const sortedStarts = [...slotsByStart.keys()].sort((left, right) => left - right)
+  for (let startIndex = 0; startIndex < sortedStarts.length; startIndex += 1) {
+    const start = sortedStarts[startIndex]
+    const roundNumber = firstNewRoundNumber + startIndex
+    history.currentStartOffset = start
+    const usedIds = new Set(
+      schedulerPlayers
+        .filter((player) => (playerAvailableAt[player.id] ?? 0) > start)
+        .map((player) => player.id),
+    )
+    const matches: Match[] = []
+    const pacing: RoundPacing = {
+      roundNumber: Math.floor(start / Math.max(1, normalGameMinutes)) + 1,
+      targetRoundCount: Math.max(
+        1,
+        Math.floor(bookingMinutes / Math.max(1, normalGameMinutes)),
+      ),
+      earlyPhaseEndPercent: input.settings.earlyPhaseEndPercent,
+      middlePhaseEndPercent: input.settings.middlePhaseEndPercent,
+    }
+
+    for (const slot of slotsByStart.get(start) ?? []) {
+      let group: [Player, Player, Player, Player] | null = null
+      const specialFirst = continuationMode === 'late-special-unlimited' ||
+        slot.preferSpecial
+      if (specialFirst && activeGuests.length > 0) {
+        group = pickSpecialGroup(
+          schedulerPlayers,
+          usedIds,
+          history,
+          random,
+          continuationMode === 'late-special-unlimited'
+            ? unlimitedSettings
+            : input.settings,
+          conditions,
+          true,
+          pacing,
+        )
+      }
+      if (!group) {
+        group = pickGeneralGroup(
+          schedulerPlayers,
+          usedIds,
+          history,
+          random,
+          input.settings,
+          conditions,
+          pacing,
+          true,
+        )
+      }
+      if (
+        !group &&
+        !specialFirst &&
+        activeGuests.length > 0
+      ) {
+        group = pickSpecialGroup(
+          schedulerPlayers,
+          usedIds,
+          history,
+          random,
+          input.settings,
+          conditions,
+          true,
+          pacing,
+        )
+      }
+      if (!group) continue
+
+      const match = createMatch(
+        roundNumber,
+        slot.court,
+        group,
+        history,
+        random,
+        conditions,
+        pacing,
+        hasGuest(group),
+      )
+      match.id = `cont-${revision}-s${slot.start}-c${slot.court}-${group
+        .map((player) => player.id)
+        .sort()
+        .join('-')}`
+      match.startOffsetMinutes = slot.start
+      match.durationMinutes = slot.duration
+      matches.push(match)
+      createdMatches.push(match)
+      const endsAt = slot.start + slot.duration
+      for (const player of group) {
+        usedIds.add(player.id)
+        playerAvailableAt[player.id] = endsAt
+      }
+      updateHistoryForMatch(history, match)
+    }
+
+    updateHistoryForRests(history, schedulerPlayers, usedIds)
+    if (matches.length > 0) {
+      newRounds.push({
+        id: `continuation-${revision}-round-${roundNumber}`,
+        number: roundNumber,
+        matches,
+        resting: schedulerPlayers.filter((player) => !usedIds.has(player.id)),
+      })
+    }
+  }
+
+  const lockedRounds = input.schedule.rounds
+    .map((round) => ({
+      ...round,
+      matches: round.matches
+        .filter((match) => lockedIdSet.has(match.id))
+        .map((match) => lockedMatchesById.get(match.id) ?? match),
+    }))
+    .filter((round) => round.matches.length > 0)
+  const playersById = new Map(input.players.map((player) => [player.id, player]))
+  const restorePlayer = (player: Player) => playersById.get(player.id) ?? player
+  const rounds = [...lockedRounds, ...newRounds].map((round) => ({
+    ...round,
+    matches: round.matches.map((match) => ({
+      ...match,
+      teamA: match.teamA.map(restorePlayer) as Team,
+      teamB: match.teamB.map(restorePlayer) as Team,
+    })),
+    resting: round.resting.map(restorePlayer),
+  }))
+  const warnings = [
+    ...(continuationMode === 'late-special-unlimited'
+      ? ['진행 중 스페셜 추가 · 남은 경기는 일반 경기 시간으로 운영합니다.']
+      : []),
+    ...(createdMatches.length < slots.length
+      ? [`남은 경기 미배정 ${slots.length - createdMatches.length}코트`]
+      : []),
+    ...activeGuests
+      .filter((guest) =>
+        !createdMatches.some((match) =>
+          matchPlayers(match).some((player) => player.id === guest.id),
+        ),
+      )
+      .map((guest) => `${guest.name.trim() || '스페셜'} 남은 경기 0경기`),
+  ]
+  const metadata = continuationScheduleMetadata(rounds)
+  const schedule: Schedule = {
+    rounds,
+    warnings,
+    ...metadata,
+  }
+
+  const failureIssues = [...baseFailureIssues]
+  const originalLockedSignatures = new Map(
+    lockedMatches.map((match) => [match.id, meetingMatchSignature(match)]),
+  )
+  for (const match of schedule.rounds.flatMap((round) => round.matches)) {
+    const playersInMatch = matchPlayers(match)
+    if (
+      playersInMatch.length !== 4 ||
+      new Set(playersInMatch.map((player) => player.id)).size !== 4
+    ) {
+      failureIssues.push('경기 인원 구성 오류')
+    }
+    if (
+      !lockedIdSet.has(match.id) &&
+      playersInMatch.some((player) => !activePlayerIds.has(player.id))
+    ) {
+      failureIssues.push('불참 참가자가 새 대진에 포함되었습니다.')
+    }
+    if (match.court < 1 || match.court > input.settings.courtCount) {
+      failureIssues.push('코트 번호 오류')
+    }
+    if (
+      !lockedIdSet.has(match.id) &&
+      matchTimeWindow(match).end > bookingMinutes
+    ) {
+      failureIssues.push('종료 시각을 넘는 경기가 있습니다.')
+    }
+    if (
+      input.settings.singleGuestPerMatch &&
+      playersInMatch.filter((player) => player.isGuest).length > 1
+    ) {
+      failureIssues.push('스페셜 인원 제한 위반')
+    }
+    if (
+      continuationMode === 'late-special-unlimited' &&
+      !lockedIdSet.has(match.id) &&
+      (match.durationMinutes ?? GAME_SLOT_MINUTES) !== normalGameMinutes
+    ) {
+      failureIssues.push('남은 경기 시간 통일 실패')
+    }
+  }
+  for (const [matchId, signature] of originalLockedSignatures) {
+    const nextMatch = schedule.rounds
+      .flatMap((round) => round.matches)
+      .find((match) => match.id === matchId)
+    if (!nextMatch || meetingMatchSignature(nextMatch) !== signature) {
+      failureIssues.push('완료 또는 현재 경기 보존 실패')
+    }
+  }
+  if (findScheduleOverlap(schedule)) {
+    failureIssues.push('참가자 동시간 중복')
+  }
+  const mergedMatches = schedule.rounds.flatMap((round) => round.matches)
+  for (let left = 0; left < mergedMatches.length; left += 1) {
+    for (let right = left + 1; right < mergedMatches.length; right += 1) {
+      if (
+        mergedMatches[left].court === mergedMatches[right].court &&
+        windowsOverlap(mergedMatches[left], mergedMatches[right])
+      ) {
+        failureIssues.push('코트 시간 중복')
+      }
+    }
+  }
+  if (createdMatches.length === 0) {
+    failureIssues.push('남은 시간에 만들 수 있는 경기가 없습니다.')
+  }
+
+  return {
+    schedule,
+    continuation,
+    lockedMatchIds: [...lockedIdSet],
+    replacedMatchIds: replacedMatches.map((match) => match.id),
+    createdMatchIds: createdMatches.map((match) => match.id),
+    progressOffsetMinutes,
+    warnings,
+    failureIssues: [...new Set(failureIssues)],
+  }
+}
 
 export const appendGeneralCourtGames = (
   schedule: Schedule,

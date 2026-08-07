@@ -893,6 +893,30 @@ h2 {
   line-height: 1.45;
 }
 
+.level-help-replan-note {
+  display: grid;
+  gap: 4px;
+  margin: 14px 0 12px;
+  padding: 10px 11px;
+  border: 1px solid rgba(12, 143, 127, 0.34);
+  border-radius: 7px;
+  background: var(--soft-green);
+}
+
+.level-help-replan-note strong {
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 950;
+}
+
+.level-help-replan-note p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
 .feature-help-dialog p {
   padding: 12px;
   border-radius: 7px;
@@ -1688,6 +1712,69 @@ textarea {
   gap: 8px;
   justify-content: flex-end;
   flex-wrap: wrap;
+}
+
+.participant-action-with-help {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  align-items: stretch;
+}
+
+.participant-action-with-help > .participant-action-main {
+  width: 100%;
+  padding-right: 34px;
+}
+
+.participant-action-with-help > .participant-action-help {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  display: inline-grid;
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  min-height: 18px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: var(--green);
+  background: #fff;
+  font-size: 11px;
+  font-weight: 950;
+  line-height: 1;
+  transform: translateY(-50%);
+}
+
+.participant-action-tooltip {
+  position: absolute;
+  z-index: 50;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: max-content;
+  max-width: min(250px, calc(100vw - 24px));
+  padding: 7px 9px;
+  border-radius: 6px;
+  color: #fff;
+  background: var(--ink);
+  box-shadow: 0 4px 12px rgba(7, 31, 61, 0.18);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.4;
+  text-align: left;
+  white-space: normal;
+}
+
+.participant-action-tooltip::after {
+  position: absolute;
+  right: 12px;
+  bottom: -5px;
+  width: 10px;
+  height: 10px;
+  background: var(--ink);
+  content: '';
+  transform: rotate(45deg);
 }
 
 .prize-draw-box {
@@ -4417,6 +4504,11 @@ textarea {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .compact-actions > .participant-action-with-help,
+  .bulk-actions > .participant-action-with-help {
+    width: 100%;
+  }
+
   .bulk-actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -4428,6 +4520,36 @@ textarea {
     min-width: 0;
     width: 100%;
     padding-inline: 4px;
+  }
+
+  .participant-action-with-help > .participant-action-main {
+    padding-right: 29px;
+  }
+
+  .participant-action-with-help > .participant-action-help {
+    right: 5px;
+    width: 17px;
+    min-width: 17px;
+    height: 17px;
+    min-height: 17px;
+    padding: 0;
+  }
+
+  .compact-actions .participant-action-tooltip,
+  .bulk-actions .participant-action-tooltip {
+    right: auto;
+    left: 0;
+    max-width: calc(100vw - 20px);
+  }
+
+  .compact-actions .participant-action-tooltip::after {
+    right: auto;
+    left: 38%;
+  }
+
+  .bulk-actions .participant-action-tooltip::after {
+    right: auto;
+    left: 66%;
   }
 
   .header-actions .round-help-button {
@@ -4991,7 +5113,32 @@ textarea {
 
   .match-card header {
     min-height: 24px;
-    font-size: 12px;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: 11px;
+  }
+
+  .match-card header > span:first-child {
+    min-width: 0;
+    flex: 1 1 105px;
+    line-height: 1.35;
+  }
+
+  .match-card-actions {
+    max-width: 160px;
+    flex: 0 1 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 3px;
+  }
+
+  .match-card-actions button,
+  .match-card-actions strong {
+    flex: 0 0 auto;
+    min-height: 28px;
+    padding: 3px 5px;
+    font-size: 10px;
+    white-space: nowrap;
   }
 
   .score-row {
