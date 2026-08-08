@@ -36,6 +36,14 @@ import {
   getBookingDurationMinutes,
   getBookingRoundCount,
 } from '../scheduleTime'
+import {
+  attendanceTargetGameCount,
+  isPlayerAvailableForMeetingSlot,
+  maximumConsecutiveMeetingGames,
+  resolveMeetingAttendanceWindow,
+  usesMeetingAttendanceGameLimit,
+  type MeetingAttendanceWindow,
+} from '../meetingAvailability'
 
 export type MeetingSlotKind = 'general' | 'special'
 
@@ -73,6 +81,8 @@ type EngineState = {
   initialSpecialReservedIds: Set<string>
   initialSpecialFillerIds: Set<string>
   playOpportunityStarts: Map<string, number[]>
+  attendanceWindows: Map<string, MeetingAttendanceWindow>
+  attendanceTargets: Map<string, number>
   maximumStandardGames: number | null
   strictCautionMatches: number
 }
@@ -178,13 +188,23 @@ const distributeSpecialChunks = (
 ): SpecialReservation[] => {
   const guests = activePlayers.filter((player) => player.isGuest)
   const requests = guests.flatMap((guest) => {
-    const target = plannedGuestGames(guest, activePlayers, settings)
+    const attendance = resolveMeetingAttendanceWindow(guest, settings)
+    const guestWindowEnd = Math.min(attendance.end, specialWindowMinutes)
+    const target = Math.min(
+      plannedGuestGames(guest, activePlayers, settings),
+      Math.max(
+        0,
+        Math.floor((guestWindowEnd - attendance.start) / SPECIAL_GAME_MINUTES),
+      ),
+    )
     return Array.from({ length: target }, (_, index) => ({
       guest,
+      windowEnd: guestWindowEnd,
       desiredStart: target <= 1
-        ? 0
+        ? attendance.start
         : Math.round(
-            (specialWindowMinutes - SPECIAL_GAME_MINUTES) *
+            attendance.start +
+            (guestWindowEnd - attendance.start - SPECIAL_GAME_MINUTES) *
               index /
               (target - 1),
           ),
@@ -209,7 +229,12 @@ const distributeSpecialChunks = (
     if (index === fullCourtCount) return requests.length % gamesPerChunk
     return 0
   })
-  const guestAvailableAt = new Map(guests.map((guest) => [guest.id, 0]))
+  const guestAvailableAt = new Map(
+    guests.map((guest) => [
+      guest.id,
+      resolveMeetingAttendanceWindow(guest, settings).start,
+    ]),
+  )
   const reservations: SpecialReservation[] = []
 
   requests.forEach((request) => {
@@ -241,8 +266,9 @@ const distributeSpecialChunks = (
         const remainingOnCourt =
           courtQuotas[courtIndex] - courtAssignedCount[courtIndex] - 1
         if (
+          start + SPECIAL_GAME_MINUTES > request.windowEnd ||
           start + SPECIAL_GAME_MINUTES * (remainingOnCourt + 1) >
-          specialWindowMinutes
+            specialWindowMinutes
         ) {
           return []
         }
@@ -357,6 +383,7 @@ export const planMeetingSlotsV2 = (
 const initializeState = (
   activePlayers: Player[],
   plannedSlots: PlannedMeetingSlot[],
+  settings: MatchSettings,
 ): EngineState => {
   const plannedSpecialStarts = new Map<string, number[]>()
   for (const slot of plannedSlots.filter(
@@ -375,10 +402,24 @@ const initializeState = (
   const generalSlots = plannedSlots.filter((slot) => slot.kind === 'general')
   const playOpportunityStarts = new Map<string, number[]>()
   for (const player of activePlayers.filter((candidate) => !candidate.isGuest)) {
-    const plannedStarts = plannedSpecialStarts.get(player.id) ?? []
+    const plannedStarts = (plannedSpecialStarts.get(player.id) ?? [])
+      .filter((start) =>
+        isPlayerAvailableForMeetingSlot(
+          player,
+          settings,
+          start,
+          SPECIAL_GAME_MINUTES,
+        ),
+      )
     const generalStarts = generalSlots
       .filter(
         (slot) =>
+          isPlayerAvailableForMeetingSlot(
+            player,
+            settings,
+            slot.start,
+            slot.duration,
+          ) &&
           !plannedStarts.some(
             (start) =>
               start < slot.start + slot.duration &&
@@ -422,6 +463,31 @@ const initializeState = (
     followupPlannedIds.length,
     Math.max(0, regularCount - regularCapacityBeforeFollowup),
   )
+  const fullAttendanceTarget = regularCount > 0
+    ? plannedRegularAppearances / regularCount
+    : 0
+  const attendanceWindows = new Map(
+    activePlayers.map((player) => [
+      player.id,
+      resolveMeetingAttendanceWindow(player, settings),
+    ]),
+  )
+  const attendanceTargets = new Map(
+    activePlayers.map((player) => {
+      const opportunities = player.isGuest
+        ? plannedSpecialStarts.get(player.id) ?? []
+        : playOpportunityStarts.get(player.id) ?? []
+      const target = player.isGuest
+        ? opportunities.length
+        : attendanceTargetGameCount(
+            player,
+            settings,
+            fullAttendanceTarget,
+            opportunities.length,
+          )
+      return [player.id, target]
+    }),
+  )
   return {
     clubQualityEnabled:
       activePlayers.filter((player) => !player.isGuest).length <= 35 &&
@@ -435,8 +501,22 @@ const initializeState = (
         .filter((player) => player.isGuest)
         .map((player) => [player.id, 0]),
     ),
-    availableAt: new Map(activePlayers.map((player) => [player.id, 0])),
-    lastEnd: new Map(),
+    availableAt: new Map(
+      activePlayers.map((player) => [
+        player.id,
+        attendanceWindows.get(player.id)?.start ?? 0,
+      ]),
+    ),
+    lastEnd: new Map(
+      activePlayers
+        .filter((player) =>
+          (attendanceWindows.get(player.id)?.start ?? 0) > 0,
+        )
+        .map((player) => [
+          player.id,
+          attendanceWindows.get(player.id)?.start ?? 0,
+        ]),
+    ),
     consecutiveGames: new Map(activePlayers.map((player) => [player.id, 0])),
     groups: new Map(),
     partners: new Map(),
@@ -456,6 +536,8 @@ const initializeState = (
       followupPlannedIds.slice(requiredFollowupFirstGames),
     ),
     playOpportunityStarts,
+    attendanceWindows,
+    attendanceTargets,
     maximumStandardGames: standardPlayerCount > 0
       ? Math.ceil(plannedRegularAppearances / standardPlayerCount)
       : null,
@@ -667,6 +749,32 @@ const projectedGameCount = (player: Player, state: EngineState) =>
     ? state.remainingPlannedSpecials.get(player.id) ?? 0
     : 0)
 
+const attendanceSelectionScore = (
+  player: Player,
+  state: EngineState,
+  slot: PlannedMeetingSlot,
+) => {
+  const window = state.attendanceWindows.get(player.id)
+  if (!window || (!window.isCustom && !window.priority)) {
+    return [0, 0] as const
+  }
+  const target = state.attendanceTargets.get(player.id) ?? 0
+  const games = state.games.get(player.id) ?? 0
+  const opportunities = player.isGuest
+    ? state.plannedSpecialStarts.get(player.id) ?? []
+    : state.playOpportunityStarts.get(player.id) ?? []
+  const remainingOpportunities = opportunities.filter(
+    (start) => start >= slot.start && start < window.end,
+  ).length
+  const remainingTarget = Math.max(0, target - games)
+  const mustPlay = remainingTarget > 0 &&
+    remainingOpportunities <= remainingTarget
+  return [
+    -Number(mustPlay),
+    Number(games >= target),
+  ] as const
+}
+
 const requiredPlayerIdsForBatch = (
   activePlayers: Player[],
   state: EngineState,
@@ -679,7 +787,9 @@ const requiredPlayerIdsForBatch = (
       .filter(
         (player) =>
           !player.isGuest &&
-          (state.availableAt.get(player.id) ?? 0) <= start,
+          (state.availableAt.get(player.id) ?? 0) <= start &&
+          start + settings.normalGameMinutes <=
+            (state.attendanceWindows.get(player.id)?.end ?? schedulingMinutes),
       )
       .filter((player) => {
         const lastEnd = state.lastEnd.get(player.id) ?? 0
@@ -771,6 +881,7 @@ const individualPriority = (
   }
   return [
     -Number(requiredIds.has(player.id)),
+    ...attendanceSelectionScore(player, state, slot),
     Number((state.games.get(player.id) ?? 0) > 0),
     -Number(isInitialSpecialFiller(player, state, slot)),
     Number(hasImminentFirstSpecial(player, state, slot)),
@@ -793,9 +904,14 @@ const availablePlayers = (
   slot: PlannedMeetingSlot,
   usedIds: Set<string>,
 ) => players.filter((player) => {
+  const attendance = state.attendanceWindows.get(player.id)
   if (
     usedIds.has(player.id) ||
-    (state.availableAt.get(player.id) ?? 0) > slot.start
+    (state.availableAt.get(player.id) ?? 0) > slot.start ||
+    (attendance && (
+      slot.start < attendance.start ||
+      slot.start + slot.duration > attendance.end
+    ))
   ) {
     return false
   }
@@ -929,6 +1045,12 @@ const attachSpecialParticipantPlans = (
         ? 'high'
         : 'random'
     const available = eligibleRegulars.filter((player) =>
+      isPlayerAvailableForMeetingSlot(
+        player,
+        settings,
+        slot.start,
+        slot.duration,
+      ) &&
       !(plannedWindows.get(player.id) ?? []).some(
         (window) =>
           window.start < slot.start + slot.duration &&
@@ -1209,6 +1331,12 @@ const scoreCandidate = (
     criticalWaits.length * 1000 +
     criticalWaits.reduce((sum, wait) => sum + wait, 0)
   )
+  const attendanceScores = players.map((player) =>
+    attendanceSelectionScore(player, state, slot),
+  )
+  const attendanceScore = Array.from({ length: 2 }, (_, index) =>
+    attendanceScores.reduce((sum, score) => sum + score[index], 0),
+  )
   return [
     0,
     coveragePenalty,
@@ -1216,6 +1344,7 @@ const scoreCandidate = (
     imminentFirstSpecialPenalty,
     warmupFillerPenalty,
     waitDeadlinePriority,
+    ...attendanceScore,
     Number(
       state.clubQualityEnabled &&
       slot.kind === 'general' &&
@@ -1279,6 +1408,7 @@ const hardCandidateAllowed = (
       (player) =>
         !player.isGuest &&
         !player.gameCountFlexible &&
+        !state.attendanceWindows.get(player.id)?.isCustom &&
         projectedGameCount(player, state) >= maximumStandardGames,
     )
   ) {
@@ -1307,6 +1437,17 @@ const hardCandidateAllowed = (
   return true
 }
 
+const exceedsConsecutiveGameLimit = (
+  player: Player,
+  state: EngineState,
+  slot: PlannedMeetingSlot,
+) => {
+  if (!usesMeetingAttendanceGameLimit(player)) return false
+  if (state.lastEnd.get(player.id) !== slot.start) return false
+  const maximum = maximumConsecutiveMeetingGames(player)
+  return (state.consecutiveGames.get(player.id) ?? 0) >= maximum
+}
+
 const makeCandidate = (
   players: [Player, Player, Player, Player],
   state: EngineState,
@@ -1316,6 +1457,9 @@ const makeCandidate = (
   activePlayers: Player[],
   allowDanger = false,
 ) => {
+  if (players.some((player) => exceedsConsecutiveGameLimit(player, state, slot))) {
+    return null
+  }
   const pairing = pickPairing(
     players,
     state,
@@ -1571,6 +1715,14 @@ const specialCandidates = (
   const guest = activePlayers.find((player) => player.id === slot.guestId)
   if (!guest || usedIds.has(guest.id)) return []
   if ((state.availableAt.get(guest.id) ?? 0) > slot.start) return []
+  const guestAttendance = state.attendanceWindows.get(guest.id)
+  if (
+    guestAttendance &&
+    (slot.start < guestAttendance.start ||
+      slot.start + slot.duration > guestAttendance.end)
+  ) {
+    return []
+  }
   const guestTarget = plannedGuestGames(guest, activePlayers, settings)
   if ((state.guestGames.get(guest.id) ?? 0) >= guestTarget) return []
 
@@ -1584,7 +1736,9 @@ const specialCandidates = (
       plannedRegulars.every(
         (player) =>
           !usedIds.has(player.id) &&
-          (state.availableAt.get(player.id) ?? 0) <= slot.start,
+          (state.availableAt.get(player.id) ?? 0) <= slot.start &&
+          slot.start + slot.duration <=
+            (state.attendanceWindows.get(player.id)?.end ?? Number.MAX_SAFE_INTEGER),
       )
     ) {
       const candidate = makeCandidate(
@@ -1726,7 +1880,7 @@ const chooseBatch = (
     start,
     settings,
   )
-  const scoreLength = profile.priorityOrder.length + 14
+  const scoreLength = profile.priorityOrder.length + 16
   let beams: BatchBeam[] = [{
     selections: [],
     usedIds: new Set(),
@@ -2174,7 +2328,8 @@ export const generateMeetingScheduleV2 = (
     issue.code === 'not-enough-regulars-for-special' ||
     issue.code === 'no-courts' ||
     issue.code === 'no-booking-time' ||
-    issue.code === 'no-playable-slot'
+    issue.code === 'no-playable-slot' ||
+    issue.code === 'invalid-attendance-window'
   )) {
     return {
       rounds: [],
@@ -2194,7 +2349,7 @@ export const generateMeetingScheduleV2 = (
     activePlayers,
     effectiveSettings,
   )
-  const state = initializeState(activePlayers, slots)
+  const state = initializeState(activePlayers, slots, effectiveSettings)
   const slotsByStart = new Map<number, PlannedMeetingSlot[]>()
   for (const slot of slots) {
     slotsByStart.set(slot.start, [...(slotsByStart.get(slot.start) ?? []), slot])

@@ -5,6 +5,7 @@ import type {
   MeetingShuffleDirection,
   Player,
 } from '../types'
+import { attendanceWindowIssue } from '../meetingAvailability'
 
 export const MEETING_MAX_WAIT_MINUTES = 25
 export const MEETING_MAX_STANDARD_GAME_SPREAD = 1
@@ -54,6 +55,7 @@ export type MeetingPreflightIssueCode =
   | 'no-courts'
   | 'no-booking-time'
   | 'no-playable-slot'
+  | 'invalid-attendance-window'
   | 'insufficient-standard-capacity'
   | 'insufficient-special-capacity'
 
@@ -254,6 +256,16 @@ export const preflightMeetingGeneration = (
       code: 'no-playable-slot',
       message: '운영 시간 안에 경기를 배치할 수 없습니다.',
     })
+  }
+  for (const player of activePlayers) {
+    const issue = attendanceWindowIssue(
+      player,
+      settings,
+      player.isGuest ? SPECIAL_GAME_MINUTES : settings.normalGameMinutes,
+    )
+    if (issue) {
+      issues.push({ code: 'invalid-attendance-window', message: issue })
+    }
   }
   if (
     specialEnabled &&

@@ -16,6 +16,12 @@ import {
   MEETING_TIGHT_GAME_MINIMUM,
   MEETING_TIGHT_GAME_TARGET,
 } from './rules'
+import {
+  attendanceTargetGameCount,
+  findMeetingConsecutiveGameLimitViolations,
+  isPlayerAvailableForMeetingSlot,
+  resolveMeetingAttendanceWindow,
+} from '../meetingAvailability'
 
 type TimeWindow = { start: number; end: number }
 
@@ -52,6 +58,8 @@ export type MeetingV2Metrics = {
   postWarmupSkillCautionMatches: number
   postWarmupSkillDangerMatches: number
   averageWaitMinutes: number
+  attendanceTargetDeficitCount: number
+  priorityAttendanceTargetDeficitCount: number
 }
 
 const matchPlayers = (match: Match) => [...match.teamA, ...match.teamB]
@@ -180,6 +188,7 @@ const waitDetails = (
   bookingMinutes: number,
   settings: MatchSettings,
 ) => {
+  const attendance = resolveMeetingAttendanceWindow(player, settings)
   const playerMatches = matches
     .filter((match) => matchPlayers(match).some((candidate) => candidate.id === player.id))
     .sort(
@@ -188,24 +197,28 @@ const waitDetails = (
         left.id.localeCompare(right.id),
     )
   const windows = playerMatches.map(matchWindow)
-  const analysisEnd = playerAnalysisEnd(
-    player,
-    windows,
-    bookingMinutes,
-    settings,
+  const analysisEnd = Math.min(
+    attendance.end,
+    playerAnalysisEnd(
+      player,
+      windows,
+      bookingMinutes,
+      settings,
+    ),
   )
   if (windows.length === 0) {
+    const unattendedMinutes = Math.max(0, analysisEnd - attendance.start)
     return {
-      initial: analysisEnd,
+      initial: unattendedMinutes,
       between: 0,
-      final: analysisEnd,
-      maximum: analysisEnd,
-      average: analysisEnd,
+      final: unattendedMinutes,
+      maximum: unattendedMinutes,
+      average: unattendedMinutes,
       violation:
-        analysisEnd > MEETING_MAX_WAIT_MINUTES
+        unattendedMinutes > MEETING_MAX_WAIT_MINUTES
           ? ({
               playerId: player.id,
-              waitMinutes: analysisEnd,
+              waitMinutes: unattendedMinutes,
               phase: 'unassigned',
             } satisfies WaitLimitParticipantViolation)
           : null,
@@ -219,7 +232,7 @@ const waitDetails = (
     nextMatchId?: string
   }> = [
     {
-      waitMinutes: windows[0].start,
+      waitMinutes: Math.max(0, windows[0].start - attendance.start),
       phase: 'initial',
       nextMatchId: playerMatches[0].id,
     },
@@ -269,10 +282,20 @@ export const analyzeMeetingScheduleV2 = (
   schedule: Schedule,
   players: Player[],
   settings: MatchSettings,
+  options: {
+    allowedAttendanceMatchIds?: Iterable<string>
+    allowedConsecutiveMatchIds?: Iterable<string>
+  } = {},
 ): MeetingV2Metrics => {
   const matches = schedule.rounds.flatMap((round) => round.matches)
   const activePlayers = players.filter((player) => player.active)
   const activeIds = new Set(activePlayers.map((player) => player.id))
+  const allowedAttendanceMatchIds = new Set(
+    options.allowedAttendanceMatchIds ?? [],
+  )
+  const allowedConsecutiveMatchIds = new Set(
+    options.allowedConsecutiveMatchIds ?? [],
+  )
   const structuralIssues = new Set<string>()
   const bookingMinutes = getBookingDurationMinutes(
     settings.startTime,
@@ -303,6 +326,19 @@ export const analyzeMeetingScheduleV2 = (
     ) {
       structuralIssues.add('스페셜 인원 제한 위반')
     }
+    if (
+      !allowedAttendanceMatchIds.has(match.id) &&
+      assignedPlayers.some((player) =>
+        !isPlayerAvailableForMeetingSlot(
+          player,
+          settings,
+          window.start,
+          window.end - window.start,
+        ),
+      )
+    ) {
+      structuralIssues.add('참석 시간 외 배정')
+    }
   }
 
   for (let left = 0; left < matches.length; left += 1) {
@@ -318,6 +354,13 @@ export const analyzeMeetingScheduleV2 = (
         structuralIssues.add('참가자 동시간 중복')
       }
     }
+  }
+  if (
+    findMeetingConsecutiveGameLimitViolations(schedule).some(
+      (violation) => !allowedConsecutiveMatchIds.has(violation.matchId),
+    )
+  ) {
+    structuralIssues.add('연속 경기 제한 위반')
   }
 
   const gameCounts = Object.fromEntries(activePlayers.map((player) => [player.id, 0]))
@@ -395,7 +438,10 @@ export const analyzeMeetingScheduleV2 = (
   }
 
   const standardPlayers = activePlayers.filter(
-    (player) => !player.isGuest && !player.gameCountFlexible,
+    (player) =>
+      !player.isGuest &&
+      !player.gameCountFlexible &&
+      !resolveMeetingAttendanceWindow(player, settings).isCustom,
   )
   const standardCounts = standardPlayers.map((player) => gameCounts[player.id] ?? 0)
   const standardGameSpread = standardCounts.length > 0
@@ -413,6 +459,43 @@ export const analyzeMeetingScheduleV2 = (
   ).length
   const genderUnknownParticipants = standardPlayers.filter(
     (player) => player.gender === 'none',
+  ).length
+  const activeRegulars = activePlayers.filter((player) => !player.isGuest)
+  const regularAppearances = activeRegulars.reduce(
+    (sum, player) => sum + (gameCounts[player.id] ?? 0),
+    0,
+  )
+  const fullAttendanceTarget = activeRegulars.length > 0
+    ? regularAppearances / activeRegulars.length
+    : 0
+  const timedTargets = activeRegulars
+    .filter((player) => {
+      const attendance = resolveMeetingAttendanceWindow(player, settings)
+      return attendance.isCustom || attendance.priority
+    })
+    .map((player) => {
+      const attendance = resolveMeetingAttendanceWindow(player, settings)
+      const maximumOpportunities = Math.max(
+        0,
+        Math.floor(attendance.duration / settings.normalGameMinutes),
+      )
+      const target = attendanceTargetGameCount(
+        player,
+        settings,
+        fullAttendanceTarget,
+        maximumOpportunities,
+      )
+      return {
+        player,
+        target,
+        deficit: Math.max(0, target - (gameCounts[player.id] ?? 0)),
+      }
+    })
+  const attendanceTargetDeficitCount = timedTargets.filter(
+    (item) => item.deficit > 0,
+  ).length
+  const priorityAttendanceTargetDeficitCount = timedTargets.filter(
+    (item) => item.player.attendancePriority && item.deficit > 0,
   ).length
   const waits = activePlayers.map((player) =>
     waitDetails(player, matches, bookingMinutes, settings),
@@ -460,6 +543,14 @@ export const analyzeMeetingScheduleV2 = (
   if (genderUnknownParticipants > 0) {
     qualityIssues.push(`성별 정보 없음 ${genderUnknownParticipants}명`)
   }
+  if (attendanceTargetDeficitCount > 0) {
+    qualityIssues.push(`참석 시간 목표 미달 ${attendanceTargetDeficitCount}명`)
+  }
+  if (priorityAttendanceTargetDeficitCount > 0) {
+    qualityIssues.push(
+      `우선 배정 목표 미달 ${priorityAttendanceTargetDeficitCount}명`,
+    )
+  }
 
   return {
     structuralIssues: [...structuralIssues],
@@ -497,6 +588,8 @@ export const analyzeMeetingScheduleV2 = (
       waits.length > 0
         ? waits.reduce((sum, wait) => sum + wait.average, 0) / waits.length
         : 0,
+    attendanceTargetDeficitCount,
+    priorityAttendanceTargetDeficitCount,
   }
 }
 

@@ -60,6 +60,14 @@ import {
   TournamentProgressMode,
 } from './ProgressModeView'
 import { analyzeMeetingScheduleV2 } from './matchmaker/validation'
+import {
+  findMeetingConsecutiveGameLimitViolations,
+  isPlayerAvailableForMeetingSlot,
+  meetingClockTimeToOffset,
+  meetingAttendanceTimeLabel,
+  normalizeAttendanceOffset,
+  resolveMeetingAttendanceWindow,
+} from './meetingAvailability'
 import { SharedScheduleFinder } from './SharedScheduleFinder'
 import type { SharedScheduleCandidate } from './sharedSchedule'
 import {
@@ -435,6 +443,7 @@ const normalizePlayer = (player: Partial<Player>): Player => {
   const isGuest = (player.isGuest ?? false) || normalizedLevel === '스페셜'
   const level = isGuest ? '스페셜' : normalizedLevel
   const isSpecialLevel = level === '스페셜'
+  const attendancePriority = Boolean(player.attendancePriority)
   return {
     id: player.id ?? makeId(),
     name: typeof player.name === 'string' ? player.name.trim() : '',
@@ -448,8 +457,16 @@ const normalizePlayer = (player: Partial<Player>): Player => {
       isGuest || isSpecialLevel ? false : (player.specialMatchEligible ?? true),
     isGuest,
     guestGameLimit: player.guestGameLimit ?? 0,
-    gameCountFlexible: !isGuest && (player.gameCountFlexible ?? false),
+    gameCountFlexible:
+      !isGuest && !attendancePriority && (player.gameCountFlexible ?? false),
     waitTimeFlexible: !isGuest && (player.waitTimeFlexible ?? false),
+    arrivalOffsetMinutes: normalizeAttendanceOffset(
+      player.arrivalOffsetMinutes,
+    ),
+    departureOffsetMinutes: normalizeAttendanceOffset(
+      player.departureOffsetMinutes,
+    ),
+    attendancePriority,
     preferredPartnerIds: !isGuest && Array.isArray(player.preferredPartnerIds)
       ? [...new Set(
           player.preferredPartnerIds.filter(
@@ -1706,6 +1723,9 @@ function App() {
   const [participantReplanHelpOpen, setParticipantReplanHelpOpen] = useState<
     'add' | 'input' | null
   >(null)
+  const [attendanceEditorOpenIds, setAttendanceEditorOpenIds] = useState<
+    Record<string, boolean>
+  >({})
   const [levelTierEditorOpen, setLevelTierEditorOpen] = useState(false)
   const [levelTierDraft, setLevelTierDraft] = useState<LevelTierTable>(
     () => normalizeLevelTiers(initialState.settings.levelTiers),
@@ -1812,9 +1832,24 @@ function App() {
   }, [generatedMeetingPlayers, generatedMeetingSettings])
   const meetingAnalysisOptions = useMemo(() => ({
     eligibleFromOffsetMinutesByPlayer: Object.fromEntries(
-      Object.entries(meetingContinuation.players).map(([playerId, state]) => [
-        playerId,
-        state.eligibleFromOffsetMinutes,
+      generatedMeetingPlayers.map((player) => {
+        const attendance = resolveMeetingAttendanceWindow(
+          player,
+          generatedMeetingSettings,
+        )
+        return [
+          player.id,
+          Math.max(
+            attendance.start,
+            meetingContinuation.players[player.id]?.eligibleFromOffsetMinutes ?? 0,
+          ),
+        ]
+      }),
+    ),
+    eligibleUntilOffsetMinutesByPlayer: Object.fromEntries(
+      generatedMeetingPlayers.map((player) => [
+        player.id,
+        resolveMeetingAttendanceWindow(player, generatedMeetingSettings).end,
       ]),
     ),
     fairnessGameCreditsByPlayer: Object.fromEntries(
@@ -1823,7 +1858,11 @@ function App() {
         state.fairnessGameCredit,
       ]),
     ),
-  }), [meetingContinuation.players])
+  }), [
+    generatedMeetingPlayers,
+    generatedMeetingSettings,
+    meetingContinuation.players,
+  ])
   const scheduleWaitAnalysis = useMemo(
     () => analyzeScheduleWait(
       schedule,
@@ -1866,13 +1905,36 @@ function App() {
       schedule,
     ],
   )
+  const meetingReplanLockedMatchIds = useMemo(
+    () => getMeetingReplanLockedMatchIds(
+      schedule,
+      results,
+      meetingCourtAssignments,
+      generatedMeetingSettings.courtAssignmentMode,
+    ),
+    [
+      generatedMeetingSettings.courtAssignmentMode,
+      meetingCourtAssignments,
+      results,
+      schedule,
+    ],
+  )
   const meetingV2Metrics = useMemo(
     () => analyzeMeetingScheduleV2(
       schedule,
       generatedMeetingPlayers,
       generatedMeetingSettings,
+      {
+        allowedAttendanceMatchIds: meetingReplanLockedMatchIds,
+        allowedConsecutiveMatchIds: meetingReplanLockedMatchIds,
+      },
     ),
-    [generatedMeetingPlayers, generatedMeetingSettings, schedule],
+    [
+      generatedMeetingPlayers,
+      generatedMeetingSettings,
+      meetingReplanLockedMatchIds,
+      schedule,
+    ],
   )
   const meetingUsesClubQuality =
     meetingContinuation.revision === 0 &&
@@ -2410,20 +2472,6 @@ function App() {
     .filter((match) => results[match.id]?.completed).length
   const allScheduledMatches = getMeetingMatchSequence(schedule)
   const totalMatches = allScheduledMatches.length
-  const meetingReplanLockedMatchIds = useMemo(
-    () => getMeetingReplanLockedMatchIds(
-      schedule,
-      results,
-      meetingCourtAssignments,
-      generatedMeetingSettings.courtAssignmentMode,
-    ),
-    [
-      generatedMeetingSettings.courtAssignmentMode,
-      meetingCourtAssignments,
-      results,
-      schedule,
-    ],
-  )
   const canReplanMeeting =
     hasPlayerDraftChanges &&
     !hasMeetingSettingsDraftChanges &&
@@ -3009,6 +3057,50 @@ function App() {
     setPlayers((current) =>
       current.map((player) => (player.id === id ? { ...player, ...patch } : player)),
     )
+  }
+
+  const updatePlayerAttendanceTime = (
+    player: Player,
+    field: 'arrivalOffsetMinutes' | 'departureOffsetMinutes',
+    value: string,
+  ) => {
+    const offset = meetingClockTimeToOffset(value, settings)
+    if (offset === null) {
+      setNotice('참석 시간은 모임 시간 안에서 선택해 주세요.')
+      return
+    }
+
+    const currentWindow = resolveMeetingAttendanceWindow(player, settings)
+    const nextStart = field === 'arrivalOffsetMinutes' ? offset : currentWindow.start
+    const nextEnd = field === 'departureOffsetMinutes' ? offset : currentWindow.end
+    const minimumDuration = player.isGuest
+      ? GAME_SLOT_MINUTES
+      : settings.normalGameMinutes
+    if (nextEnd - nextStart < minimumDuration) {
+      setNotice(`참석 시간은 최소 ${minimumDuration}분이어야 합니다.`)
+      return
+    }
+
+    const bookingMinutes = getBookingDurationMinutes(
+      settings.startTime,
+      settings.endTime,
+    )
+    updatePlayer(player.id, {
+      [field]: field === 'arrivalOffsetMinutes'
+        ? offset === 0 ? undefined : offset
+        : offset === bookingMinutes ? undefined : offset,
+    })
+    resetMeetingTargetRoundsForRosterChange()
+    setNotice('참석 시간 변경됨 · 대진 생성 필요')
+  }
+
+  const resetPlayerAttendanceTime = (player: Player) => {
+    updatePlayer(player.id, {
+      arrivalOffsetMinutes: undefined,
+      departureOffsetMinutes: undefined,
+    })
+    resetMeetingTargetRoundsForRosterChange()
+    setNotice('모임 전체 시간 참석으로 변경됨')
   }
 
   const updatePreferredPartnerDraft = (player: Player, value: string) => {
@@ -3733,6 +3825,41 @@ function App() {
       )
       return
     }
+    const changedAttendanceViolation = swapped.schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((changedMatch) => swapped.changedMatchIds.includes(changedMatch.id))
+      .some((changedMatch) => {
+        const start = changedMatch.startOffsetMinutes ??
+          (changedMatch.round - 1) * GAME_SLOT_MINUTES
+        const duration = changedMatch.durationMinutes ?? GAME_SLOT_MINUTES
+        return [...changedMatch.teamA, ...changedMatch.teamB].some(
+          (player) => !isPlayerAvailableForMeetingSlot(
+            player,
+            generatedMeetingSettings,
+            start,
+            duration,
+          ),
+        )
+      })
+    if (changedAttendanceViolation) {
+      showEditorError('교체 불가 · 참석 시간 외 배정')
+      return
+    }
+    const baseConsecutiveViolationKeys = new Set(
+      findMeetingConsecutiveGameLimitViolations(schedule).map(
+        (violation) => `${violation.matchId}:${violation.playerId}`,
+      ),
+    )
+    const introducedConsecutiveViolation =
+      findMeetingConsecutiveGameLimitViolations(swapped.schedule).some(
+        (violation) => !baseConsecutiveViolationKeys.has(
+          `${violation.matchId}:${violation.playerId}`,
+        ),
+      )
+    if (introducedConsecutiveViolation) {
+      showEditorError('교체 불가 · 연속 경기 제한 위반')
+      return
+    }
     const validationIssues = validateMeetingSchedule(
       swapped.schedule,
       generatedMeetingPlayers,
@@ -3760,6 +3887,8 @@ function App() {
       '비활성 참가자 배정',
       '코트 번호 오류',
       '코트 시간 중복',
+      '참석 시간 외 배정',
+      '연속 경기 제한 위반',
     ])
     const blockingValidationIssues = introducedValidationIssues.filter((issue) =>
       blockingIssueSet.has(issue),
@@ -3918,6 +4047,8 @@ function App() {
           {
             ...meetingAnalysisOptions,
             allowedInactiveMatchIds: meetingReplanLockedMatchIds,
+            allowedAttendanceMatchIds: meetingReplanLockedMatchIds,
+            allowedConsecutiveMatchIds: meetingReplanLockedMatchIds,
           },
         ),
         ...validateMeetingFairness(
@@ -4025,6 +4156,11 @@ function App() {
       delete next[id]
       return next
     })
+    setAttendanceEditorOpenIds((current) => {
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
     resetMeetingTargetRoundsForRosterChange()
   }
 
@@ -4043,6 +4179,7 @@ function App() {
     setBulkOpen(false)
     setBulkText('')
     setPreferredPartnerDrafts({})
+    setAttendanceEditorOpenIds({})
     setNotice('참가자 초기화됨 · 생성 필요')
   }
 
@@ -4081,6 +4218,7 @@ function App() {
     setBulkOpen(false)
     setBulkText('')
     setPreferredPartnerDrafts({})
+    setAttendanceEditorOpenIds({})
     setMatchEditorErrors({})
     window.localStorage.removeItem(LAST_MEETING_SCHEDULE_KEY)
     window.localStorage.removeItem(LAST_MEETING_SCHEDULE_BACKUP_KEY)
@@ -7352,6 +7490,18 @@ function App() {
                         playerNamePlaceholders[player.id] ??
                         (player.isGuest ? '스페셜 1번' : '1번')
                       const scheduleWindow = playerScheduleWindows.get(player.id)
+                      const attendanceWindow = resolveMeetingAttendanceWindow(
+                        player,
+                        settings,
+                      )
+                      const attendanceMinimumMinutes = player.isGuest
+                        ? GAME_SLOT_MINUTES
+                        : settings.normalGameMinutes
+                      const attendanceWindowInvalid =
+                        attendanceWindow.duration < attendanceMinimumMinutes
+                      const attendanceEditorOpen = Boolean(
+                        attendanceEditorOpenIds[player.id],
+                      )
 
                       return (
                         <article
@@ -7454,6 +7604,107 @@ function App() {
                         {rawName && displayName !== rawName ? (
                           <div className="name-display-hint">표시명 {displayName}</div>
                         ) : null}
+                        <div
+                          className={`player-attendance-panel ${
+                            attendanceWindowInvalid ? 'invalid' : ''
+                          }`}
+                        >
+                          <div className="player-attendance-heading">
+                            <strong>참석 시간</strong>
+                            <span>{meetingAttendanceTimeLabel(player, settings)}</span>
+                            {!attendanceWindow.isCustom ? (
+                              <span className="attendance-default-chip">기본</span>
+                            ) : null}
+                            <label
+                              className="checkbox-label attendance-priority-option"
+                              title="참석 시간 안에서 평균 경기 수에 최대한 맞추며 연속 3경기까지 배정합니다."
+                            >
+                              <input
+                                type="checkbox"
+                                aria-label={`${displayName} 우선 배정`}
+                                checked={player.attendancePriority ?? false}
+                                onChange={(event) => {
+                                  updatePlayer(player.id, {
+                                    attendancePriority: event.target.checked,
+                                    ...(event.target.checked
+                                      ? { gameCountFlexible: false }
+                                      : {}),
+                                  })
+                                  resetMeetingTargetRoundsForRosterChange()
+                                }}
+                              />
+                              우선 배정
+                            </label>
+                            <button
+                              type="button"
+                              className="attendance-editor-toggle"
+                              aria-expanded={attendanceEditorOpen}
+                              onClick={() => setAttendanceEditorOpenIds((current) => ({
+                                ...current,
+                                [player.id]: !current[player.id],
+                              }))}
+                            >
+                              {attendanceEditorOpen ? '닫기' : '변경'}
+                            </button>
+                          </div>
+                          {attendanceEditorOpen ? (
+                            <div className="player-attendance-fields">
+                              <label>
+                                도착
+                                <input
+                                  type="time"
+                                  step={300}
+                                  aria-label={`${displayName} 도착 시간`}
+                                  value={clockTimeAtOffset(
+                                    settings.startTime,
+                                    attendanceWindow.start,
+                                  )}
+                                  onChange={(event) =>
+                                    updatePlayerAttendanceTime(
+                                      player,
+                                      'arrivalOffsetMinutes',
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </label>
+                              <span className="attendance-time-separator">–</span>
+                              <label>
+                                출발
+                                <input
+                                  type="time"
+                                  step={300}
+                                  aria-label={`${displayName} 출발 시간`}
+                                  value={clockTimeAtOffset(
+                                    settings.startTime,
+                                    attendanceWindow.end,
+                                  )}
+                                  onChange={(event) =>
+                                    updatePlayerAttendanceTime(
+                                      player,
+                                      'departureOffsetMinutes',
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </label>
+                              {attendanceWindow.isCustom ? (
+                                <button
+                                  type="button"
+                                  className="attendance-reset-button"
+                                  onClick={() => resetPlayerAttendanceTime(player)}
+                                >
+                                  전체 시간
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          {attendanceWindowInvalid ? (
+                            <span className="attendance-window-error">
+                              최소 {attendanceMinimumMinutes}분 필요
+                            </span>
+                          ) : null}
+                        </div>
                         {!isSpecialLevel ? (
                           <div className="player-flex-options">
                             <label
@@ -7466,6 +7717,9 @@ function App() {
                                 onChange={(event) =>
                                   updatePlayer(player.id, {
                                     gameCountFlexible: event.target.checked,
+                                    ...(event.target.checked
+                                      ? { attendancePriority: false }
+                                      : {}),
                                   })
                                 }
                               />

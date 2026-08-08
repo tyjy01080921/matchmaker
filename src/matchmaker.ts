@@ -43,6 +43,13 @@ import {
 } from './preferredPartners'
 import { getBookingDurationMinutes, getBookingRoundCount } from './scheduleTime'
 import { generateMeetingScheduleV2WithWaitResolution } from './matchmaker/engine'
+import {
+  findMeetingConsecutiveGameLimitViolations,
+  isPlayerAvailableForMeetingSlot,
+  maximumConsecutiveMeetingGames,
+  resolveMeetingAttendanceWindow,
+  usesMeetingAttendanceGameLimit,
+} from './meetingAvailability'
 
 export { generateMeetingScheduleV2WithWaitResolution }
 
@@ -347,6 +354,7 @@ export type ScheduleQualityAnalysis = {
 
 export type MeetingScheduleAnalysisOptions = {
   eligibleFromOffsetMinutesByPlayer?: Record<string, number>
+  eligibleUntilOffsetMinutesByPlayer?: Record<string, number>
   fairnessGameCreditsByPlayer?: Record<string, number>
 }
 
@@ -368,7 +376,10 @@ export const analyzeScheduleWait = (
   const analysisEndByPlayer = new Map(
     activePlayers.map((player) => [
       player.id,
-      playerWaitAnalysisEndMinutes(player, matches, bookingMinutes, settings),
+      Math.min(
+        playerWaitAnalysisEndMinutes(player, matches, bookingMinutes, settings),
+        options.eligibleUntilOffsetMinutesByPlayer?.[player.id] ?? bookingMinutes,
+      ),
     ]),
   )
   const zeroGameParticipantCount = windowsByPlayer.filter(
@@ -392,8 +403,10 @@ export const analyzeScheduleWait = (
     0,
     ...activePlayers.map((player, index) => {
       const windows = windowsByPlayer[index]
-      const analysisEndMinutes =
-        analysisEndByPlayer.get(player.id) ?? bookingMinutes
+      const analysisEndMinutes = Math.min(
+        analysisEndByPlayer.get(player.id) ?? bookingMinutes,
+        options.eligibleUntilOffsetMinutesByPlayer?.[player.id] ?? bookingMinutes,
+      )
       const eligibleFrom = Math.max(
         0,
         options.eligibleFromOffsetMinutesByPlayer?.[player.id] ?? 0,
@@ -483,11 +496,14 @@ export const analyzeParticipantWaitLimitViolations = (
 
   for (const player of players.filter((candidate) => candidate.active)) {
     const scheduledMatches = playerScheduledMatches(matches, player.id)
-    const analysisEndMinutes = playerWaitAnalysisEndMinutes(
-      player,
-      matches,
-      bookingMinutes,
-      settings,
+    const analysisEndMinutes = Math.min(
+      playerWaitAnalysisEndMinutes(
+        player,
+        matches,
+        bookingMinutes,
+        settings,
+      ),
+      options.eligibleUntilOffsetMinutesByPlayer?.[player.id] ?? bookingMinutes,
     )
     const eligibleFrom = Math.max(
       0,
@@ -658,13 +674,22 @@ export const analyzeScheduleQuality = (
       ).length,
     ]),
   )
-  const standardCounts = regulars
+  const fairnessRegulars = regulars.filter((player) =>
+    !resolveMeetingAttendanceWindow(
+      player,
+      settings ?? {
+        startTime: '00:00',
+        endTime: '12:00',
+      },
+    ).isCustom,
+  )
+  const standardCounts = fairnessRegulars
     .filter((player) => !player.gameCountFlexible)
     .map((player) =>
       (gameCounts.get(player.id) ?? 0) +
       (options.fairnessGameCreditsByPlayer?.[player.id] ?? 0),
     )
-  const effectiveCounts = regulars.map(
+  const effectiveCounts = fairnessRegulars.map(
     (player) =>
       (gameCounts.get(player.id) ?? 0) +
       (options.fairnessGameCreditsByPlayer?.[player.id] ?? 0) +
@@ -697,11 +722,15 @@ export const analyzeScheduleQuality = (
   const analysisEndByPlayer = new Map(
     activePlayers.map((player) => [
       player.id,
-      playerWaitAnalysisEndMinutes(
-        player,
-        matches,
-        analysisEndMinutes,
-        settings,
+      Math.min(
+        playerWaitAnalysisEndMinutes(
+          player,
+          matches,
+          analysisEndMinutes,
+          settings,
+        ),
+        options.eligibleUntilOffsetMinutesByPlayer?.[player.id] ??
+          analysisEndMinutes,
       ),
     ]),
   )
@@ -940,6 +969,8 @@ export const validateMeetingSchedule = (
   settings: MatchSettings,
   options: MeetingScheduleAnalysisOptions & {
     allowedInactiveMatchIds?: Iterable<string>
+    allowedAttendanceMatchIds?: Iterable<string>
+    allowedConsecutiveMatchIds?: Iterable<string>
   } = {},
 ): string[] => {
   const issues = new Set<string>()
@@ -948,6 +979,12 @@ export const validateMeetingSchedule = (
     players.filter((player) => player.active).map((player) => player.id),
   )
   const allowedInactiveMatchIds = new Set(options.allowedInactiveMatchIds ?? [])
+  const allowedAttendanceMatchIds = new Set(
+    options.allowedAttendanceMatchIds ?? [],
+  )
+  const allowedConsecutiveMatchIds = new Set(
+    options.allowedConsecutiveMatchIds ?? [],
+  )
 
   if (findScheduleOverlapDetail(schedule)) issues.add('참가자 동시간 중복')
 
@@ -974,6 +1011,20 @@ export const validateMeetingSchedule = (
     ) {
       issues.add('스페셜 인원 제한 위반')
     }
+    const window = matchTimeWindow(match)
+    if (
+      !allowedAttendanceMatchIds.has(match.id) &&
+      matchPlayers.some((player) =>
+        !isPlayerAvailableForMeetingSlot(
+          player,
+          settings,
+          window.start,
+          window.end - window.start,
+        ),
+      )
+    ) {
+      issues.add('참석 시간 외 배정')
+    }
   }
 
   for (let left = 0; left < matches.length; left += 1) {
@@ -985,6 +1036,14 @@ export const validateMeetingSchedule = (
         issues.add('코트 시간 중복')
       }
     }
+  }
+
+  if (
+    findMeetingConsecutiveGameLimitViolations(schedule).some(
+      (violation) => !allowedConsecutiveMatchIds.has(violation.matchId),
+    )
+  ) {
+    issues.add('연속 경기 제한 위반')
   }
 
   const gameCountByPlayer = new Map(
@@ -1002,7 +1061,11 @@ export const validateMeetingSchedule = (
   const standardGameCounts = players
     .filter(
       (player) =>
-        player.active && !player.isGuest && !player.gameCountFlexible,
+        player.active &&
+        !player.isGuest &&
+        !player.gameCountFlexible &&
+        player.arrivalOffsetMinutes === undefined &&
+        player.departureOffsetMinutes === undefined,
     )
     .map((player) => gameCountByPlayer.get(player.id) ?? 0)
   if (standardGameCounts.length > 0) {
@@ -1044,7 +1107,11 @@ export const validateMeetingFairness = (
   const standardCounts = players
     .filter(
       (player) =>
-        player.active && !player.isGuest && !player.gameCountFlexible,
+        player.active &&
+        !player.isGuest &&
+        !player.gameCountFlexible &&
+        player.arrivalOffsetMinutes === undefined &&
+        player.departureOffsetMinutes === undefined,
     )
     .map((player) => gameCountByPlayer.get(player.id) ?? 0)
   const standardSpread = standardCounts.length > 0
@@ -2468,6 +2535,7 @@ const createMatch = (
 const updateHistoryForMatch = (history: HistoryState, match: Match) => {
   const players = matchPlayers(match)
   const guestInMatch = hasGuest(players)
+  const matchStart = matchTimeWindow(match).start
   const matchEnd = matchTimeWindow(match).end
 
   if (getMatchSkillWarningLevel(match) !== 'none') {
@@ -2477,7 +2545,10 @@ const updateHistoryForMatch = (history: HistoryState, match: Match) => {
   for (const player of players) {
     history.games[player.id] = (history.games[player.id] ?? 0) + 1
     history.restStreaks[player.id] = 0
-    history.playStreaks[player.id] = (history.playStreaks[player.id] ?? 0) + 1
+    history.playStreaks[player.id] =
+      history.lastMatchEnd[player.id] === matchStart
+        ? (history.playStreaks[player.id] ?? 0) + 1
+        : 1
     history.lastMatchEnd[player.id] = matchEnd
     if (player.isGuest) {
       history.guestGameCounts[player.id] = (history.guestGameCounts[player.id] ?? 0) + 1
@@ -2524,6 +2595,13 @@ const consecutivePlayPenalty = (player: Player, history: HistoryState) => {
   if (streak === 1) return 90
   if (streak === 2) return 320
   return 780 + (streak - 3) * 360
+}
+
+const canPlayAtCurrentStart = (player: Player, history: HistoryState) => {
+  if (!usesMeetingAttendanceGameLimit(player)) return true
+  if (history.lastMatchEnd[player.id] !== history.currentStartOffset) return true
+  const maximum = maximumConsecutiveMeetingGames(player)
+  return (history.playStreaks[player.id] ?? 0) < maximum
 }
 
 const playerWaitMinutes = (player: Player, history: HistoryState) => {
@@ -2853,6 +2931,7 @@ const pickSpecialRegulars = (
   const availableRegulars = activePlayers.filter(
     (player) =>
       !player.isGuest &&
+      canPlayAtCurrentStart(player, history) &&
       (player.specialMatchEligible ?? true) &&
       (
         !enforceParticipantCap ||
@@ -3019,6 +3098,7 @@ const pickSingleGuestSpecialGroup = (
   const candidateGuests = activePlayers.filter(
     (player) =>
       player.isGuest &&
+      canPlayAtCurrentStart(player, history) &&
       !usedIds.has(player.id) &&
       guestWithinSpecialLimit(player, history, settings),
   )
@@ -3032,6 +3112,7 @@ const pickSingleGuestSpecialGroup = (
     .filter(
       (player) =>
         !player.isGuest &&
+        canPlayAtCurrentStart(player, history) &&
         (player.specialMatchEligible ?? true) &&
         !history.specialCompleted.has(player.id) &&
         !usedIds.has(player.id),
@@ -3165,6 +3246,7 @@ const pickAdaptiveSpecialGroup = (
   const candidateGuests = activePlayers.filter(
     (player) =>
       player.isGuest &&
+      canPlayAtCurrentStart(player, history) &&
       !usedIds.has(player.id) &&
       guestWithinSpecialLimit(player, history, settings),
   )
@@ -3183,6 +3265,7 @@ const pickAdaptiveSpecialGroup = (
     .filter(
       (player) =>
         !player.isGuest &&
+        canPlayAtCurrentStart(player, history) &&
         (player.specialMatchEligible ?? true) &&
         !history.specialCompleted.has(player.id) &&
         !usedIds.has(player.id),
@@ -3213,6 +3296,7 @@ const pickAdaptiveSpecialGroup = (
   const availableRegulars = activePlayers.filter(
     (player) =>
       !player.isGuest &&
+      canPlayAtCurrentStart(player, history) &&
       (player.specialMatchEligible ?? true) &&
       (remainingCoverage > 0 || history.specialCompleted.has(player.id)) &&
       !usedIds.has(player.id),
@@ -3460,6 +3544,7 @@ const pickGeneralGroup = (
   const availablePlayerEntries = activePlayers
     .filter((player) => {
       if (usedIds.has(player.id)) return false
+      if (!canPlayAtCurrentStart(player, history)) return false
       return !player.isGuest
     })
     .map((player) => ({
@@ -5992,6 +6077,10 @@ export const replanMeetingSchedule = (
           fairnessGameCredit: 0,
           guestGameCredit: 0,
         }
+    retained.eligibleFromOffsetMinutes = Math.max(
+      retained.eligibleFromOffsetMinutes,
+      resolveMeetingAttendanceWindow(player, input.settings).start,
+    )
     continuationPlayers[player.id] = retained
     if (!sameActiveKind) newlyAvailableIds.add(player.id)
   }
@@ -6006,10 +6095,13 @@ export const replanMeetingSchedule = (
   for (const player of activeRegulars.filter((candidate) =>
     newlyAvailableIds.has(candidate.id),
   )) {
-    continuationPlayers[player.id].fairnessGameCredit = Math.max(
-      0,
-      regularBaseline - (history.games[player.id] ?? 0),
-    )
+    continuationPlayers[player.id].fairnessGameCredit =
+      player.attendancePriority
+        ? 0
+        : Math.max(
+            0,
+            regularBaseline - (history.games[player.id] ?? 0),
+          )
   }
 
   if (continuationMode === 'late-special-unlimited') {
@@ -6029,10 +6121,13 @@ export const replanMeetingSchedule = (
         newlyAvailableIds.has(guest.id) ||
         previousContinuation.mode !== 'late-special-unlimited'
       ) {
-        continuationPlayers[guest.id].guestGameCredit = Math.max(
-          0,
-          guestBaseline - (history.guestGameCounts[guest.id] ?? 0),
-        )
+        continuationPlayers[guest.id].guestGameCredit =
+          guest.attendancePriority
+            ? 0
+            : Math.max(
+                0,
+                guestBaseline - (history.guestGameCounts[guest.id] ?? 0),
+              )
       }
     }
   }
@@ -6041,10 +6136,7 @@ export const replanMeetingSchedule = (
     const state = continuationPlayers[player.id]
     history.fairGameCredits[player.id] = state.fairnessGameCredit
     history.guestGameCredits[player.id] = state.guestGameCredit
-    if (
-      newlyAvailableIds.has(player.id) &&
-      history.lastMatchEnd[player.id] === undefined
-    ) {
+    if (history.lastMatchEnd[player.id] === undefined) {
       history.lastMatchEnd[player.id] = state.eligibleFromOffsetMinutes
     }
   }
@@ -6134,6 +6226,7 @@ export const replanMeetingSchedule = (
         progressOffsetMinutes,
         history.lastMatchEnd[player.id] ?? 0,
         continuationPlayers[player.id]?.eligibleFromOffsetMinutes ?? 0,
+        resolveMeetingAttendanceWindow(player, input.settings).start,
       ),
     ]),
   ) as Record<string, number>
@@ -6188,13 +6281,26 @@ export const replanMeetingSchedule = (
     }
 
     for (const slot of slotsByStart.get(start) ?? []) {
+      const slotUsedIds = new Set(usedIds)
+      for (const player of schedulerPlayers) {
+        if (
+          !isPlayerAvailableForMeetingSlot(
+            player,
+            input.settings,
+            slot.start,
+            slot.duration,
+          )
+        ) {
+          slotUsedIds.add(player.id)
+        }
+      }
       let group: [Player, Player, Player, Player] | null = null
       const specialFirst = continuationMode === 'late-special-unlimited' ||
         slot.preferSpecial
       if (specialFirst && activeGuests.length > 0) {
         group = pickSpecialGroup(
           schedulerPlayers,
-          usedIds,
+          slotUsedIds,
           history,
           random,
           continuationMode === 'late-special-unlimited'
@@ -6208,7 +6314,7 @@ export const replanMeetingSchedule = (
       if (!group) {
         group = pickGeneralGroup(
           schedulerPlayers,
-          usedIds,
+          slotUsedIds,
           history,
           random,
           input.settings,
@@ -6224,7 +6330,7 @@ export const replanMeetingSchedule = (
       ) {
         group = pickSpecialGroup(
           schedulerPlayers,
-          usedIds,
+          slotUsedIds,
           history,
           random,
           input.settings,
@@ -6341,6 +6447,20 @@ export const replanMeetingSchedule = (
       failureIssues.push('종료 시각을 넘는 경기가 있습니다.')
     }
     if (
+      !lockedIdSet.has(match.id) &&
+      playersInMatch.some((player) => {
+        const window = matchTimeWindow(match)
+        return !isPlayerAvailableForMeetingSlot(
+          player,
+          input.settings,
+          window.start,
+          window.end - window.start,
+        )
+      })
+    ) {
+      failureIssues.push('참석 시간 밖에 배정된 경기가 있습니다.')
+    }
+    if (
       input.settings.singleGuestPerMatch &&
       playersInMatch.filter((player) => player.isGuest).length > 1
     ) {
@@ -6375,6 +6495,13 @@ export const replanMeetingSchedule = (
         failureIssues.push('코트 시간 중복')
       }
     }
+  }
+  if (
+    findMeetingConsecutiveGameLimitViolations(schedule).some(
+      (violation) => !lockedIdSet.has(violation.matchId),
+    )
+  ) {
+    failureIssues.push('연속 경기 제한을 넘는 새 경기가 있습니다.')
   }
   if (createdMatches.length === 0) {
     failureIssues.push('남은 시간에 만들 수 있는 경기가 없습니다.')
@@ -6474,7 +6601,15 @@ export const appendGeneralCourtGames = (
 
     for (const court of courtsByStart.get(startOffset) ?? []) {
       const availableRegulars = activeRegulars
-        .filter((player) => !usedIds.has(player.id))
+        .filter((player) =>
+          !usedIds.has(player.id) &&
+          isPlayerAvailableForMeetingSlot(
+            player,
+            settings,
+            startOffset,
+            normalGameMinutes,
+          ),
+        )
         .sort((left, right) =>
           (history.games[left.id] ?? 0) - (history.games[right.id] ?? 0) ||
           left.name.localeCompare(right.name, 'ko'),

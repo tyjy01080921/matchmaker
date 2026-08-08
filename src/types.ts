@@ -69,6 +69,9 @@ export type Player = {
   guestGameLimit: number
   gameCountFlexible?: boolean
   waitTimeFlexible?: boolean
+  arrivalOffsetMinutes?: number
+  departureOffsetMinutes?: number
+  attendancePriority?: boolean
   preferredPartnerIds?: string[]
 }
 

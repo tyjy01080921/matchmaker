@@ -334,6 +334,145 @@ describe('meeting V2 generation', () => {
     expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(25)
   })
 
+  it('never schedules regular participants before arrival or after departure', () => {
+    const players = makeClubPlayers(12).map((player, index) =>
+      index === 0
+        ? { ...player, arrivalOffsetMinutes: 30 }
+        : index === 1
+          ? { ...player, departureOffsetMinutes: 60 }
+          : player,
+    )
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '19:30',
+      normalGameMinutes: 15,
+      targetRoundCount: 6,
+      pacingRoundCount: 6,
+      roundCountLocked: true,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        specialMatchCreation: false,
+      },
+    }
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const matches = schedule.rounds.flatMap((round) => round.matches)
+    const lateMatches = matches.filter((match) =>
+      [...match.teamA, ...match.teamB].some((player) => player.id === players[0].id),
+    )
+    const earlyMatches = matches.filter((match) =>
+      [...match.teamA, ...match.teamB].some((player) => player.id === players[1].id),
+    )
+
+    expect(lateMatches.length).toBeGreaterThan(0)
+    expect(lateMatches.every((match) => (match.startOffsetMinutes ?? 0) >= 30))
+      .toBe(true)
+    expect(earlyMatches.length).toBeGreaterThan(0)
+    expect(earlyMatches.every((match) =>
+      (match.startOffsetMinutes ?? 0) + (match.durationMinutes ?? 0) <= 60,
+    )).toBe(true)
+    expect(analyzeMeetingScheduleV2(schedule, players, settings).structuralIssues)
+      .toEqual([])
+  })
+
+  it('allows three consecutive priority games while regular players stop at two', () => {
+    const basePlayers = makeClubPlayers(12).map((player, index) =>
+      index === 0
+        ? {
+            ...player,
+            arrivalOffsetMinutes: 15,
+            departureOffsetMinutes: 75,
+          }
+        : player,
+    )
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '19:30',
+      normalGameMinutes: 15,
+      targetRoundCount: 6,
+      pacingRoundCount: 6,
+      roundCountLocked: true,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        specialMatchCreation: false,
+      },
+    }
+    const starts = (priority: boolean) => {
+      const players = basePlayers.map((player, index) =>
+        index === 0 ? { ...player, attendancePriority: priority } : player,
+      )
+      const schedule = generateMeetingScheduleV2(players, settings)
+      return schedule.rounds
+        .flatMap((round) => round.matches)
+        .filter((match) =>
+          [...match.teamA, ...match.teamB].some(
+            (player) => player.id === players[0].id,
+          ),
+        )
+        .map((match) => match.startOffsetMinutes ?? 0)
+        .sort((left, right) => left - right)
+    }
+
+    const normalStarts = starts(false)
+    const priorityStarts = starts(true)
+    const longestStreak = (matchStarts: number[]) => matchStarts.reduce(
+      (result, start, index) => {
+        const current = index > 0 && start - matchStarts[index - 1] === 15
+          ? result.current + 1
+          : 1
+        return { current, maximum: Math.max(result.maximum, current) }
+      },
+      { current: 0, maximum: 0 },
+    ).maximum
+    expect(priorityStarts).toHaveLength(3)
+    expect(longestStreak(normalStarts)).toBeLessThanOrEqual(2)
+    expect(longestStreak(priorityStarts)).toBe(3)
+  })
+
+  it('keeps a special participant inside their own attendance window', () => {
+    const players = makePlayers(12, 1).map((player) =>
+      player.isGuest
+        ? {
+            ...player,
+            arrivalOffsetMinutes: 30,
+            departureOffsetMinutes: 75,
+            attendancePriority: true,
+          }
+        : player,
+    )
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '19:30',
+      normalGameMinutes: 15,
+      targetRoundCount: 6,
+      pacingRoundCount: 6,
+      roundCountLocked: true,
+      specialLimitEnabled: true,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 4,
+      specialParticipantTarget: 8,
+      specialTimeLimitEnabled: false,
+    }
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const guest = players.find((player) => player.isGuest)!
+    const guestMatches = schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) =>
+        [...match.teamA, ...match.teamB].some((player) => player.id === guest.id),
+      )
+
+    expect(guestMatches.length).toBeGreaterThan(0)
+    expect(guestMatches.every((match) =>
+      (match.startOffsetMinutes ?? 0) >= 30 &&
+      (match.startOffsetMinutes ?? 0) + (match.durationMinutes ?? 0) <= 75,
+    )).toBe(true)
+  })
+
   it('keeps final idle as information instead of an operational failure', () => {
     const players = makeClubPlayers(8)
     const settings: MatchSettings = {

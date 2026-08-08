@@ -8,6 +8,7 @@ import {
   validateMeetingSchedule,
 } from './matchmaker'
 import { getMeetingReplanLockedMatchIds } from './progressMode'
+import { analyzeMeetingScheduleV2 } from './matchmaker/validation'
 import type {
   Match,
   MatchSettings,
@@ -184,6 +185,56 @@ describe('meeting continuation replanning', () => {
     expect(gameCounts.get('late')).toBeLessThan(gameCounts.get('p1')!)
   })
 
+  it('replans a priority late entrant only inside their arrival and departure time', () => {
+    const previousPlayers = Array.from({ length: 8 }, (_, index) =>
+      player(`p${index + 1}`),
+    )
+    const schedule = makeSchedule(previousPlayers)
+    const results: ResultsByMatch = {
+      'm-1-1': completedResult,
+      'm-1-2': completedResult,
+    }
+    const late = player('timed-late', {
+      arrivalOffsetMinutes: 36,
+      departureOffsetMinutes: 60,
+      attendancePriority: true,
+    })
+    const players = [...previousPlayers, late]
+    const lockedMatchIds = getMeetingReplanLockedMatchIds(
+      schedule,
+      results,
+      {},
+      'fixed',
+    )
+
+    const result = replanMeetingSchedule({
+      schedule,
+      players,
+      previousPlayers,
+      settings,
+      results,
+      assignments: {},
+      lockedMatchIds,
+      continuation: makeDefaultMeetingContinuationState(),
+    })
+
+    expect(result.failureIssues).toEqual([])
+    const lateMatches = result.schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) =>
+        result.createdMatchIds.includes(match.id) &&
+        [...match.teamA, ...match.teamB].some(
+          (candidate) => candidate.id === late.id,
+        ),
+      )
+    expect(lateMatches.length).toBeGreaterThan(0)
+    expect(lateMatches.every((match) =>
+      (match.startOffsetMinutes ?? 0) >= 36 &&
+      (match.startOffsetMinutes ?? 0) + (match.durationMinutes ?? 0) <= 60,
+    )).toBe(true)
+    expect(result.continuation.players[late.id].fairnessGameCredit).toBe(0)
+  })
+
   it('uses normal match duration and no guest limit after a late special player joins', () => {
     const previousPlayers = Array.from({ length: 8 }, (_, index) =>
       player(`p${index + 1}`),
@@ -200,6 +251,8 @@ describe('meeting continuation replanning', () => {
       isGuest: true,
       specialMatchEligible: false,
       guestGameLimit: 1,
+      arrivalOffsetMinutes: 36,
+      departureOffsetMinutes: 60,
     })
     const players = [...previousPlayers, guest]
     const lockedMatchIds = getMeetingReplanLockedMatchIds(
@@ -242,6 +295,82 @@ describe('meeting continuation replanning', () => {
     expect(guestMatches.length).toBeGreaterThan(1)
     expect(guestMatches.map((match) => match.startOffsetMinutes))
       .toEqual([...new Set(guestMatches.map((match) => match.startOffsetMinutes))])
+    expect(guestMatches.every((match) =>
+      (match.startOffsetMinutes ?? 0) >= 36 &&
+      (match.startOffsetMinutes ?? 0) + (match.durationMinutes ?? 0) <= 60,
+    )).toBe(true)
+  })
+
+  it('caps continuation streaks at three for priority and two otherwise', () => {
+    const previousPlayers = Array.from({ length: 8 }, (_, index) =>
+      player(`p${index + 1}`),
+    )
+    const schedule = makeSchedule(previousPlayers)
+    const results: ResultsByMatch = {
+      'm-1-1': completedResult,
+      'm-1-2': completedResult,
+    }
+    const replanGuestStarts = (attendancePriority: boolean) => {
+      const guest = player(`streak-guest-${attendancePriority}`, {
+        level: '스페셜',
+        gender: 'none',
+        isGuest: true,
+        specialMatchEligible: false,
+        guestGameLimit: 1,
+        arrivalOffsetMinutes: 24,
+        departureOffsetMinutes: 84,
+        attendancePriority,
+      })
+      const players = [...previousPlayers, guest]
+      const lockedMatchIds = getMeetingReplanLockedMatchIds(
+        schedule,
+        results,
+        {},
+        'fixed',
+      )
+      const result = replanMeetingSchedule({
+        schedule,
+        players,
+        previousPlayers,
+        settings: {
+          ...settings,
+          endTime: '19:24',
+          targetRoundCount: 7,
+          pacingRoundCount: 7,
+        },
+        results,
+        assignments: {},
+        lockedMatchIds,
+        continuation: makeDefaultMeetingContinuationState(),
+      })
+      expect(result.failureIssues).toEqual([])
+      return result.schedule.rounds
+        .flatMap((round) => round.matches)
+        .filter((match) =>
+          result.createdMatchIds.includes(match.id) &&
+          [...match.teamA, ...match.teamB].some(
+            (candidate) => candidate.id === guest.id,
+          ),
+        )
+        .map((match) => match.startOffsetMinutes ?? 0)
+        .sort((left, right) => left - right)
+    }
+    const longestStreak = (starts: number[]) => starts.reduce(
+      (result, start, index) => {
+        const current = index > 0 && start - starts[index - 1] === 12
+          ? result.current + 1
+          : 1
+        return { current, maximum: Math.max(result.maximum, current) }
+      },
+      { current: 0, maximum: 0 },
+    ).maximum
+
+    const normalStarts = replanGuestStarts(false)
+    const priorityStarts = replanGuestStarts(true)
+    expect(normalStarts.length).toBeGreaterThan(2)
+    expect(priorityStarts.length).toBeGreaterThan(3)
+    expect(longestStreak(normalStarts)).toBeLessThanOrEqual(2)
+    expect(longestStreak(priorityStarts)).toBe(3)
   })
 
   it('preserves the actual assigned court and replans unassigned matches in available mode', () => {
@@ -433,5 +562,99 @@ describe('meeting continuation replanning', () => {
     expect(validateMeetingSchedule(schedule, currentPlayers, settings, {
       allowedInactiveMatchIds: ['locked-match'],
     })).not.toContain('비활성 참가자 배정')
+  })
+
+  it('rejects a manual schedule that places a participant outside attendance time', () => {
+    const players = Array.from({ length: 4 }, (_, index) =>
+      player(`p${index + 1}`, index === 0
+        ? { arrivalOffsetMinutes: 24 }
+        : {}),
+    )
+    const schedule: Schedule = {
+      rounds: [{
+        id: 'round-1',
+        number: 1,
+        matches: [makeMatch(
+          'outside-attendance',
+          1,
+          1,
+          12,
+          players as [Player, Player, Player, Player],
+        )],
+        resting: [],
+      }],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+
+    expect(validateMeetingSchedule(schedule, players, settings))
+      .toContain('참석 시간 외 배정')
+    expect(validateMeetingSchedule(schedule, players, settings, {
+      allowedAttendanceMatchIds: ['outside-attendance'],
+    })).not.toContain('참석 시간 외 배정')
+    expect(analyzeMeetingScheduleV2(schedule, players, settings).structuralIssues)
+      .toContain('참석 시간 외 배정')
+    expect(analyzeMeetingScheduleV2(schedule, players, settings, {
+      allowedAttendanceMatchIds: ['outside-attendance'],
+    }).structuralIssues).not.toContain('참석 시간 외 배정')
+  })
+
+  it('validates two-game regular and three-game priority streak limits', () => {
+    const players = Array.from({ length: 4 }, (_, index) =>
+      player(`p${index + 1}`, index === 0
+        ? { departureOffsetMinutes: 60 }
+        : {}),
+    )
+    const matches = Array.from({ length: 4 }, (_, index) => makeMatch(
+      `streak-${index + 1}`,
+      index + 1,
+      1,
+      index * 12,
+      players as [Player, Player, Player, Player],
+    ))
+    const makeStreakSchedule = (count: number): Schedule => ({
+      rounds: matches.slice(0, count).map((match, index) => ({
+        id: `streak-round-${index + 1}`,
+        number: index + 1,
+        matches: [match],
+        resting: [],
+      })),
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    })
+
+    expect(validateMeetingSchedule(makeStreakSchedule(2), players, settings))
+      .not.toContain('연속 경기 제한 위반')
+    expect(validateMeetingSchedule(makeStreakSchedule(3), players, settings))
+      .toContain('연속 경기 제한 위반')
+
+    const priorityPlayers = players.map((candidate, index) =>
+      index === 0 ? { ...candidate, attendancePriority: true } : candidate,
+    )
+    const prioritySchedule = makeStreakSchedule(4)
+    prioritySchedule.rounds = prioritySchedule.rounds.map((round) => ({
+      ...round,
+      matches: round.matches.map((match) => ({
+        ...match,
+        teamA: match.teamA.map((candidate) =>
+          priorityPlayers.find((player) => player.id === candidate.id)!,
+        ) as [Player, Player],
+        teamB: match.teamB.map((candidate) =>
+          priorityPlayers.find((player) => player.id === candidate.id)!,
+        ) as [Player, Player],
+      })),
+    }))
+    expect(validateMeetingSchedule(
+      { ...prioritySchedule, rounds: prioritySchedule.rounds.slice(0, 3) },
+      priorityPlayers,
+      settings,
+    )).not.toContain('연속 경기 제한 위반')
+    expect(validateMeetingSchedule(prioritySchedule, priorityPlayers, settings))
+      .toContain('연속 경기 제한 위반')
+    expect(validateMeetingSchedule(prioritySchedule, priorityPlayers, settings, {
+      allowedConsecutiveMatchIds: ['streak-4'],
+    })).not.toContain('연속 경기 제한 위반')
   })
 })

@@ -2188,6 +2188,119 @@ textarea {
   font-weight: 800;
 }
 
+.player-attendance-panel {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  padding: 8px 9px;
+  border: 1px solid rgba(12, 143, 127, 0.2);
+  border-radius: 7px;
+  background: var(--soft-green);
+}
+
+.player-attendance-panel.invalid {
+  border-color: rgba(196, 65, 65, 0.45);
+  background: #fff3f1;
+}
+
+.player-attendance-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.player-attendance-heading strong {
+  color: var(--navy);
+  font-weight: 900;
+}
+
+.player-attendance-heading > span:not(.attendance-default-chip) {
+  overflow: hidden;
+  color: var(--green);
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attendance-default-chip {
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.75);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.attendance-reset-button {
+  grid-column: 1 / -1;
+  justify-self: start;
+  min-height: 24px;
+  padding: 2px 7px;
+  border-color: rgba(12, 143, 127, 0.35);
+  color: var(--green);
+  background: #fff;
+  font-size: 10px;
+}
+
+.player-attendance-fields {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
+  gap: 6px;
+}
+
+.player-attendance-fields > label:not(.attendance-priority-option) {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.player-attendance-fields input[type='time'] {
+  width: 100%;
+  min-width: 0;
+  margin-top: 3px;
+  background: #fff;
+}
+
+.attendance-time-separator {
+  padding-bottom: 9px;
+  color: var(--muted);
+  font-weight: 900;
+}
+
+.attendance-priority-option {
+  min-height: 24px;
+  margin-left: auto;
+  padding: 2px 5px;
+  border: 1px solid rgba(12, 143, 127, 0.24);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.attendance-editor-toggle {
+  min-height: 24px;
+  padding: 2px 7px;
+  border-color: rgba(12, 143, 127, 0.35);
+  color: var(--green);
+  background: #fff;
+  font-size: 10px;
+}
+
+.attendance-window-error {
+  color: #a13737;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
 .friendly-team-summary {
   display: grid;
   gap: 6px;
@@ -6750,5 +6863,38 @@ textarea {
 
   .court-schedule-list.available-schedule-list .match-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .player-attendance-panel {
+    gap: 5px;
+    padding: 7px;
+  }
+
+  .player-attendance-heading {
+    gap: 5px;
+    font-size: 11px;
+  }
+
+  .player-attendance-fields {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .attendance-priority-option {
+    min-height: 24px;
+    padding: 2px 5px;
+  }
+
+  .attendance-time-separator {
+    padding-bottom: 8px;
+  }
+
+  .player-attendance-fields input[type='time'] {
+    min-height: 32px;
+    padding-inline: 4px;
+  }
+
+  .attendance-window-error {
+    font-size: 9px;
   }
 }
