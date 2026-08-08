@@ -2,12 +2,14 @@ import {
   generateMeetingScheduleV2WithWaitResolution,
   replanMeetingSchedule,
 } from './matchmaker'
+import {
+  makeMeetingGenerationWorkerResponse,
+  type MeetingGenerationWorkerResponse,
+} from './meetingGenerationResult'
 import type {
   MeetingContinuationState,
   MeetingCourtAssignments,
-  MeetingReplanResolution,
   MatchSettings,
-  MeetingWaitLimitFailure,
   Player,
   Schedule,
 } from './types'
@@ -37,15 +39,6 @@ type MeetingReplanWorkerRequest = {
   assignments: MeetingCourtAssignments
   lockedMatchIds: string[]
   continuation: MeetingContinuationState
-}
-
-type MeetingGenerationWorkerResponse = {
-  requestId: number
-  schedule?: Schedule
-  waitLimitFailure?: MeetingWaitLimitFailure
-  replan?: MeetingReplanResolution
-  progress?: string
-  error?: string
 }
 
 self.onmessage = (
@@ -82,19 +75,7 @@ self.onmessage = (
         self.postMessage(response)
       },
     )
-    const response: MeetingGenerationWorkerResponse = result.failureIssues.length > 0 &&
-      !result.waitLimitFailure
-      ? {
-          requestId,
-          error: result.failureIssues.join(' · '),
-        }
-      : result.waitLimitFailure
-      ? {
-          requestId,
-          schedule: result.schedule,
-          waitLimitFailure: result.waitLimitFailure,
-        }
-      : { requestId, schedule: result.schedule }
+    const response = makeMeetingGenerationWorkerResponse(requestId, result)
     self.postMessage(response)
   } catch (error) {
     const response: MeetingGenerationWorkerResponse = {

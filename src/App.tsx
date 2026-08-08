@@ -61,6 +61,11 @@ import {
 } from './ProgressModeView'
 import { analyzeMeetingScheduleV2 } from './matchmaker/validation'
 import {
+  canConfirmMeetingGenerationFailure,
+  isSpecialTargetFailureIssue,
+  type MeetingGenerationWorkerResponse,
+} from './meetingGenerationResult'
+import {
   findMeetingConsecutiveGameLimitViolations,
   isPlayerAvailableForMeetingSlot,
   meetingClockTimeToOffset,
@@ -128,7 +133,6 @@ import type {
   MeetingCourtAssignments,
   MeetingWaitLimitFailure,
   MeetingLineupsByMatch,
-  MeetingReplanResolution,
   Player,
   PrizeDrawState,
   ResultsByMatch,
@@ -199,14 +203,6 @@ const MEETING_GENERATION_MESSAGES = [
 ] as const
 const MEETING_GENERATION_ATTEMPTS = 3
 
-type MeetingGenerationWorkerResponse = {
-  requestId: number
-  schedule?: Schedule
-  waitLimitFailure?: MeetingWaitLimitFailure
-  replan?: MeetingReplanResolution
-  progress?: string
-  error?: string
-}
 const MIN_MEETING_PHASE_PERCENT = 15
 const MEETING_PHASE_STEP = 5
 const meetingSwapRecommendationKey = (matchId: string, playerId: string) =>
@@ -1773,6 +1769,8 @@ function App() {
   const [meetingOperationLabel, setMeetingOperationLabel] = useState('대진 생성 중')
   const [meetingWaitLimitFailure, setMeetingWaitLimitFailure] =
     useState<MeetingWaitLimitFailure | null>(null)
+  const [meetingGenerationFailureIssues, setMeetingGenerationFailureIssues] =
+    useState<string[]>([])
   const meetingPrintPreviewRef = useRef<HTMLElement | null>(null)
   const tournamentPrintPreviewRef = useRef<HTMLElement | null>(null)
   const contactCopyTimerRef = useRef<number | null>(null)
@@ -2131,6 +2129,7 @@ function App() {
         ),
       ]
       if (issues.length > 0) {
+        setMeetingGenerationFailureIssues(issues)
         setMeetingOperationLabel('대진 검증 실패')
         setMeetingGenerationMessage(issues.join(' · '))
         setNotice('대진 검증 실패')
@@ -2138,6 +2137,7 @@ function App() {
         return
       }
 
+      setMeetingGenerationFailureIssues([])
       setMeetingOperationLabel('대진 완료')
       setMeetingGenerationMessage(
         [
@@ -2472,6 +2472,19 @@ function App() {
     .filter((match) => results[match.id]?.completed).length
   const allScheduledMatches = getMeetingMatchSequence(schedule)
   const totalMatches = allScheduledMatches.length
+  const hasReviewableMeetingFailureSchedule = totalMatches > 0
+  const isMeetingGenerationFailureState =
+    meetingOperationLabel === '대진 검증 실패' ||
+    meetingOperationLabel === '대진 확인 필요'
+  const isMeetingGenerationReviewState =
+    meetingOperationLabel === '대진 완료' ||
+    isMeetingGenerationFailureState
+  const canConfirmCurrentMeetingFailure =
+    hasReviewableMeetingFailureSchedule &&
+    canConfirmMeetingGenerationFailure(
+      meetingGenerationFailureIssues,
+      Boolean(meetingWaitLimitFailure),
+    )
   const canReplanMeeting =
     hasPlayerDraftChanges &&
     !hasMeetingSettingsDraftChanges &&
@@ -3146,6 +3159,7 @@ function App() {
     setPrizeDraw((current) => ({ ...current, matchMissions: {} }))
     setPrintImageUrls([])
     setMeetingWarningsReconciled(false)
+    setMeetingGenerationFailureIssues([])
     window.localStorage.removeItem(LAST_MEETING_SCHEDULE_BACKUP_KEY)
     setHasMeetingBackup(false)
   }
@@ -4234,6 +4248,7 @@ function App() {
     if (isMeetingGenerating && !force) return
     setMeetingOperationLabel('대진 생성 중')
     setMeetingWaitLimitFailure(null)
+    setMeetingGenerationFailureIssues([])
     meetingGenerationCompletedNoticeRef.current = completedNotice
 
     if (meetingGenerationStartTimerRef.current !== null) {
@@ -4283,6 +4298,7 @@ function App() {
       const failGeneration = (message: string) => {
         if (meetingGenerationRequestRef.current !== requestId) return
         finishWorker()
+        setMeetingGenerationFailureIssues([message])
         setMeetingOperationLabel('대진 검증 실패')
         setMeetingGenerationMessage(message)
         setNotice('대진 생성 실패')
@@ -4310,14 +4326,43 @@ function App() {
           finishWorker()
           setScheduleOverride(response.schedule)
           setMeetingWaitLimitFailure(response.waitLimitFailure)
+          setMeetingGenerationFailureIssues(response.failureIssues ?? [])
           setMeetingOperationLabel('대진 검증 실패')
+          const waitFailureMessage = unassignedCount > 0
+            ? `0경기 ${unassignedCount}명 · 현재 운영 조건에서 전원 배정 불가`
+            : `운영 중 최장 대기 ${response.waitLimitFailure.maximumWaitMinutes}분 · ` +
+              `조정 필요 ${response.waitLimitFailure.participantsOverLimit}명`
+          const additionalFailureMessage = response.failureIssues?.length
+            ? ` · ${response.failureIssues.join(' · ')}`
+            : ''
           setMeetingGenerationMessage(
-            unassignedCount > 0
-              ? `0경기 ${unassignedCount}명 · 현재 운영 조건에서 전원 배정 불가`
-              : `운영 중 최장 대기 ${response.waitLimitFailure.maximumWaitMinutes}분 · ` +
-                `조정 필요 ${response.waitLimitFailure.participantsOverLimit}명`,
+            `${waitFailureMessage}${additionalFailureMessage}`,
           )
           setNotice('25분 제한으로 대진 생성 불가')
+          return
+        }
+        if (response.failureIssues?.length) {
+          if (!response.schedule || response.schedule.rounds.length === 0) {
+            failGeneration(response.error || response.failureIssues.join(' · '))
+            return
+          }
+          finishWorker()
+          setScheduleOverride(response.schedule)
+          setMeetingWaitLimitFailure(null)
+          setMeetingGenerationFailureIssues(response.failureIssues)
+          const isOperationalReview = canConfirmMeetingGenerationFailure(
+            response.failureIssues,
+            false,
+          )
+          setMeetingOperationLabel(
+            isOperationalReview ? '대진 확인 필요' : '대진 검증 실패',
+          )
+          setMeetingGenerationMessage(response.failureIssues.join(' · '))
+          setNotice(
+            isOperationalReview
+              ? '운영 조건 확인 필요'
+              : '검토가 필요한 대진 생성됨',
+          )
           return
         }
         if (!response.schedule) {
@@ -4326,6 +4371,7 @@ function App() {
         }
         finishWorker()
         setMeetingWaitLimitFailure(null)
+        setMeetingGenerationFailureIssues([])
         setScheduleOverride(response.schedule)
         setMeetingOperationLabel('대진 검증 중')
         setMeetingGenerationMessage(
@@ -4351,6 +4397,7 @@ function App() {
     }
     setIsMeetingGenerating(false)
     setMeetingWaitLimitFailure(null)
+    setMeetingGenerationFailureIssues([])
     setView('schedule')
     setNotice(meetingGenerationCompletedNoticeRef.current)
   }
@@ -4376,6 +4423,7 @@ function App() {
     meetingGenerationRequestRef.current += 1
     setIsMeetingGenerating(false)
     setMeetingWaitLimitFailure(null)
+    setMeetingGenerationFailureIssues([])
     setScheduleOverride(null)
     setSettingsOpen(true)
     setNotice('설정 확인 필요')
@@ -5557,12 +5605,17 @@ function App() {
   const openWaitLimitManualEdit = (
     selectedViolation?: WaitLimitParticipantViolation,
   ) => {
+    const failureIssues = meetingGenerationFailureIssues
     const violation = selectedViolation ??
       meetingWaitLimitFailure?.participantViolations[0] ??
       participantWaitLimitViolations[0]
+    const specialFailureMatch = failureIssues.some(isSpecialTargetFailureIssue)
+      ? allScheduledMatches.find((match) => match.isSpecial)
+      : undefined
     const targetMatchId =
       violation?.nextMatchId ??
       violation?.previousMatchId ??
+      specialFailureMatch?.id ??
       allScheduledMatches[0]?.id
     const targetMatch = allScheduledMatches.find(
       (match) => match.id === targetMatchId,
@@ -5570,6 +5623,7 @@ function App() {
 
     setIsMeetingGenerating(false)
     setMeetingWaitLimitFailure(null)
+    setMeetingGenerationFailureIssues([])
     setView('schedule')
     if (targetMatch) {
       setCollapsedMatchIds((current) => ({
@@ -5583,11 +5637,12 @@ function App() {
     } else {
       scrollToSectionAfterRender('wait-limit-review')
     }
-    setNotice(
-      violation
+    const manualEditNotice = failureIssues.length > 0
+      ? `${failureIssues.join(' · ')} · 참가자 교체 후 현황을 확인하세요.`
+      : violation
         ? `${waitViolationDetail(violation)} · 참가자 교체 후 현황을 확인하세요.`
-        : '25분 초과 대진 · 수동 수정 후 현황을 확인하세요.',
-    )
+        : '25분 초과 대진 · 수동 수정 후 현황을 확인하세요.'
+    setNotice(manualEditNotice)
   }
 
   const applyWaitLimitRecommendation = (
@@ -5600,21 +5655,38 @@ function App() {
     )
   }
 
-  const acceptWaitLimitOverride = () => {
+  const acceptMeetingGenerationFailure = () => {
     const failure = meetingWaitLimitFailure
-    if (!failure) return
+    if (!canConfirmCurrentMeetingFailure) {
+      setNotice('필수 검증 문제는 확인 후 사용할 수 없습니다.')
+      return
+    }
+    const isWaitLimitFailure = Boolean(failure)
+    const confirmationMessage = failure
+      ? `최장 대기 ${failure.maximumWaitMinutes}분 · ` +
+        `${failure.participantsOverLimit}명이 25분을 초과합니다.\n` +
+        '현장 조정을 전제로 이 대진을 사용하시겠습니까?'
+      : `${meetingGenerationFailureIssues.join(' · ')}\n` +
+        '스페셜 목표 미달을 확인하고 이 대진을 사용하시겠습니까?'
     const confirmed = window.confirm(
-      `최장 대기 ${failure.maximumWaitMinutes}분 · ` +
-      `${failure.participantsOverLimit}명이 25분을 초과합니다.\n` +
-      '현장 조정을 전제로 이 대진을 사용하시겠습니까?',
+      confirmationMessage,
     )
     if (!confirmed) return
 
     setIsMeetingGenerating(false)
     setMeetingWaitLimitFailure(null)
+    setMeetingGenerationFailureIssues([])
     setView('schedule')
-    setNotice(`25분 초과 ${failure.participantsOverLimit}명 · 확인 후 사용`)
-    scrollToSectionAfterRender('wait-limit-review')
+    setNotice(
+      failure
+        ? `25분 초과 ${failure.participantsOverLimit}명 · 확인 후 사용`
+        : '스페셜 목표 미달 · 확인 후 사용',
+    )
+    if (isWaitLimitFailure) {
+      scrollToSectionAfterRender('wait-limit-review')
+    } else {
+      scrollToSectionAfterRender('meeting-schedule')
+    }
   }
 
   const scrollToPrintPreview = (previewRef: RefObject<HTMLElement | null>) => {
@@ -6026,25 +6098,23 @@ function App() {
           aria-label={meetingOperationLabel}
         >
           <div className={`generation-card ${
-            meetingOperationLabel === '대진 완료' ||
-            meetingOperationLabel === '대진 검증 실패'
+            isMeetingGenerationReviewState
               ? `review ${
-                  meetingOperationLabel === '대진 검증 실패'
-                    ? 'failure-review'
-                    : ''
+                  isMeetingGenerationFailureState ? 'failure-review' : ''
                 }`
               : ''
           }`}>
             <img src={amaLogo} alt="A.M.A" />
-            {meetingOperationLabel === '대진 완료' ||
-            meetingOperationLabel === '대진 검증 실패' ? (
+            {isMeetingGenerationReviewState ? (
               <span
                 className={`generation-result-icon ${
                   meetingOperationLabel === '대진 완료'
                     ? hasMeetingQualityWarning
                       ? 'warning'
                       : 'success'
-                    : 'failure'
+                    : meetingOperationLabel === '대진 확인 필요'
+                      ? 'warning'
+                      : 'failure'
                 }`}
                 aria-hidden="true"
               >
@@ -6058,8 +6128,7 @@ function App() {
             )}
             <strong>{meetingOperationLabel}</strong>
             <p>{meetingGenerationMessage}</p>
-            {meetingOperationLabel === '대진 검증 실패' &&
-            meetingWaitLimitFailure ? (
+            {isMeetingGenerationFailureState && meetingWaitLimitFailure ? (
               <div className="generation-wait-failure">
                 <div className="generation-wait-metrics">
                   <span className={
@@ -6292,21 +6361,27 @@ function App() {
                   다른 대진 보기
                 </button>
               </div>
-            ) : meetingOperationLabel === '대진 검증 실패' ? (
+            ) : isMeetingGenerationFailureState ? (
               <div className="generation-review-actions wait-limit-actions">
                 <button type="button" onClick={returnToMeetingSettings}>
                   다시 설정
                 </button>
-                <button
-                  type="button"
-                  className="primary-action"
-                  onClick={() => openWaitLimitManualEdit()}
-                >
-                  수동 수정
-                </button>
-                <button type="button" onClick={acceptWaitLimitOverride}>
-                  초과 확인 후 사용
-                </button>
+                {hasReviewableMeetingFailureSchedule ? (
+                  <button
+                    type="button"
+                    className="primary-action"
+                    onClick={() => openWaitLimitManualEdit()}
+                  >
+                    수동 수정
+                  </button>
+                ) : null}
+                {canConfirmCurrentMeetingFailure ? (
+                  <button type="button" onClick={acceptMeetingGenerationFailure}>
+                    {meetingWaitLimitFailure
+                      ? '초과 확인 후 사용'
+                      : '미달 확인 후 사용'}
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>
