@@ -339,17 +339,13 @@ const playerWaitAnalysisEndMinutes = (
   player: Player,
   matches: Match[],
   bookingMinutes: number,
-  settings?: MatchSettings,
+  _settings?: MatchSettings,
 ) => {
   if (!player.isGuest) return bookingMinutes
-  const continuousSpecialWindow = Boolean(
-    settings?.specialLimitEnabled &&
-    settings.specialScheduleMode !== 'spread' &&
-    settings.specialTimeLimitEnabled,
-  )
-  if (!continuousSpecialWindow) return bookingMinutes
   const windows = playerMatchWindows(matches, player.id)
-  return windows.length > 0 ? windows[windows.length - 1].end : 0
+  return windows.length > 0
+    ? windows[windows.length - 1].end
+    : bookingMinutes
 }
 
 export const getScheduleMaximumWaitMinutes = (

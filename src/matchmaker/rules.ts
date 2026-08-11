@@ -5,7 +5,10 @@ import type {
   MeetingShuffleDirection,
   Player,
 } from '../types'
-import { attendanceWindowIssue } from '../meetingAvailability'
+import {
+  attendanceWindowIssue,
+  resolveMeetingAttendanceWindow,
+} from '../meetingAvailability'
 
 export const MEETING_MAX_WAIT_MINUTES = 25
 export const MEETING_FINAL_IDLE_LIMIT_MINUTES = 30
@@ -198,8 +201,8 @@ export const balancedParticipantGameTarget = (
 }
 
 export const plannedGuestGames = (
-  _guest: Player,
-  activePlayers: Player[],
+  guest: Player,
+  _activePlayers: Player[],
   settings: MatchSettings,
 ) => {
   const schedulingMinutes = meetingSchedulingMinutes(settings)
@@ -209,9 +212,14 @@ export const plannedGuestGames = (
     settings.specialTimeLimitEnabled
       ? Math.min(schedulingMinutes, settings.specialTimeLimitMinutes)
       : schedulingMinutes
+  const attendance = resolveMeetingAttendanceWindow(guest, settings)
+  const availableMinutes = Math.max(
+    0,
+    Math.min(attendance.end, timeLimit) - attendance.start,
+  )
   const timeCapacity = Math.max(
     0,
-    Math.floor(timeLimit / settings.normalGameMinutes),
+    Math.floor(availableMinutes / settings.normalGameMinutes),
   )
 
   if (settings.specialLimitEnabled) {
@@ -221,10 +229,7 @@ export const plannedGuestGames = (
     return Math.min(timeCapacity, configuredLimit)
   }
 
-  return Math.min(
-    timeCapacity,
-    balancedParticipantGameTarget(activePlayers, settings),
-  )
+  return timeCapacity
 }
 
 export const specialParticipantTarget = (

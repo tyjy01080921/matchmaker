@@ -61,9 +61,9 @@ import {
 } from './ProgressModeView'
 import { analyzeMeetingScheduleV2 } from './matchmaker/validation'
 import {
-  balancedParticipantGameTarget,
   MEETING_FINAL_IDLE_LIMIT_MINUTES,
   MEETING_MAX_WAIT_MINUTES,
+  plannedGuestGames,
 } from './matchmaker/rules'
 import {
   canConfirmMeetingGenerationFailure,
@@ -2615,7 +2615,8 @@ function App() {
       ).length
     : 0
   const automaticSpecialGamesPerGuest = hasScheduledActiveGuests
-    ? balancedParticipantGameTarget(
+    ? plannedGuestGames(
+        scheduledActiveGuests[0],
         scheduledActivePlayers,
         generatedMeetingSettings,
       )
@@ -8269,7 +8270,7 @@ function App() {
                 <h2>
                   {generatedMeetingSettings.specialLimitEnabled
                     ? `배정 ${assignedSpecialParticipantCount}/${specialLimitParticipantCapacity}명`
-                    : `스페셜당 ${automaticSpecialGamesPerGuest}경기`}
+                    : `스페셜당 최대 ${automaticSpecialGamesPerGuest}경기`}
                 </h2>
                 <p className="metric-subtext">
                   {generatedMeetingSettings.specialLimitEnabled
@@ -8300,7 +8301,7 @@ function App() {
                           scheduledBookingMinutes,
                         ))}`
                       : `전체 시간 분산 ${formatDuration(scheduledBookingMinutes)}`
-                    : `자동 목표 ${automaticSpecialGamesPerGuest}경기씩`}
+                    : `가능 시간 최대 ${automaticSpecialGamesPerGuest}경기씩`}
                 </span>
                 {scheduledActiveGuests.map((guest) => (
                   <span key={guest.id}>

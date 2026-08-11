@@ -1171,6 +1171,88 @@ describe('generateSchedule', () => {
     )
   })
 
+  it('does not count a limited special participant after their final match', () => {
+    const guest = makeTestPlayer(
+      'wait-special-final-guest',
+      '스페셜',
+      'none',
+      false,
+      true,
+      '무관',
+    )
+    const regulars = Array.from({ length: 4 }, (_, index) =>
+      makeTestPlayer(`wait-special-final-${index + 1}`, 'B'),
+    )
+    const players = [guest, ...regulars]
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 1,
+      startTime: '18:00',
+      endTime: '19:00',
+      normalGameMinutes: 15,
+      specialLimitEnabled: true,
+      specialScheduleMode: 'spread',
+      specialGameLimitEnabled: true,
+      specialGameLimit: 1,
+      specialTimeLimitEnabled: false,
+    }
+    const schedule: Schedule = {
+      rounds: [
+        {
+          id: 'wait-special-final-round-1',
+          number: 1,
+          resting: [regulars[3]],
+          matches: [
+            {
+              id: 'wait-special-final-match-1',
+              round: 1,
+              court: 1,
+              teamA: [guest, regulars[0]],
+              teamB: [regulars[1], regulars[2]],
+              isSpecial: true,
+              startOffsetMinutes: 0,
+              durationMinutes: 15,
+            },
+          ],
+        },
+        {
+          id: 'wait-special-final-round-2',
+          number: 2,
+          resting: [guest],
+          matches: [
+            {
+              id: 'wait-special-final-match-2',
+              round: 2,
+              court: 1,
+              teamA: [regulars[0], regulars[1]],
+              teamB: [regulars[2], regulars[3]],
+              isSpecial: false,
+              startOffsetMinutes: 45,
+              durationMinutes: 15,
+            },
+          ],
+        },
+      ],
+      warnings: [],
+      specialCompletedIds: regulars.slice(0, 3).map((player) => player.id),
+      guestGameCounts: { [guest.id]: 1 },
+    }
+
+    const wait = analyzeScheduleWait(schedule, players, settings)
+    const violations = analyzeParticipantWaitLimitViolations(
+      schedule,
+      players,
+      settings,
+    )
+
+    expect(wait.maximumFinalIdleMinutes).toBe(0)
+    expect(violations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ playerId: guest.id, phase: 'final' }),
+      ]),
+    )
+  })
+
   it('links an excessive first-game wait to the participant first match', () => {
     const players = Array.from({ length: 8 }, (_, index) =>
       makeTestPlayer(`wait-initial-${index + 1}`, 'B'),

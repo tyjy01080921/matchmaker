@@ -171,15 +171,8 @@ const playerAnalysisEnd = (
   player: Player,
   windows: TimeWindow[],
   bookingMinutes: number,
-  settings: MatchSettings,
 ) => {
-  const continuousSpecialWindow = Boolean(
-    player.isGuest &&
-      settings.specialLimitEnabled &&
-      settings.specialScheduleMode !== 'spread' &&
-      settings.specialTimeLimitEnabled,
-  )
-  return continuousSpecialWindow && windows.length > 0
+  return player.isGuest && windows.length > 0
     ? windows[windows.length - 1].end
     : bookingMinutes
 }
@@ -205,7 +198,6 @@ const waitDetails = (
       player,
       windows,
       bookingMinutes,
-      settings,
     ),
   )
   if (windows.length === 0) {

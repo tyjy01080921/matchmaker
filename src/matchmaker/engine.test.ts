@@ -4,7 +4,7 @@ import {
   defaultSettings,
   samplePlayers,
 } from '../defaultData'
-import type { MatchSettings, Player } from '../types'
+import type { MatchSettings, Player, Schedule } from '../types'
 import {
   generateMeetingScheduleV2,
   generateMeetingScheduleV2WithWaitResolution,
@@ -132,15 +132,15 @@ describe('meeting V2 slot planning', () => {
     const specialSlots = planMeetingSlotsV2(players, settings)
       .filter((slot) => slot.kind === 'special')
 
-    expect(specialSlots).toHaveLength(14)
+    expect(specialSlots).toHaveLength(36)
     for (const [guestIndex, guestId] of ['guest-1', 'guest-2'].entries()) {
       const guestSlots = specialSlots.filter((slot) => slot.guestId === guestId)
       expect(guestSlots.map((slot) => slot.court)).toEqual(
-        Array.from({ length: 7 }, () => guestIndex + 1),
+        Array.from({ length: 18 }, () => guestIndex + 1),
       )
-      expect(guestSlots.map((slot) => slot.start)).toEqual([
-        0, 10, 20, 30, 40, 50, 60,
-      ])
+      expect(guestSlots.map((slot) => slot.start)).toEqual(
+        Array.from({ length: 18 }, (_, index) => index * 10),
+      )
       expect(guestSlots.every((slot) => !slot.roamingGuestId)).toBe(true)
     }
     expect(specialSlots.some((slot) => slot.court === 3)).toBe(false)
@@ -185,10 +185,10 @@ describe('meeting V2 generation', () => {
     )
 
     expect(schedule.guestGameCounts).toMatchObject({
-      'guest-1': 4,
-      'guest-2': 4,
-      'guest-3': 4,
-      'guest-4': 4,
+      'guest-1': 12,
+      'guest-2': 12,
+      'guest-3': 12,
+      'guest-4': 12,
     })
     for (const [guestIndex, guestId] of [
       'guest-1',
@@ -196,14 +196,17 @@ describe('meeting V2 generation', () => {
       'guest-3',
     ].entries()) {
       expect(guestMatches(guestId).map((match) => match.court)).toEqual(
-        Array.from({ length: 4 }, () => guestIndex + 1),
+        Array.from({ length: 12 }, () => guestIndex + 1),
       )
       expect(guestMatches(guestId).map(
         (match) => match.startOffsetMinutes,
-      )).toEqual([0, 10, 20, 30])
+      )).toEqual(Array.from({ length: 12 }, (_, index) => index * 10))
     }
     const roamingMatches = guestMatches('guest-4')
-    expect(roamingMatches.map((match) => match.court)).toEqual([1, 2, 3, 1])
+    expect(roamingMatches).toHaveLength(12)
+    expect(new Set(roamingMatches.map((match) => match.court))).toEqual(
+      new Set([1, 2, 3]),
+    )
     expect(roamingMatches.every((match) => {
       const assigned = [...match.teamA, ...match.teamB]
       return (
@@ -216,7 +219,7 @@ describe('meeting V2 generation', () => {
     ).toEqual([])
   }, 20000)
 
-  it('matches unrestricted guest games to the regular participant target', () => {
+  it('fills every available guest slot when the special limit is disabled', () => {
     const players = makePlayers(26, 2)
     const settings: MatchSettings = {
       ...defaultSettings,
@@ -252,16 +255,16 @@ describe('meeting V2 generation', () => {
     expect(balancedParticipantGameTarget(players, settings)).toBe(7)
     expect(
       guests.map((guest) => plannedGuestGames(guest, players, settings)),
-    ).toEqual([7, 7])
+    ).toEqual([18, 18])
     expect(guests.map((guest) => schedule.guestGameCounts[guest.id])).toEqual([
-      7,
-      7,
+      18,
+      18,
     ])
-    expect(Math.min(...regularCounts)).toBe(7)
-    expect(Math.max(...regularCounts)).toBeLessThanOrEqual(8)
+    expect(Math.min(...regularCounts)).toBeGreaterThan(0)
+    expect(Math.max(...regularCounts) - Math.min(...regularCounts)).toBeLessThanOrEqual(1)
   }, 20000)
 
-  it('rejects a 26 regular and 2 special plan that exceeds final idle policy', () => {
+  it('excludes unrestricted special participants from final idle policy', () => {
     const players = makePlayers(26, 2)
     const settings: MatchSettings = {
       ...defaultSettings,
@@ -284,13 +287,14 @@ describe('meeting V2 generation', () => {
     )
     const metrics = analyzeMeetingScheduleV2(result.schedule, players, settings)
 
-    expect(metrics.maximumFinalIdleMinutes).toBeGreaterThanOrEqual(30)
-    expect(result.waitLimitFailure).not.toBeNull()
+    expect(metrics.maximumFinalIdleMinutes).toBeLessThan(30)
     expect(
-      result.waitLimitFailure?.participantViolations.some(
-        (violation) => violation.phase === 'final',
+      metrics.participantViolations.some(
+        (violation) =>
+          violation.phase === 'final' &&
+          players.find((player) => player.id === violation.playerId)?.isGuest,
       ),
-    ).toBe(true)
+    ).toBe(false)
   }, 30000)
 
   it.each([
@@ -704,6 +708,73 @@ describe('meeting V2 generation', () => {
       ]),
     )
     expect(rejected.successIssues).toEqual(['마지막 경기 후 30분'])
+  })
+
+  it('excludes a limited special participant from final-idle wait analysis', () => {
+    const players = makePlayers(4, 1)
+    const [guest, first, second, third, fourth] = players
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 1,
+      startTime: '18:00',
+      endTime: '19:00',
+      normalGameMinutes: 15,
+      specialLimitEnabled: true,
+      specialScheduleMode: 'spread',
+      specialGameLimitEnabled: true,
+      specialGameLimit: 1,
+      specialTimeLimitEnabled: false,
+    }
+    const schedule: Schedule = {
+      rounds: [
+        {
+          id: 'special-final-idle-round-1',
+          number: 1,
+          resting: [fourth],
+          matches: [
+            {
+              id: 'special-final-idle-match-1',
+              round: 1,
+              court: 1,
+              teamA: [guest, first],
+              teamB: [second, third],
+              isSpecial: true,
+              startOffsetMinutes: 0,
+              durationMinutes: 15,
+            },
+          ],
+        },
+        {
+          id: 'special-final-idle-round-2',
+          number: 2,
+          resting: [guest],
+          matches: [
+            {
+              id: 'special-final-idle-match-2',
+              round: 2,
+              court: 1,
+              teamA: [first, second],
+              teamB: [third, fourth],
+              isSpecial: false,
+              startOffsetMinutes: 45,
+              durationMinutes: 15,
+            },
+          ],
+        },
+      ],
+      warnings: [],
+      specialCompletedIds: [first.id, second.id, third.id],
+      guestGameCounts: { [guest.id]: 1 },
+    }
+
+    const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+
+    expect(metrics.maximumFinalIdleMinutes).toBe(0)
+    expect(metrics.participantViolations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ playerId: guest.id, phase: 'final' }),
+      ]),
+    )
   })
 
   it('fills the unified-duration large schedule and reaches the special target', () => {
