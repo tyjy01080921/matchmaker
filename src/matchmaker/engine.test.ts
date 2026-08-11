@@ -12,6 +12,7 @@ import {
 } from './engine'
 import {
   balancedParticipantGameTarget,
+  MEETING_MAX_WAIT_MINUTES,
   plannedGuestGames,
   resolveMeetingRuleProfile,
 } from './rules'
@@ -219,50 +220,66 @@ describe('meeting V2 generation', () => {
     ).toEqual([])
   }, 20000)
 
-  it('fills every available guest slot when the special limit is disabled', () => {
-    const players = makePlayers(26, 2)
-    const settings: MatchSettings = {
-      ...defaultSettings,
-      courtCount: 3,
-      courtAssignmentMode: 'available',
-      startTime: '18:00',
-      endTime: '21:00',
-      normalGameMinutes: 10,
-      specialLimitEnabled: false,
-      specialGameLimitEnabled: true,
-      specialGameLimit: 1,
-      specialTimeLimitEnabled: true,
-      specialTimeLimitMinutes: 30,
-    }
-    const guests = players.filter((player) => player.isGuest)
-    const schedule = generateMeetingScheduleV2(players, settings)
-    const matchCounts = new Map(
-      players.map((player) => [
-        player.id,
-        schedule.rounds
-          .flatMap((round) => round.matches)
-          .filter((match) =>
-            [...match.teamA, ...match.teamB].some(
-              (candidate) => candidate.id === player.id,
-            ),
-          ).length,
-      ]),
-    )
-    const regularCounts = players
-      .filter((player) => !player.isGuest)
-      .map((player) => matchCounts.get(player.id) ?? 0)
+  it.each([10, 12] as const)(
+    'prioritizes wait intervals before game-count balance with $normalGameMinutes-minute games',
+    (normalGameMinutes) => {
+      const players = makePlayers(26, 2)
+      const settings: MatchSettings = {
+        ...defaultSettings,
+        courtCount: 3,
+        courtAssignmentMode: 'available',
+        startTime: '18:00',
+        endTime: '21:00',
+        normalGameMinutes,
+        specialLimitEnabled: false,
+        specialGameLimitEnabled: true,
+        specialGameLimit: 1,
+        specialTimeLimitEnabled: true,
+        specialTimeLimitMinutes: 30,
+      }
+      const guests = players.filter((player) => player.isGuest)
+      const schedule = generateMeetingScheduleV2(players, settings)
+      const matchCounts = new Map(
+        players.map((player) => [
+          player.id,
+          schedule.rounds
+            .flatMap((round) => round.matches)
+            .filter((match) =>
+              [...match.teamA, ...match.teamB].some(
+                (candidate) => candidate.id === player.id,
+              ),
+            ).length,
+        ]),
+      )
+      const regularCounts = players
+        .filter((player) => !player.isGuest)
+        .map((player) => matchCounts.get(player.id) ?? 0)
+      const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+      const expectedGuestGames = Math.floor(180 / normalGameMinutes)
 
-    expect(balancedParticipantGameTarget(players, settings)).toBe(7)
-    expect(
-      guests.map((guest) => plannedGuestGames(guest, players, settings)),
-    ).toEqual([18, 18])
-    expect(guests.map((guest) => schedule.guestGameCounts[guest.id])).toEqual([
-      18,
-      18,
-    ])
-    expect(Math.min(...regularCounts)).toBeGreaterThan(0)
-    expect(Math.max(...regularCounts) - Math.min(...regularCounts)).toBeLessThanOrEqual(1)
-  }, 20000)
+      expect(balancedParticipantGameTarget(players, settings)).toBe(
+        normalGameMinutes === 10 ? 7 : 6,
+      )
+      expect(
+        guests.map((guest) => plannedGuestGames(guest, players, settings)),
+      ).toEqual([expectedGuestGames, expectedGuestGames])
+      expect(
+        guests.map((guest) => schedule.guestGameCounts[guest.id]),
+      ).toEqual([expectedGuestGames, expectedGuestGames])
+      expect(Math.min(...regularCounts)).toBeGreaterThan(0)
+      expect(
+        Math.max(...regularCounts) - Math.min(...regularCounts),
+      ).toBeLessThanOrEqual(1)
+      expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(
+        MEETING_MAX_WAIT_MINUTES,
+      )
+      expect(metrics.maximumBetweenWaitMinutes).toBeLessThanOrEqual(
+        MEETING_MAX_WAIT_MINUTES,
+      )
+      expect(metrics.participantsOverWaitLimit).toBe(0)
+    },
+    30000,
+  )
 
   it('excludes unrestricted special participants from final idle policy', () => {
     const players = makePlayers(26, 2)

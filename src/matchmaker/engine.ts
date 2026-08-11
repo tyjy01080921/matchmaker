@@ -548,7 +548,13 @@ const initializeState = (
   ).length
   const plannedRegularAppearances = plannedSlots.reduce(
     (sum, slot) =>
-      sum + (slot.kind === 'general' ? 4 : slot.plannedPlayerIds?.length ?? 0),
+      sum + (
+        slot.kind === 'general'
+          ? 4
+          : slot.roamingGuestId
+            ? 2
+            : 3
+      ),
     0,
   )
   const firstFollowupSpecial = plannedSlots
@@ -1129,6 +1135,8 @@ const attachSpecialParticipantPlans = (
   activePlayers: Player[],
   settings: MatchSettings,
 ) => {
+  if (!settings.specialLimitEnabled) return slots
+
   const eligibleRegulars = activePlayers.filter(
     (player) => !player.isGuest && (player.specialMatchEligible ?? true),
   )

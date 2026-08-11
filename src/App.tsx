@@ -2533,11 +2533,25 @@ function App() {
       section.matches.map((match, index) => [
         match.id,
         generatedMeetingSettings.courtAssignmentMode === 'available'
-          ? `${index + 1}번 경기`
+          ? meetingCourtAssignments[match.id]
+            ? `${meetingCourtAssignments[match.id].court}코트 ${index + 1}번 경기`
+            : `코트 미배정 ${index + 1}번 경기`
           : `${section.number}코트 ${index + 1}번 경기`,
       ] as const),
     ),
   )
+  const waitViolationTargetMatchId = (
+    violation: WaitLimitParticipantViolation,
+  ) => violation.nextMatchId ?? violation.previousMatchId
+  const waitViolationEditLabel = (
+    violation: WaitLimitParticipantViolation,
+  ) => {
+    const targetMatchId = waitViolationTargetMatchId(violation)
+    const location = targetMatchId
+      ? meetingMatchLocationById.get(targetMatchId)
+      : null
+    return location ? `${location} 수정` : '관련 경기 수정'
+  }
   const waitViolationDetail = (violation: WaitLimitParticipantViolation) => {
     const previous = violation.previousMatchId
       ? meetingMatchLocationById.get(violation.previousMatchId)
@@ -5659,8 +5673,7 @@ function App() {
       ? allScheduledMatches.find((match) => match.isSpecial)
       : undefined
     const targetMatchId =
-      violation?.nextMatchId ??
-      violation?.previousMatchId ??
+      (violation ? waitViolationTargetMatchId(violation) : undefined) ??
       specialFailureMatch?.id ??
       allScheduledMatches[0]?.id
     const targetMatch = allScheduledMatches.find(
@@ -6281,7 +6294,7 @@ function App() {
                               </b>
                               <small>{waitViolationDetail(violation)}</small>
                             </span>
-                            <em>관련 경기 수정</em>
+                            <em>{waitViolationEditLabel(violation)}</em>
                           </button>
                         )
                       },
@@ -8351,7 +8364,7 @@ function App() {
                         </strong>
                         <small>{waitViolationDetail(violation)}</small>
                       </span>
-                      <em>관련 경기 수정</em>
+                      <em>{waitViolationEditLabel(violation)}</em>
                     </button>
                   )
                 })}
