@@ -178,6 +178,10 @@ const meetingDefaultSettings: MatchSettings = {
   ...defaultSettings,
   normalGameMinutes: 12,
 }
+const normalizeEventName = (value: unknown) =>
+  typeof value === 'string' && value.trim()
+    ? value.trim().slice(0, 50)
+    : meetingDefaultSettings.eventName
 const LAST_UPDATED = '2026.07.17'
 const SPECIAL_TIME_LIMIT_OPTIONS = [60, 90, 120, 150, 180] as const
 const SHARE_LINK_SAVED_MESSAGE = '현재 생성된 이벤트의 링크를 저장하였습니다.'
@@ -742,6 +746,7 @@ const normalizeMatchSettings = (
   return {
     ...meetingDefaultSettings,
     ...settings,
+    eventName: normalizeEventName(settings?.eventName),
     courtCount: normalizePositiveInteger(
       settings?.courtCount,
       defaultSettings.courtCount,
@@ -3202,6 +3207,19 @@ function App() {
     resetMeetingTargetRounds()
   }
 
+  const updateEventName = (value: string) => {
+    const eventName = value.slice(0, 50)
+    setSettings((current) => ({ ...current, eventName }))
+    setGeneratedMeetingSettings((current) => ({ ...current, eventName }))
+    setPrintImageUrls([])
+    setTournamentPrintImageUrls([])
+    setNotice('행사명 변경됨')
+  }
+
+  const commitEventName = (value: string) => {
+    updateEventName(normalizeEventName(value))
+  }
+
   const updateMeetingStartTime = (value: string) => {
     setSettings((current) => {
       const duration = getBookingDurationMinutes(
@@ -5414,7 +5432,9 @@ function App() {
   }
 
   const saveScheduleImages = async (imageUrls: string[]) => {
-    const baseName = sanitizeFilename(generatedMeetingSettings.eventName)
+    const baseName = sanitizeFilename(
+      normalizeEventName(generatedMeetingSettings.eventName),
+    )
     await Promise.all(
       imageUrls.map((imageUrl, index) =>
         downloadPrintImage(imageUrl, `${baseName}-대진표-${index + 1}.png`),
@@ -5425,7 +5445,9 @@ function App() {
 
   const saveScheduleImage = async (imageUrl: string, index: number) => {
     try {
-      const baseName = sanitizeFilename(generatedMeetingSettings.eventName)
+      const baseName = sanitizeFilename(
+        normalizeEventName(generatedMeetingSettings.eventName),
+      )
       await downloadPrintImage(imageUrl, `${baseName}-대진표-${index + 1}.png`)
       setNotice(`대진표 저장 ${index + 1}쪽`)
     } catch {
@@ -5453,7 +5475,10 @@ function App() {
             ? `스페셜 배정 ${assignedSpecialParticipantCount}/${scheduledActiveMembers.length}명 · 대상 ${scheduledSpecialEligibleMembers.length}명 · ${specialAllocationText} · ${specialLimitText}${actualSpecialEndTime ? ` · 마지막 ${actualSpecialEndTime}` : ''}`
             : '스페셜 없음',
         },
-        settings: generatedMeetingSettings,
+        settings: {
+          ...generatedMeetingSettings,
+          eventName: normalizeEventName(generatedMeetingSettings.eventName),
+        },
         matchNameOverrides,
       })
 
@@ -5479,7 +5504,9 @@ function App() {
   }
 
   const saveTournamentScheduleImages = async (imageUrls: string[]) => {
-    const baseName = sanitizeFilename(`${defaultSettings.eventName}-경쟁`)
+    const baseName = sanitizeFilename(
+      `${normalizeEventName(generatedMeetingSettings.eventName)}-경쟁`,
+    )
     await Promise.all(
       imageUrls.map((imageUrl, index) =>
         downloadPrintImage(imageUrl, `${baseName}-대진표-${index + 1}.png`),
@@ -5490,7 +5517,9 @@ function App() {
 
   const saveTournamentScheduleImage = async (imageUrl: string, index: number) => {
     try {
-      const baseName = sanitizeFilename(`${defaultSettings.eventName}-경쟁`)
+      const baseName = sanitizeFilename(
+        `${normalizeEventName(generatedMeetingSettings.eventName)}-경쟁`,
+      )
       await downloadPrintImage(imageUrl, `${baseName}-대진표-${index + 1}.png`)
       setNotice(`경쟁 대진표 저장 ${index + 1}쪽`)
     } catch {
@@ -5509,7 +5538,7 @@ function App() {
         lineups: isFriendlyTournamentFormat(tournamentSettings.format)
           ? effectiveTournamentLineups
           : undefined,
-        title: defaultSettings.eventName,
+        title: normalizeEventName(generatedMeetingSettings.eventName),
       })
 
       setTournamentPrintImageUrls(imageUrls)
@@ -6870,6 +6899,17 @@ function App() {
             {settingsOpen ? (
               <>
                 <div className="settings-grid">
+                  <label className="event-name-field">
+                    행사명
+                    <input
+                      type="text"
+                      maxLength={50}
+                      placeholder="행사명을 입력하세요"
+                      value={settings.eventName}
+                      onChange={(event) => updateEventName(event.target.value)}
+                      onBlur={(event) => commitEventName(event.currentTarget.value)}
+                    />
+                  </label>
                   <NumberStepper
                     label="참가"
                     min={0}
@@ -9177,6 +9217,17 @@ function App() {
                 </div>
 
                 <div className="settings-grid tournament-settings-grid">
+                  <label className="event-name-field">
+                    행사명
+                    <input
+                      type="text"
+                      maxLength={50}
+                      placeholder="행사명을 입력하세요"
+                      value={settings.eventName}
+                      onChange={(event) => updateEventName(event.target.value)}
+                      onBlur={(event) => commitEventName(event.currentTarget.value)}
+                    />
+                  </label>
                   <NumberStepper
                     label="코트"
                     min={1}

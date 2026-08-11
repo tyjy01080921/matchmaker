@@ -152,6 +152,7 @@ describe('printable schedule', () => {
 
     expect(svg).toContain('1경기')
     expect(svg).toContain('1코트')
+    expect(svg).toContain('저장 테스트')
     expect(svg).toContain('18:00–20:00')
     expect(svg).toContain('18:00–18:15')
     expect(svg).toContain('현장참가자 + 이지연')

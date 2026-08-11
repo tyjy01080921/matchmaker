@@ -1092,6 +1092,14 @@ h2 {
   gap: 10px;
 }
 
+.event-name-field {
+  grid-column: 1 / -1;
+}
+
+.event-name-field input {
+  font-weight: 900;
+}
+
 .court-assignment-settings {
   display: grid;
   grid-column: 1 / -1;
