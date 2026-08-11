@@ -10,7 +10,11 @@ import {
   generateMeetingScheduleV2WithWaitResolution,
   planMeetingSlotsV2,
 } from './engine'
-import { resolveMeetingRuleProfile } from './rules'
+import {
+  balancedParticipantGameTarget,
+  plannedGuestGames,
+  resolveMeetingRuleProfile,
+} from './rules'
 import { analyzeMeetingScheduleV2 } from './validation'
 
 const makePlayers = (
@@ -112,6 +116,35 @@ describe('meeting V2 rules', () => {
 })
 
 describe('meeting V2 slot planning', () => {
+  it('keeps each guest on one court in consecutive fixed-court slots', () => {
+    const players = makePlayers(26, 2)
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 3,
+      courtAssignmentMode: 'fixed',
+      startTime: '18:00',
+      endTime: '21:00',
+      normalGameMinutes: 10,
+      singleGuestPerMatch: true,
+      specialLimitEnabled: false,
+    }
+    const specialSlots = planMeetingSlotsV2(players, settings)
+      .filter((slot) => slot.kind === 'special')
+
+    expect(specialSlots).toHaveLength(14)
+    for (const [guestIndex, guestId] of ['guest-1', 'guest-2'].entries()) {
+      const guestSlots = specialSlots.filter((slot) => slot.guestId === guestId)
+      expect(guestSlots.map((slot) => slot.court)).toEqual(
+        Array.from({ length: 7 }, () => guestIndex + 1),
+      )
+      expect(guestSlots.map((slot) => slot.start)).toEqual([
+        0, 10, 20, 30, 40, 50, 60,
+      ])
+      expect(guestSlots.every((slot) => !slot.roamingGuestId)).toBe(true)
+    }
+    expect(specialSlots.some((slot) => slot.court === 3)).toBe(false)
+  })
+
   it('uses the configured 12-minute duration for general and special slots without waste', () => {
     const slots = planMeetingSlotsV2(makePlayers(56, 1), largeSettings)
     expect(slots.filter((slot) => slot.kind === 'special')).toHaveLength(8)
@@ -132,6 +165,101 @@ describe('meeting V2 slot planning', () => {
 })
 
 describe('meeting V2 generation', () => {
+  it('rotates an overflow guest through fixed guest courts as two-plus-two matches', () => {
+    const players = makePlayers(30, 4)
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 3,
+      courtAssignmentMode: 'fixed',
+      startTime: '18:00',
+      endTime: '20:00',
+      normalGameMinutes: 10,
+      singleGuestPerMatch: true,
+      specialLimitEnabled: false,
+    }
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const matches = schedule.rounds.flatMap((round) => round.matches)
+    const guestMatches = (guestId: string) => matches.filter((match) =>
+      [...match.teamA, ...match.teamB].some((player) => player.id === guestId),
+    )
+
+    expect(schedule.guestGameCounts).toMatchObject({
+      'guest-1': 4,
+      'guest-2': 4,
+      'guest-3': 4,
+      'guest-4': 4,
+    })
+    for (const [guestIndex, guestId] of [
+      'guest-1',
+      'guest-2',
+      'guest-3',
+    ].entries()) {
+      expect(guestMatches(guestId).map((match) => match.court)).toEqual(
+        Array.from({ length: 4 }, () => guestIndex + 1),
+      )
+      expect(guestMatches(guestId).map(
+        (match) => match.startOffsetMinutes,
+      )).toEqual([0, 10, 20, 30])
+    }
+    const roamingMatches = guestMatches('guest-4')
+    expect(roamingMatches.map((match) => match.court)).toEqual([1, 2, 3, 1])
+    expect(roamingMatches.every((match) => {
+      const assigned = [...match.teamA, ...match.teamB]
+      return (
+        assigned.filter((player) => player.isGuest).length === 2 &&
+        assigned.filter((player) => !player.isGuest).length === 2
+      )
+    })).toBe(true)
+    expect(
+      analyzeMeetingScheduleV2(schedule, players, settings).structuralIssues,
+    ).toEqual([])
+  }, 20000)
+
+  it('matches unrestricted guest games to the regular participant target', () => {
+    const players = makePlayers(26, 2)
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 3,
+      courtAssignmentMode: 'available',
+      startTime: '18:00',
+      endTime: '21:00',
+      normalGameMinutes: 10,
+      specialLimitEnabled: false,
+      specialGameLimitEnabled: true,
+      specialGameLimit: 1,
+      specialTimeLimitEnabled: true,
+      specialTimeLimitMinutes: 30,
+    }
+    const guests = players.filter((player) => player.isGuest)
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const matchCounts = new Map(
+      players.map((player) => [
+        player.id,
+        schedule.rounds
+          .flatMap((round) => round.matches)
+          .filter((match) =>
+            [...match.teamA, ...match.teamB].some(
+              (candidate) => candidate.id === player.id,
+            ),
+          ).length,
+      ]),
+    )
+    const regularCounts = players
+      .filter((player) => !player.isGuest)
+      .map((player) => matchCounts.get(player.id) ?? 0)
+
+    expect(balancedParticipantGameTarget(players, settings)).toBe(7)
+    expect(
+      guests.map((guest) => plannedGuestGames(guest, players, settings)),
+    ).toEqual([7, 7])
+    expect(guests.map((guest) => schedule.guestGameCounts[guest.id])).toEqual([
+      7,
+      7,
+    ])
+    expect(Math.min(...regularCounts)).toBe(7)
+    expect(Math.max(...regularCounts)).toBeLessThanOrEqual(8)
+  }, 20000)
+
   it.each([
     { regularCount: 20, courtCount: 3 },
     { regularCount: 30, courtCount: 4 },
@@ -686,8 +814,11 @@ describe('meeting V2 generation', () => {
       targetRoundCount: 12,
       pacingRoundCount: 12,
       roundCountLocked: true,
-      specialLimitEnabled: false,
+      specialLimitEnabled: true,
       specialScheduleMode: 'continuous',
+      specialGameLimitEnabled: true,
+      specialGameLimit: 2,
+      specialParticipantTarget: 6,
       specialTimeLimitEnabled: true,
       specialTimeLimitMinutes: 24,
       conditionOptions: {
@@ -796,7 +927,7 @@ describe('meeting V2 generation', () => {
       planMeetingSlotsV2(samplePlayers, defaultSettings).filter(
         (slot) => slot.kind === 'special',
       ),
-    ).toHaveLength(14)
+    ).toHaveLength(24)
     const result = generateMeetingScheduleV2WithWaitResolution(
       samplePlayers,
       defaultSettings,

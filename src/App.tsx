@@ -60,6 +60,7 @@ import {
   TournamentProgressMode,
 } from './ProgressModeView'
 import { analyzeMeetingScheduleV2 } from './matchmaker/validation'
+import { balancedParticipantGameTarget } from './matchmaker/rules'
 import {
   canConfirmMeetingGenerationFailure,
   isSpecialTargetFailureIssue,
@@ -2435,7 +2436,7 @@ function App() {
     ? specialLimitLabels.length > 0
       ? specialLimitLabels.join(' · ')
       : '제한 조건 선택 필요'
-    : '제한 없음'
+    : '일반 경기 수 자동 맞춤'
   const specialLowPriorityPercent = settings.specialLowPriorityEnabled
     ? settings.specialLowPriorityPercent
     : 0
@@ -2464,9 +2465,6 @@ function App() {
     `저 ${scheduledSpecialLowPriorityPercent}% · ` +
     `무작위 ${scheduledSpecialRandomPriorityPercent}% · ` +
     `고 ${scheduledSpecialHighPriorityPercent}%`
-  const requiredPlayers = hasScheduledActiveGuests
-    ? scheduledSpecialEligibleMembers
-    : []
   const completedMatches = schedule.rounds
     .flatMap((round) => round.matches)
     .filter((match) => results[match.id]?.completed).length
@@ -2607,9 +2605,22 @@ function App() {
           !match.isSpecial,
       ).length
     : 0
-  const specialMinimumMatchCount = hasScheduledActiveGuests
-    ? Math.ceil(requiredPlayers.length / 3)
+  const automaticSpecialGamesPerGuest = hasScheduledActiveGuests
+    ? balancedParticipantGameTarget(
+        scheduledActivePlayers,
+        generatedMeetingSettings,
+      )
     : 0
+  const fixedCourtGuestOverflow =
+    generatedMeetingSettings.courtAssignmentMode === 'fixed' &&
+    generatedMeetingSettings.singleGuestPerMatch &&
+    scheduledActiveGuests.length > generatedMeetingSettings.courtCount
+  const automaticSpecialMatchCount =
+    automaticSpecialGamesPerGuest * (
+      fixedCourtGuestOverflow
+        ? generatedMeetingSettings.courtCount
+        : scheduledActiveGuests.length
+    )
   const specialMatchesPerRound = hasScheduledActiveGuests
     ? Math.max(
         1,
@@ -2620,12 +2631,12 @@ function App() {
         ),
       )
     : 0
-  const specialMinimumRoundCount =
+  const automaticSpecialRoundCount =
     specialMatchesPerRound > 0
-      ? Math.ceil(specialMinimumMatchCount / specialMatchesPerRound)
+      ? Math.ceil(automaticSpecialMatchCount / specialMatchesPerRound)
       : 0
-  const specialMinimumMinutes =
-    specialMinimumRoundCount * generatedMeetingSettings.normalGameMinutes
+  const automaticSpecialMinutes =
+    automaticSpecialRoundCount * generatedMeetingSettings.normalGameMinutes
   const specialLimitRoundCount = generatedMeetingSettings.specialLimitEnabled
     ? generatedMeetingSettings.specialScheduleMode === 'continuous' &&
       generatedMeetingSettings.specialTimeLimitEnabled
@@ -2637,7 +2648,7 @@ function App() {
           ),
         )
       : scheduledBookingRoundCount
-    : specialMinimumRoundCount
+    : automaticSpecialRoundCount
   const specialCapacityByTime = specialLimitRoundCount * specialMatchesPerRound
   const specialCapacityByGames = generatedMeetingSettings.specialLimitEnabled &&
     generatedMeetingSettings.specialGameLimitEnabled
@@ -2645,7 +2656,7 @@ function App() {
     : Number.POSITIVE_INFINITY
   const specialLimitMatchCapacity = generatedMeetingSettings.specialLimitEnabled
     ? Math.min(specialCapacityByTime, specialCapacityByGames)
-    : specialMinimumMatchCount
+    : automaticSpecialMatchCount
   const specialLimitParticipantCapacity = Math.min(
     scheduledSpecialEligibleMembers.length,
     specialLimitMatchCapacity * 3,
@@ -7047,6 +7058,14 @@ function App() {
                           스페셜 제한 사용
                         </label>
                       </div>
+                      {settings.courtAssignmentMode === 'fixed' &&
+                      settings.singleGuestPerMatch ? (
+                        <p className="special-fixed-court-note">
+                          {activeGuests.length > settings.courtCount
+                            ? '코트 초과 스페셜은 2+2 순환 배정'
+                            : '스페셜은 코트별 고정 · 연속 배정'}
+                        </p>
+                      ) : null}
                       <div className="special-allocation-options">
                         <label>
                           <input
@@ -8173,12 +8192,14 @@ function App() {
                 <h2>
                   {generatedMeetingSettings.specialLimitEnabled
                     ? `배정 ${assignedSpecialParticipantCount}/${specialLimitParticipantCapacity}명`
-                    : `최소 ${specialMinimumMatchCount}경기`}
+                    : `스페셜당 ${automaticSpecialGamesPerGuest}경기`}
                 </h2>
                 <p className="metric-subtext">
                   {generatedMeetingSettings.specialLimitEnabled
                     ? `목표 ${specialLimitMatchCapacity}경기 · 참가 ${specialLimitParticipantCapacity}명`
-                    : `예상 ${formatDuration(specialMinimumMinutes)}`}
+                    : `총 ${automaticSpecialMatchCount}경기 · 예상 ${formatDuration(
+                        automaticSpecialMinutes,
+                      )}`}
                 </p>
               </div>
               <div className="special-summary">
@@ -8202,7 +8223,7 @@ function App() {
                           scheduledBookingMinutes,
                         ))}`
                       : `전체 시간 분산 ${formatDuration(scheduledBookingMinutes)}`
-                    : `최소 필요 ${specialMinimumMatchCount}경기`}
+                    : `자동 목표 ${automaticSpecialGamesPerGuest}경기씩`}
                 </span>
                 {scheduledActiveGuests.map((guest) => (
                   <span key={guest.id}>

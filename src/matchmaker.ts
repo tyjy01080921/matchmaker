@@ -44,6 +44,10 @@ import {
 import { getBookingDurationMinutes } from './scheduleTime'
 import { generateMeetingScheduleV2WithWaitResolution } from './matchmaker/engine'
 import {
+  allowsFixedCourtGuestOverflow,
+  plannedGuestGames,
+} from './matchmaker/rules'
+import {
   findMeetingConsecutiveGameLimitViolations,
   isPlayerAvailableForMeetingSlot,
   maximumConsecutiveMeetingGames,
@@ -985,6 +989,7 @@ export const validateMeetingSchedule = (
   const allowedConsecutiveMatchIds = new Set(
     options.allowedConsecutiveMatchIds ?? [],
   )
+  const allowGuestOverflow = allowsFixedCourtGuestOverflow(players, settings)
 
   if (findScheduleOverlapDetail(schedule)) issues.add('참가자 동시간 중복')
 
@@ -1007,7 +1012,12 @@ export const validateMeetingSchedule = (
     }
     if (
       settings.singleGuestPerMatch &&
-      matchPlayers.filter((player) => player.isGuest).length > 1
+      matchPlayers.filter((player) => player.isGuest).length > 1 &&
+      !(
+        allowGuestOverflow &&
+        match.isSpecial &&
+        matchPlayers.filter((player) => player.isGuest).length === 2
+      )
     ) {
       issues.add('스페셜 인원 제한 위반')
     }
@@ -1417,11 +1427,6 @@ const normalizeTargetRoundCount = (value: unknown) => {
   return Math.max(1, Math.floor(numeric))
 }
 
-const guestHasRemainingExtraGames = (guest: Player, history: HistoryState) => {
-  const limit = Math.floor(Number(guest.guestGameLimit) || 0)
-  return limit <= 0 || (history.guestGameCounts[guest.id] ?? 0) < limit
-}
-
 const usesContinuousSpecialWindow = (settings: MatchSettings) =>
   settings.specialScheduleMode !== 'spread' &&
   settings.specialTimeLimitEnabled
@@ -1478,58 +1483,11 @@ const specialParticipantTargetRequiresCap = (
     maximumParticipantCapacity
 }
 
-const specialLimitGameTarget = (settings: MatchSettings) => {
-  const limits: number[] = []
-  if (settings.specialGameLimitEnabled) {
-    limits.push(Math.max(1, Math.floor(settings.specialGameLimit)))
-  }
-  if (
-    usesContinuousSpecialWindow(settings) &&
-    settings.specialTimeLimitEnabled
-  ) {
-    limits.push(
-      Math.max(
-        1,
-        Math.floor(
-          settings.specialTimeLimitMinutes / settings.normalGameMinutes,
-        ),
-      ),
-    )
-  }
-  return limits.length > 0 ? Math.min(...limits) : Number.POSITIVE_INFINITY
-}
-
 const specialPlannedGameTarget = (
   guest: Player,
   activePlayers: Player[],
   settings: MatchSettings,
-) => {
-  if (settings.specialLimitEnabled) {
-    const limitedTarget = specialLimitGameTarget(settings)
-    return Number.isFinite(limitedTarget)
-      ? limitedTarget
-      : Math.max(
-          1,
-          Math.floor(
-            getBookingDurationMinutes(settings.startTime, settings.endTime) /
-              settings.normalGameMinutes,
-          ),
-        )
-  }
-
-  const eligibleCount = activePlayers.filter(
-    (player) =>
-      !player.isGuest &&
-      (player.specialMatchEligible ?? true),
-  ).length
-  const guestCount = Math.max(
-    1,
-    activePlayers.filter((player) => player.isGuest).length,
-  )
-  const coverageTarget = Math.max(1, Math.ceil(eligibleCount / 3 / guestCount))
-  const configuredTarget = Math.max(0, Math.floor(guest.guestGameLimit || 0))
-  return Math.max(coverageTarget, configuredTarget)
-}
+) => plannedGuestGames(guest, activePlayers, settings)
 
 const specialAllocationCounts = (
   targetGames: number,
@@ -3149,7 +3107,11 @@ const pickSingleGuestSpecialGroup = (
   if (isExtraSpecialMatch && !allowExtraSpecial) return null
 
   const guests = (isExtraSpecialMatch && !settings.specialLimitEnabled
-    ? candidateGuests.filter((guest) => guestHasRemainingExtraGames(guest, history))
+    ? candidateGuests.filter(
+        (guest) =>
+          (history.guestGameCounts[guest.id] ?? 0) <
+            specialPlannedGameTarget(guest, activePlayers, settings),
+      )
     : candidateGuests
   ).sort(
     (a, b) =>
@@ -3294,7 +3256,11 @@ const pickAdaptiveSpecialGroup = (
   if (isExtraSpecialMatch && !allowExtraSpecial) return null
 
   const guests = (isExtraSpecialMatch && !settings.specialLimitEnabled
-    ? candidateGuests.filter((guest) => guestHasRemainingExtraGames(guest, history))
+    ? candidateGuests.filter(
+        (guest) =>
+          (history.guestGameCounts[guest.id] ?? 0) <
+            specialPlannedGameTarget(guest, activePlayers, settings),
+      )
     : candidateGuests
   ).sort(
     (a, b) =>
@@ -5326,8 +5292,12 @@ const generateSchedulePass = (
   let stalledRounds = 0
 
   for (let roundNumber = 1; roundNumber <= maxAutoRounds; roundNumber += 1) {
-    if (settings.roundCountLocked && normalGameMinutes === GAME_SLOT_MINUTES && roundNumber > targetRoundCount) break
     const startOffset = Math.min(...courtAvailableAt)
+    if (
+      settings.roundCountLocked &&
+      normalGameMinutes === GAME_SLOT_MINUTES &&
+      startOffset >= targetRoundCount * GAME_SLOT_MINUTES
+    ) break
     history.currentStartOffset = startOffset
     if (startOffset >= schedulingMinutes) break
     const openCourts = courtAvailableAt
@@ -5340,6 +5310,8 @@ const generateSchedulePass = (
     )
     const matches: Match[] = []
     const completedBeforeRound = history.specialCompleted.size
+    const guestGamesBeforeRound = Object.values(history.guestGameCounts)
+      .reduce((sum, count) => sum + count, 0)
     const allowExtraSpecial =
       settings.specialLimitEnabled || startOffset < pacingRoundCount * normalGameMinutes
     const timeRoundNumber = Math.floor(startOffset / normalGameMinutes) + 1
@@ -5518,17 +5490,24 @@ const generateSchedulePass = (
     const allGuestsPlayed = activeGuests.every(
       (guest) => (history.guestGameCounts[guest.id] ?? 0) > 0,
     )
+    const allGuestsReachedTarget = activeGuests.every(
+      (guest) =>
+        (history.guestGameCounts[guest.id] ?? 0) >=
+          specialPlannedGameTarget(guest, activePlayers, settings),
+    )
     const reachedTargetRounds = startOffset + normalGameMinutes >= schedulingMinutes
     const completedMinimumSpecial = !specialMatchesEnabled || settings.specialLimitEnabled
       ? true
-      : allRegularsCompleted && allGuestsPlayed
+      : allRegularsCompleted && allGuestsPlayed && allGuestsReachedTarget
     if (
       reachedTargetRounds && completedMinimumSpecial
     ) break
 
     if (
       !completedMinimumSpecial &&
-      history.specialCompleted.size === completedBeforeRound
+      history.specialCompleted.size === completedBeforeRound &&
+      Object.values(history.guestGameCounts)
+        .reduce((sum, count) => sum + count, 0) === guestGamesBeforeRound
     ) {
       stalledRounds += 1
       if (stalledRounds >= 2) break
@@ -5570,7 +5549,7 @@ const generateSchedulePass = (
       `스페셜 참가 목표 미달: ${achievedSpecialParticipantCount}/${requestedSpecialParticipantTarget}명`,
     )
   }
-  if (specialMatchesEnabled && settings.specialLimitEnabled) {
+  if (specialMatchesEnabled) {
     const achievedGuestGames = Object.values(history.guestGameCounts)
       .reduce((sum, count) => sum + count, 0)
     if (achievedGuestGames < plannedSpecialMatchCount) {
@@ -6465,7 +6444,12 @@ export const replanMeetingSchedule = (
     }
     if (
       input.settings.singleGuestPerMatch &&
-      playersInMatch.filter((player) => player.isGuest).length > 1
+      playersInMatch.filter((player) => player.isGuest).length > 1 &&
+      !(
+        allowsFixedCourtGuestOverflow(input.players, input.settings) &&
+        match.isSpecial &&
+        playersInMatch.filter((player) => player.isGuest).length === 2
+      )
     ) {
       failureIssues.push('스페셜 인원 제한 위반')
     }

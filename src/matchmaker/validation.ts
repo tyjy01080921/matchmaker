@@ -8,6 +8,7 @@ import type {
   WaitLimitParticipantViolation,
 } from '../types'
 import {
+  allowsFixedCourtGuestOverflow,
   MEETING_MAX_GROUP_MEETINGS,
   MEETING_MAX_STANDARD_GAME_SPREAD,
   MEETING_MAX_WAIT_MINUTES,
@@ -297,6 +298,10 @@ export const analyzeMeetingScheduleV2 = (
     options.allowedConsecutiveMatchIds ?? [],
   )
   const structuralIssues = new Set<string>()
+  const allowGuestOverflow = allowsFixedCourtGuestOverflow(
+    activePlayers,
+    settings,
+  )
   const bookingMinutes = getBookingDurationMinutes(
     settings.startTime,
     settings.endTime,
@@ -322,7 +327,12 @@ export const analyzeMeetingScheduleV2 = (
     }
     if (
       settings.singleGuestPerMatch &&
-      assignedPlayers.filter((player) => player.isGuest).length > 1
+      assignedPlayers.filter((player) => player.isGuest).length > 1 &&
+      !(
+        allowGuestOverflow &&
+        match.isSpecial &&
+        assignedPlayers.filter((player) => player.isGuest).length === 2
+      )
     ) {
       structuralIssues.add('스페셜 인원 제한 위반')
     }

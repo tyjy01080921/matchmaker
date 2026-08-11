@@ -175,13 +175,33 @@ const configuredSpecialTarget = (settings: MatchSettings) => {
   return Math.max(3, Math.floor(target / 3) * 3)
 }
 
+export const balancedParticipantGameTarget = (
+  activePlayers: Player[],
+  settings: MatchSettings,
+) => {
+  const participantCount = activePlayers.filter((player) => player.active).length
+  if (participantCount === 0) return 0
+  const bookingMinutes = getBookingDurationMinutes(
+    settings.startTime,
+    settings.endTime,
+  )
+  const matchCapacity = Math.max(
+    0,
+    settings.courtCount * Math.floor(
+      bookingMinutes / settings.normalGameMinutes,
+    ),
+  )
+  return Math.floor(matchCapacity * 4 / participantCount)
+}
+
 export const plannedGuestGames = (
-  guest: Player,
+  _guest: Player,
   activePlayers: Player[],
   settings: MatchSettings,
 ) => {
   const schedulingMinutes = meetingSchedulingMinutes(settings)
   const timeLimit =
+    settings.specialLimitEnabled &&
     settings.specialScheduleMode !== 'spread' &&
     settings.specialTimeLimitEnabled
       ? Math.min(schedulingMinutes, settings.specialTimeLimitMinutes)
@@ -198,16 +218,10 @@ export const plannedGuestGames = (
     return Math.min(timeCapacity, configuredLimit)
   }
 
-  const eligibleRegularCount = activePlayers.filter(
-    (player) => !player.isGuest && (player.specialMatchEligible ?? true),
-  ).length
-  const guestCount = Math.max(
-    1,
-    activePlayers.filter((player) => player.isGuest).length,
+  return Math.min(
+    timeCapacity,
+    balancedParticipantGameTarget(activePlayers, settings),
   )
-  const coverageGames = Math.ceil(eligibleRegularCount / 3 / guestCount)
-  const playerLimit = Math.max(0, Math.floor(guest.guestGameLimit || 0))
-  return Math.min(timeCapacity, Math.max(coverageGames, playerLimit))
 }
 
 export const specialParticipantTarget = (
@@ -221,6 +235,14 @@ export const specialParticipantTarget = (
     ? Math.min(eligibleCount, configuredSpecialTarget(settings))
     : eligibleCount
 }
+
+export const allowsFixedCourtGuestOverflow = (
+  activePlayers: Player[],
+  settings: MatchSettings,
+) => settings.singleGuestPerMatch &&
+  settings.courtAssignmentMode === 'fixed' &&
+  activePlayers.filter((player) => player.active && player.isGuest).length >
+    settings.courtCount
 
 export const preflightMeetingGeneration = (
   players: Player[],
@@ -298,7 +320,8 @@ export const preflightMeetingGeneration = (
     )
     const maximumSpecialGames =
       settings.courtCount *
-        Math.floor(schedulingMinutes / settings.normalGameMinutes)
+        Math.floor(schedulingMinutes / settings.normalGameMinutes) *
+        (allowsFixedCourtGuestOverflow(activePlayers, settings) ? 2 : 1)
     if (plannedSpecialGames > maximumSpecialGames) {
       issues.push({
         code: 'insufficient-special-capacity',

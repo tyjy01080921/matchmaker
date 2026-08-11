@@ -13,6 +13,7 @@ import {
   preferredPartnerStrength,
 } from '../preferredPartners'
 import {
+  MEETING_MAX_GROUP_MEETINGS,
   MEETING_MAX_WAIT_MINUTES,
   MEETING_SKILL_CAUTION_GAP,
   MEETING_SKILL_DANGER_GAP,
@@ -53,12 +54,14 @@ export type PlannedMeetingSlot = {
   duration: number
   kind: MeetingSlotKind
   guestId?: string
+  roamingGuestId?: string
   plannedPlayerIds?: string[]
 }
 
 type SpecialReservation = PlannedMeetingSlot & {
   kind: 'special'
   guestId: string
+  roamingGuestId?: string
 }
 
 type EngineState = {
@@ -293,6 +296,118 @@ const distributeSpecialChunks = (
   return reservations
 }
 
+const distributeFixedSpecialCourts = (
+  activePlayers: Player[],
+  settings: MatchSettings,
+  specialWindowMinutes: number,
+): SpecialReservation[] => {
+  const gameMinutes = settings.normalGameMinutes
+  const guests = activePlayers.filter((player) => player.isGuest)
+  const fixedGuestCount = Math.min(settings.courtCount, guests.length)
+  const fixedGuests = guests.slice(0, fixedGuestCount)
+  const roamingGuests = guests.slice(fixedGuestCount)
+  const reservations = fixedGuests.flatMap((guest, courtIndex) => {
+    const attendance = resolveMeetingAttendanceWindow(guest, settings)
+    const windowEnd = Math.min(attendance.end, specialWindowMinutes)
+    const target = Math.min(
+      plannedGuestGames(guest, activePlayers, settings),
+      Math.max(0, Math.floor((windowEnd - attendance.start) / gameMinutes)),
+    )
+    return Array.from({ length: target }, (_, index): SpecialReservation => {
+      const start = attendance.start + index * gameMinutes
+      return {
+        id: `fixed-special-c${courtIndex + 1}-s${start}-${guest.id}`,
+        court: courtIndex + 1,
+        start,
+        duration: gameMinutes,
+        kind: 'special',
+        guestId: guest.id,
+      }
+    })
+  })
+  if (roamingGuests.length === 0 || reservations.length === 0) {
+    return reservations
+  }
+
+  const remainingGames = new Map(
+    roamingGuests.map((guest) => {
+      const attendance = resolveMeetingAttendanceWindow(guest, settings)
+      const windowEnd = Math.min(attendance.end, specialWindowMinutes)
+      return [
+        guest.id,
+        Math.min(
+          plannedGuestGames(guest, activePlayers, settings),
+          Math.max(0, Math.floor((windowEnd - attendance.start) / gameMinutes)),
+        ),
+      ]
+    }),
+  )
+  const assignedGames = new Map(roamingGuests.map((guest) => [guest.id, 0]))
+  const availableAt = new Map(
+    roamingGuests.map((guest) => [
+      guest.id,
+      resolveMeetingAttendanceWindow(guest, settings).start,
+    ]),
+  )
+  const starts = [...new Set(reservations.map((slot) => slot.start))]
+    .sort((left, right) => left - right)
+
+  starts.forEach((start, startIndex) => {
+    const slots = reservations
+      .filter((slot) => slot.start === start)
+      .sort((left, right) => {
+        const leftRotation = (
+          left.court - 1 - startIndex + fixedGuestCount
+        ) % fixedGuestCount
+        const rightRotation = (
+          right.court - 1 - startIndex + fixedGuestCount
+        ) % fixedGuestCount
+        return leftRotation - rightRotation
+      })
+    const assignedAtStart = new Set<string>()
+
+    for (const slot of slots) {
+      const roamingGuest = roamingGuests
+        .filter((guest) => {
+          const attendance = resolveMeetingAttendanceWindow(guest, settings)
+          return (
+            !assignedAtStart.has(guest.id) &&
+            (remainingGames.get(guest.id) ?? 0) > 0 &&
+            (availableAt.get(guest.id) ?? 0) <= start &&
+            start >= attendance.start &&
+            start + gameMinutes <= Math.min(
+              attendance.end,
+              specialWindowMinutes,
+            )
+          )
+        })
+        .sort(
+          (left, right) =>
+            (assignedGames.get(left.id) ?? 0) -
+              (assignedGames.get(right.id) ?? 0) ||
+            stableNoise(settings.seed, `${start}:${slot.court}:${left.id}`) -
+              stableNoise(settings.seed, `${start}:${slot.court}:${right.id}`),
+        )[0]
+      if (!roamingGuest) continue
+
+      slot.roamingGuestId = roamingGuest.id
+      slot.id = `${slot.id}-roaming-${roamingGuest.id}`
+      assignedAtStart.add(roamingGuest.id)
+      remainingGames.set(
+        roamingGuest.id,
+        (remainingGames.get(roamingGuest.id) ?? 0) - 1,
+      )
+      assignedGames.set(
+        roamingGuest.id,
+        (assignedGames.get(roamingGuest.id) ?? 0) + 1,
+      )
+      availableAt.set(roamingGuest.id, start + gameMinutes)
+    }
+  })
+
+  return reservations
+}
+
 export const planMeetingSlotsV2 = (
   players: Player[],
   settings: MatchSettings,
@@ -311,16 +426,24 @@ export const planMeetingSlotsV2 = (
     ? Math.min(settings.courtCount, totalSpecialGames)
     : 0
   const specialWindowMinutes =
+    settings.specialLimitEnabled &&
     settings.specialScheduleMode !== 'spread' &&
     settings.specialTimeLimitEnabled
       ? Math.min(schedulingMinutes, settings.specialTimeLimitMinutes)
       : schedulingMinutes
-  const reservations = distributeSpecialChunks(
-    activePlayers,
-    settings,
-    specialCourtCount,
-    specialWindowMinutes,
-  )
+  const reservations =
+    settings.courtAssignmentMode === 'fixed' && settings.singleGuestPerMatch
+      ? distributeFixedSpecialCourts(
+          activePlayers,
+          settings,
+          specialWindowMinutes,
+        )
+      : distributeSpecialChunks(
+          activePlayers,
+          settings,
+          specialCourtCount,
+          specialWindowMinutes,
+        )
   const slots: PlannedMeetingSlot[] = [...reservations]
 
   for (let court = 1; court <= settings.courtCount; court += 1) {
@@ -370,7 +493,12 @@ const initializeState = (
   for (const slot of plannedSlots.filter(
     (candidate) => candidate.kind === 'special',
   )) {
-    for (const playerId of slot.plannedPlayerIds ?? []) {
+    const plannedIds = [
+      ...(slot.plannedPlayerIds ?? []),
+      ...(slot.guestId ? [slot.guestId] : []),
+      ...(slot.roamingGuestId ? [slot.roamingGuestId] : []),
+    ]
+    for (const playerId of plannedIds) {
       plannedSpecialStarts.set(playerId, [
         ...(plannedSpecialStarts.get(playerId) ?? []),
         slot.start,
@@ -907,6 +1035,14 @@ const availablePlayers = (
 const uniquePlayers = (players: Player[]) =>
   [...new Map(players.map((player) => [player.id, player])).values()]
 
+const combinations = <T,>(items: T[], count: number): T[][] => {
+  if (count === 0) return [[]]
+  if (items.length < count) return []
+  return items.flatMap((item, index) =>
+    combinations(items.slice(index + 1), count - 1).map((tail) => [item, ...tail]),
+  )
+}
+
 const candidatePool = (
   players: Player[],
   state: EngineState,
@@ -1001,6 +1137,7 @@ const attachSpecialParticipantPlans = (
     eligibleRegulars.map((player) => [player.id, 0]),
   )
   const plannedWindows = new Map<string, Array<{ start: number; end: number }>>()
+  const plannedGroupCounts = new Map<string, number>()
   const guestSlotIndex = new Map<string, number>()
   const playersById = new Map(activePlayers.map((player) => [player.id, player]))
 
@@ -1061,51 +1198,71 @@ const attachSpecialParticipantPlans = (
       ...ranked.filter((player) => player.gender === 'male').slice(0, 6),
       ...ranked.filter((player) => player.gender === 'female').slice(0, 6),
     ]).slice(0, 20)
-    let best: { players: [Player, Player, Player]; score: number[] } | null = null
-    for (let a = 0; a < pool.length - 2; a += 1) {
-      for (let b = a + 1; b < pool.length - 1; b += 1) {
-        for (let c = b + 1; c < pool.length; c += 1) {
-          const regulars: [Player, Player, Player] = [pool[a], pool[b], pool[c]]
-          const newIds = regulars.filter((player) => !selectedIds.has(player.id))
-          if (
-            settings.specialLimitEnabled &&
-            selectedIds.size + newIds.length > target
-          ) {
-            continue
-          }
-          const requiredNewCount = Math.min(3, Math.max(0, target - selectedIds.size))
-          const scores = regulars.map((player) => playerScore(player, settings))
-          const ages = regulars
-            .filter((player) => player.ageGroup !== '무관')
-            .map(ageValue)
-          const directionalScore = segment === 'low'
-            ? scores.reduce((sum, score) => sum + score, 0)
-            : segment === 'high'
-              ? -scores.reduce((sum, score) => sum + score, 0)
-              : 0
-          const score = [
-            Math.max(0, requiredNewCount - newIds.length),
-            Math.max(...regulars.map((player) => plannedCounts.get(player.id) ?? 0)),
-            regulars.reduce(
-              (sum, player) => sum + (plannedCounts.get(player.id) ?? 0),
-              0,
-            ),
-            genderPenalty(regulars),
-            directionalScore,
-            Math.max(...scores) - Math.min(...scores),
-            ages.length > 1 ? Math.max(...ages) - Math.min(...ages) : 0,
-            stableNoise(
-              settings.seed,
-              `${slot.id}:${regulars.map((player) => player.id).sort().join(':')}`,
-            ),
-          ]
-          if (best === null || compareNumberTuples(score, best.score) < 0) {
-            best = { players: regulars, score }
-          }
-        }
+    const regularSeatCount = slot.roamingGuestId ? 2 : 3
+    let best: { players: Player[]; score: number[] } | null = null
+    for (const regulars of combinations(pool, regularSeatCount)) {
+      const plannedGroupKey = [
+        guest.id,
+        ...(slot.roamingGuestId ? [slot.roamingGuestId] : []),
+        ...regulars.map((player) => player.id),
+      ].sort().join('__')
+      if (
+        settings.conditionOptions.groupRepeat &&
+        (plannedGroupCounts.get(plannedGroupKey) ?? 0) >=
+          MEETING_MAX_GROUP_MEETINGS
+      ) {
+        continue
+      }
+      const newIds = regulars.filter((player) => !selectedIds.has(player.id))
+      if (
+        settings.specialLimitEnabled &&
+        selectedIds.size + newIds.length > target
+      ) {
+        continue
+      }
+      const requiredNewCount = Math.min(
+        regularSeatCount,
+        Math.max(0, target - selectedIds.size),
+      )
+      const scores = regulars.map((player) => playerScore(player, settings))
+      const ages = regulars
+        .filter((player) => player.ageGroup !== '무관')
+        .map(ageValue)
+      const directionalScore = segment === 'low'
+        ? scores.reduce((sum, score) => sum + score, 0)
+        : segment === 'high'
+          ? -scores.reduce((sum, score) => sum + score, 0)
+          : 0
+      const score = [
+        Math.max(0, requiredNewCount - newIds.length),
+        Math.max(...regulars.map((player) => plannedCounts.get(player.id) ?? 0)),
+        regulars.reduce(
+          (sum, player) => sum + (plannedCounts.get(player.id) ?? 0),
+          0,
+        ),
+        genderPenalty(regulars),
+        directionalScore,
+        Math.max(...scores) - Math.min(...scores),
+        ages.length > 1 ? Math.max(...ages) - Math.min(...ages) : 0,
+        stableNoise(
+          settings.seed,
+          `${slot.id}:${regulars.map((player) => player.id).sort().join(':')}`,
+        ),
+      ]
+      if (best === null || compareNumberTuples(score, best.score) < 0) {
+        best = { players: regulars, score }
       }
     }
     if (!best) return slot
+    const bestGroupKey = [
+      guest.id,
+      ...(slot.roamingGuestId ? [slot.roamingGuestId] : []),
+      ...best.players.map((player) => player.id),
+    ].sort().join('__')
+    plannedGroupCounts.set(
+      bestGroupKey,
+      (plannedGroupCounts.get(bestGroupKey) ?? 0) + 1,
+    )
     for (const player of best.players) {
       selectedIds.add(player.id)
       plannedCounts.set(player.id, (plannedCounts.get(player.id) ?? 0) + 1)
@@ -1365,6 +1522,7 @@ const hardCandidateAllowed = (
   isSpecial: boolean,
   isWarmup: boolean,
   allowDanger: boolean,
+  allowGuestOverflow: boolean,
 ) => {
   const maximumStandardGames = state.maximumStandardGames
   if (new Set(players.map((player) => player.id)).size !== 4) return false
@@ -1374,7 +1532,11 @@ const hardCandidateAllowed = (
   } else if (guestCount > 0) {
     return false
   }
-  if (profile.hard.singleGuestPerMatch && guestCount > 1) return false
+  if (
+    profile.hard.singleGuestPerMatch &&
+    guestCount > 1 &&
+    !(allowGuestOverflow && guestCount === 2)
+  ) return false
   if (
     profile.hard.maxGroupMeetings !== null &&
     (state.groups.get(groupKey(players)) ?? 0) >=
@@ -1460,6 +1622,7 @@ const makeCandidate = (
       slot.kind === 'special',
       isWarmup,
       allowDanger,
+      slot.kind === 'special' && Boolean(slot.roamingGuestId),
     )
   ) {
     return null
@@ -1693,27 +1856,43 @@ const specialCandidates = (
   settings: MatchSettings,
   requiredIds: Set<string>,
 ) => {
-  const guest = activePlayers.find((player) => player.id === slot.guestId)
-  if (!guest || usedIds.has(guest.id)) return []
-  if ((state.availableAt.get(guest.id) ?? 0) > slot.start) return []
-  const guestAttendance = state.attendanceWindows.get(guest.id)
-  if (
-    guestAttendance &&
-    (slot.start < guestAttendance.start ||
-      slot.start + slot.duration > guestAttendance.end)
-  ) {
+  const fixedGuest = activePlayers.find((player) => player.id === slot.guestId)
+  const roamingGuest = slot.roamingGuestId
+    ? activePlayers.find((player) => player.id === slot.roamingGuestId)
+    : undefined
+  if (!fixedGuest || (slot.roamingGuestId && !roamingGuest)) return []
+  const guests = [fixedGuest, ...(roamingGuest ? [roamingGuest] : [])]
+  const guestIds = new Set(guests.map((guest) => guest.id))
+  if (guests.some((guest) => usedIds.has(guest.id))) return []
+  if (guests.some((guest) => (state.availableAt.get(guest.id) ?? 0) > slot.start)) {
     return []
   }
-  const guestTarget = plannedGuestGames(guest, activePlayers, settings)
-  if ((state.guestGames.get(guest.id) ?? 0) >= guestTarget) return []
+  if (guests.some((guest) => {
+    const attendance = state.attendanceWindows.get(guest.id)
+    return attendance && (
+      slot.start < attendance.start ||
+      slot.start + slot.duration > attendance.end
+    )
+  })) {
+    return []
+  }
+  if (guests.some((guest) =>
+    (state.guestGames.get(guest.id) ?? 0) >=
+      plannedGuestGames(guest, activePlayers, settings)
+  )) {
+    return []
+  }
 
-  if ((slot.plannedPlayerIds?.length ?? 0) === 3) {
-    const playersById = new Map(activePlayers.map((player) => [player.id, player]))
+  const regularSeatCount = 4 - guests.length
+  if ((slot.plannedPlayerIds?.length ?? 0) === regularSeatCount) {
+    const playersById = new Map(
+      activePlayers.map((player) => [player.id, player]),
+    )
     const plannedRegulars = slot.plannedPlayerIds
       ?.map((playerId) => playersById.get(playerId))
       .filter((player): player is Player => Boolean(player)) ?? []
     if (
-      plannedRegulars.length === 3 &&
+      plannedRegulars.length === regularSeatCount &&
       plannedRegulars.every(
         (player) =>
           !usedIds.has(player.id) &&
@@ -1723,7 +1902,7 @@ const specialCandidates = (
       )
     ) {
       const candidate = makeCandidate(
-        [guest, plannedRegulars[0], plannedRegulars[1], plannedRegulars[2]],
+        [...guests, ...plannedRegulars] as [Player, Player, Player, Player],
         state,
         slot,
         profile,
@@ -1739,7 +1918,7 @@ const specialCandidates = (
   const candidates = availablePlayers(
     activePlayers.filter(
       (player) =>
-        player.id !== guest.id &&
+        !guestIds.has(player.id) &&
         (
           !player.isGuest
             ? (player.specialMatchEligible ?? true) &&
@@ -1755,7 +1934,7 @@ const specialCandidates = (
     slot,
     usedIds,
   )
-  if (candidates.length < 3) return []
+  if (candidates.length < regularSeatCount) return []
 
   const ranked = [...candidates].sort((left, right) => {
     const firstGameDifference =
@@ -1787,34 +1966,30 @@ const specialCandidates = (
       .slice(0, 4),
   ]).slice(0, MAX_PLAYER_POOL)
   const groups: GroupCandidate[] = []
-  for (let a = 0; a < pool.length - 2; a += 1) {
-    for (let b = a + 1; b < pool.length - 1; b += 1) {
-      for (let c = b + 1; c < pool.length; c += 1) {
-        const players: [Player, Player, Player, Player] = [
-          guest,
-          pool[a],
-          pool[b],
-          pool[c],
-        ]
-        const regulars = players.filter((player) => !player.isGuest)
-        if (regulars.length === 0) continue
-        if (settings.specialLimitEnabled) {
-          const newIds = regulars.filter(
-            (player) => !state.specialParticipantIds.has(player.id),
-          )
-          if (state.specialParticipantIds.size + newIds.length > target) continue
-        }
-        const candidate = makeCandidate(
-          players,
-          state,
-          slot,
-          profile,
-          settings,
-          activePlayers,
-        )
-        if (candidate) groups.push(candidate)
-      }
+  for (const companions of combinations(pool, regularSeatCount)) {
+    const players = [...guests, ...companions] as [
+      Player,
+      Player,
+      Player,
+      Player,
+    ]
+    const regulars = players.filter((player) => !player.isGuest)
+    if (regulars.length === 0) continue
+    if (settings.specialLimitEnabled) {
+      const newIds = regulars.filter(
+        (player) => !state.specialParticipantIds.has(player.id),
+      )
+      if (state.specialParticipantIds.size + newIds.length > target) continue
     }
+    const candidate = makeCandidate(
+      players,
+      state,
+      slot,
+      profile,
+      settings,
+      activePlayers,
+    )
+    if (candidate) groups.push(candidate)
   }
   return limitCandidateFrontier(groups, requiredIds)
 }
@@ -1875,7 +2050,9 @@ const chooseBatch = (
     slots
       .slice(slotIndex + 1)
       .reduce(
-        (sum, slot) => sum + (slot.kind === 'general' ? 4 : 3),
+        (sum, slot) => sum + (
+          slot.kind === 'general' ? 4 : slot.roamingGuestId ? 2 : 3
+        ),
         0,
       )
 
@@ -2260,7 +2437,7 @@ const scheduleWarnings = (
       (sum, count) => sum + count,
       0,
     )
-    if (settings.specialLimitEnabled && achievedGames < plannedGames) {
+    if (achievedGames < plannedGames) {
       warnings.push(`스페셜 경기 목표 미달: ${achievedGames}/${plannedGames}경기`)
     }
     const unplayedGuests = activePlayers.filter(
