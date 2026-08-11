@@ -13,10 +13,12 @@ import { createPersonalScheduleImage } from './personalScheduleImage'
 
 type SharedScheduleFinderProps = {
   candidates: SharedScheduleCandidate[]
+  eventName: string
 }
 
 export const SharedScheduleFinder = ({
   candidates,
+  eventName,
 }: SharedScheduleFinderProps) => {
   const inputId = useId()
   const listId = useId()
@@ -76,6 +78,7 @@ export const SharedScheduleFinder = ({
       <div className="shared-schedule-heading">
         <div>
           <span>공유 대진표</span>
+          <strong className="shared-event-name">{eventName}</strong>
           <h2 id={`${inputId}-title`}>내 경기 찾기</h2>
         </div>
         <p>이름으로 찾고 화면을 캡처하세요.</p>

@@ -8274,7 +8274,10 @@ function App() {
 
         <section className="workspace">
           {isSharedMode ? (
-            <SharedScheduleFinder candidates={meetingSharedScheduleCandidates} />
+            <SharedScheduleFinder
+              candidates={meetingSharedScheduleCandidates}
+              eventName={normalizeEventName(generatedMeetingSettings.eventName)}
+            />
           ) : null}
           {hasScheduledActiveGuests ? (
             <section className="special-bar">
@@ -9652,7 +9655,10 @@ function App() {
 
           <section className="workspace tournament-workspace">
             {isSharedMode ? (
-              <SharedScheduleFinder candidates={tournamentSharedScheduleCandidates} />
+              <SharedScheduleFinder
+                candidates={tournamentSharedScheduleCandidates}
+                eventName={normalizeEventName(generatedMeetingSettings.eventName)}
+              />
             ) : null}
             <section className="tournament-summary-bar" id="tournament-progress">
               <div>

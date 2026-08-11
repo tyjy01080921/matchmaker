@@ -782,8 +782,8 @@ input:disabled {
   min-height: calc(100svh - 74px);
 }
 
-.shared-shell {
-  grid-template-columns: 1fr;
+.app-shell.shared-shell {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .app-footer {
@@ -2492,6 +2492,17 @@ textarea {
   font-size: 22px;
 }
 
+.shared-event-name {
+  display: block;
+  max-width: min(760px, 70vw);
+  margin-top: 3px;
+  color: var(--navy);
+  font-size: 16px;
+  font-weight: 950;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
 .shared-schedule-heading p {
   margin: 0;
   color: var(--muted);
@@ -2760,6 +2771,10 @@ textarea {
     position: static;
   }
 
+  .shared-app .header-actions {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
   .shared-schedule-finder {
     gap: 9px;
     margin-bottom: 12px;
@@ -2775,6 +2790,11 @@ textarea {
 
   .shared-schedule-heading h2 {
     font-size: 19px;
+  }
+
+  .shared-event-name {
+    max-width: 100%;
+    font-size: 15px;
   }
 
   .shared-schedule-search {
