@@ -574,7 +574,7 @@ describe('matchmaker condition simulation', () => {
     }
     expect(players).toHaveLength(57)
     expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
-    expect(summary.totalMatches).toBe(88)
+    expect(summary.totalMatches).toBe(90)
     expect(summary.games[1] - summary.games[0]).toBeLessThanOrEqual(1)
     expect(summary.maximumWait).toBeLessThanOrEqual(25)
     expect(summary.over25).toBe(0)
@@ -641,8 +641,8 @@ describe('matchmaker condition simulation', () => {
     const wait = analyzeScheduleWait(schedule, players, settings)
 
     expect(validateMeetingSchedule(schedule, players, settings)).toEqual([])
-    expect(matches).toHaveLength(88)
-    expect(matches.filter((match) => !match.isSpecial)).toHaveLength(80)
+    expect(matches).toHaveLength(90)
+    expect(matches.filter((match) => !match.isSpecial)).toHaveLength(82)
     expect(quality.individualSkillDangerMatches).toBe(0)
     expect(quality.individualSkillWarningMatches).toBeLessThanOrEqual(5)
     expect(quality.standardGameSpread).toBeLessThanOrEqual(1)

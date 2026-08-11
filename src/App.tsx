@@ -2561,9 +2561,8 @@ function App() {
     generatedMeetingSettings.startTime,
     generatedMeetingSettings.endTime,
   )
-  const scheduledBookingRoundCount = getBookingRoundCount(
-    generatedMeetingSettings.startTime,
-    generatedMeetingSettings.endTime,
+  const scheduledBookingRoundCount = Math.floor(
+    scheduledBookingMinutes / generatedMeetingSettings.normalGameMinutes,
   )
   const matchStartOffset = (match: Match) =>
     match.startOffsetMinutes ?? (match.round - 1) * GAME_SLOT_MINUTES
@@ -2625,14 +2624,16 @@ function App() {
     specialMatchesPerRound > 0
       ? Math.ceil(specialMinimumMatchCount / specialMatchesPerRound)
       : 0
-  const specialMinimumMinutes = specialMinimumRoundCount * GAME_SLOT_MINUTES
+  const specialMinimumMinutes =
+    specialMinimumRoundCount * generatedMeetingSettings.normalGameMinutes
   const specialLimitRoundCount = generatedMeetingSettings.specialLimitEnabled
     ? generatedMeetingSettings.specialScheduleMode === 'continuous' &&
       generatedMeetingSettings.specialTimeLimitEnabled
       ? Math.min(
           scheduledBookingRoundCount,
           Math.floor(
-            generatedMeetingSettings.specialTimeLimitMinutes / GAME_SLOT_MINUTES,
+            generatedMeetingSettings.specialTimeLimitMinutes /
+              generatedMeetingSettings.normalGameMinutes,
           ),
         )
       : scheduledBookingRoundCount
@@ -3086,9 +3087,7 @@ function App() {
     const currentWindow = resolveMeetingAttendanceWindow(player, settings)
     const nextStart = field === 'arrivalOffsetMinutes' ? offset : currentWindow.start
     const nextEnd = field === 'departureOffsetMinutes' ? offset : currentWindow.end
-    const minimumDuration = player.isGuest
-      ? GAME_SLOT_MINUTES
-      : settings.normalGameMinutes
+    const minimumDuration = settings.normalGameMinutes
     if (nextEnd - nextStart < minimumDuration) {
       setNotice(`참석 시간은 최소 ${minimumDuration}분이어야 합니다.`)
       return
@@ -7569,9 +7568,7 @@ function App() {
                         player,
                         settings,
                       )
-                      const attendanceMinimumMinutes = player.isGuest
-                        ? GAME_SLOT_MINUTES
-                        : settings.normalGameMinutes
+                      const attendanceMinimumMinutes = settings.normalGameMinutes
                       const attendanceWindowInvalid =
                         attendanceWindow.duration < attendanceMinimumMinutes
                       const attendanceEditorOpen = Boolean(

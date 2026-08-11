@@ -112,10 +112,11 @@ describe('meeting V2 rules', () => {
 })
 
 describe('meeting V2 slot planning', () => {
-  it('plans 12-minute general games around eight 15-minute special games without waste', () => {
+  it('uses the configured 12-minute duration for general and special slots without waste', () => {
     const slots = planMeetingSlotsV2(makePlayers(56, 1), largeSettings)
     expect(slots.filter((slot) => slot.kind === 'special')).toHaveLength(8)
-    expect(slots.filter((slot) => slot.kind === 'general')).toHaveLength(80)
+    expect(slots.filter((slot) => slot.kind === 'general')).toHaveLength(82)
+    expect(slots.every((slot) => slot.duration === 12)).toBe(true)
 
     for (let court = 1; court <= largeSettings.courtCount; court += 1) {
       const courtSlots = slots
@@ -494,14 +495,14 @@ describe('meeting V2 generation', () => {
     expect(metrics.successIssues).toEqual([])
   })
 
-  it('fills the mixed-duration large schedule and reaches the special target', () => {
+  it('fills the unified-duration large schedule and reaches the special target', () => {
     const players = makePlayers(56, 1)
     const schedule = generateMeetingScheduleV2(players, largeSettings)
     const metrics = analyzeMeetingScheduleV2(schedule, players, largeSettings)
     const matches = schedule.rounds.flatMap((round) => round.matches)
 
     expect(metrics.structuralIssues).toEqual([])
-    expect(matches).toHaveLength(88)
+    expect(matches).toHaveLength(90)
     expect(matches.filter((match) => match.isSpecial)).toHaveLength(8)
     expect(schedule.specialCompletedIds).toHaveLength(24)
     expect(metrics.zeroGameStandardParticipants).toBe(0)
@@ -582,7 +583,7 @@ describe('meeting V2 generation', () => {
     expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(25)
   }, 20000)
 
-  it('uses the 15-minute special match for every available unplayed participant', () => {
+  it('uses each configured-duration special match for available unplayed participants', () => {
     let regularIndex = 0
     const players = makePlayers(30, 1).map((player) => {
       if (player.isGuest) return player
@@ -624,69 +625,71 @@ describe('meeting V2 generation', () => {
     const schedule = generateMeetingScheduleV2(players, settings)
     const matches = schedule.rounds.flatMap((round) => round.matches)
     const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
-    const firstFifteenMinuteSpecial = matches.find(
+    const firstFollowupSpecial = matches.find(
       (match) =>
         match.isSpecial &&
-        match.startOffsetMinutes === 15,
+        match.startOffsetMinutes === settings.normalGameMinutes,
     )
-    const playedBeforeFifteen = new Set(
+    const playedBeforeFollowup = new Set(
       matches
-        .filter((match) => (match.startOffsetMinutes ?? 0) < 15)
+        .filter(
+          (match) =>
+            (match.startOffsetMinutes ?? 0) < settings.normalGameMinutes,
+        )
         .flatMap((match) => [...match.teamA, ...match.teamB])
         .filter((player) => !player.isGuest)
         .map((player) => player.id),
     )
-    const unplayedBeforeFifteen = players.filter(
+    const unplayedBeforeFollowup = players.filter(
       (player) =>
         !player.isGuest &&
-        !playedBeforeFifteen.has(player.id),
+        !playedBeforeFollowup.has(player.id),
     )
     const specialRegularIds = new Set(
-      firstFifteenMinuteSpecial
-        ? [...firstFifteenMinuteSpecial.teamA, ...firstFifteenMinuteSpecial.teamB]
+      firstFollowupSpecial
+        ? [...firstFollowupSpecial.teamA, ...firstFollowupSpecial.teamB]
             .filter((player) => !player.isGuest)
             .map((player) => player.id)
         : [],
     )
 
-    expect(matches).toHaveLength(58)
+    expect(matches).toHaveLength(60)
     expect(matches.filter((match) => match.isSpecial)).toHaveLength(8)
     expect(schedule.specialCompletedIds).toHaveLength(24)
-    expect(firstFifteenMinuteSpecial).toBeDefined()
-    expect(unplayedBeforeFifteen.length).toBeGreaterThan(0)
-    expect(unplayedBeforeFifteen.length).toBeLessThanOrEqual(3)
+    expect(firstFollowupSpecial).toBeDefined()
+    expect(unplayedBeforeFollowup.length).toBeGreaterThan(0)
+    expect(specialRegularIds.size).toBe(3)
     expect(
-      unplayedBeforeFifteen.every((player) =>
-        specialRegularIds.has(player.id),
+      [...specialRegularIds].every((playerId) =>
+        unplayedBeforeFollowup.some((player) => player.id === playerId),
       ),
     ).toBe(true)
     expect(metrics.structuralIssues).toEqual([])
     expect(metrics.successIssues).toEqual([])
-    expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(15)
+    expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(
+      settings.normalGameMinutes,
+    )
     expect(metrics.maximumBetweenWaitMinutes).toBeLessThanOrEqual(25)
-    expect(metrics.maximumFinalIdleMinutes).toBeLessThanOrEqual(25)
     expect(metrics.participantsOverWaitLimit).toBe(0)
     expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
     expect(metrics.maximumGroupMeetings).toBeLessThanOrEqual(2)
   }, 20000)
 
   it('fills the remaining special seat with a previously played participant', () => {
-    const players = makePlayers(29, 1)
+    const players = makePlayers(5, 1)
     const settings: MatchSettings = {
       ...defaultSettings,
-      courtCount: 4,
+      courtCount: 1,
       startTime: '18:00',
       endTime: '21:00',
       normalGameMinutes: 12,
       targetRoundCount: 12,
       pacingRoundCount: 12,
       roundCountLocked: true,
-      specialLimitEnabled: true,
-      specialGameLimitEnabled: true,
-      specialGameLimit: 8,
-      specialParticipantTarget: 24,
+      specialLimitEnabled: false,
+      specialScheduleMode: 'continuous',
       specialTimeLimitEnabled: true,
-      specialTimeLimitMinutes: 120,
+      specialTimeLimitMinutes: 24,
       conditionOptions: {
         ...defaultMatchConditionOptions,
         strictSkillLimit: false,
@@ -694,46 +697,50 @@ describe('meeting V2 generation', () => {
     }
     const schedule = generateMeetingScheduleV2(players, settings)
     const matches = schedule.rounds.flatMap((round) => round.matches)
-    const secondSpecial = matches.find(
+    const firstFollowupSpecial = matches.find(
       (match) =>
         match.isSpecial &&
-        match.startOffsetMinutes === 15,
+        match.startOffsetMinutes === settings.normalGameMinutes,
     )
-    const playedBeforeFifteen = new Set(
+    const playedBeforeFollowup = new Set(
       matches
-        .filter((match) => (match.startOffsetMinutes ?? 0) < 15)
+        .filter(
+          (match) =>
+            (match.startOffsetMinutes ?? 0) < settings.normalGameMinutes,
+        )
         .flatMap((match) => [...match.teamA, ...match.teamB])
         .filter((player) => !player.isGuest)
         .map((player) => player.id),
     )
-    const unplayedBeforeFifteen = players.filter(
+    const unplayedBeforeFollowup = players.filter(
       (player) =>
         !player.isGuest &&
-        !playedBeforeFifteen.has(player.id),
+        !playedBeforeFollowup.has(player.id),
     )
-    const secondSpecialRegulars = secondSpecial
-      ? [...secondSpecial.teamA, ...secondSpecial.teamB].filter(
+    const followupSpecialRegulars = firstFollowupSpecial
+      ? [...firstFollowupSpecial.teamA, ...firstFollowupSpecial.teamB].filter(
           (player) => !player.isGuest,
         )
       : []
     const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
 
-    expect(unplayedBeforeFifteen).toHaveLength(2)
+    expect(unplayedBeforeFollowup).toHaveLength(2)
     expect(
-      unplayedBeforeFifteen.every((player) =>
-        secondSpecialRegulars.some((candidate) => candidate.id === player.id),
+      unplayedBeforeFollowup.every((player) =>
+        followupSpecialRegulars.some((candidate) => candidate.id === player.id),
       ),
     ).toBe(true)
     expect(
-      secondSpecialRegulars.filter((player) =>
-        playedBeforeFifteen.has(player.id),
+      followupSpecialRegulars.filter((player) =>
+        playedBeforeFollowup.has(player.id),
       ),
     ).toHaveLength(1)
-    expect(matches.filter((match) => match.isSpecial)).toHaveLength(8)
-    expect(schedule.specialCompletedIds).toHaveLength(24)
-    expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(15)
+    expect(matches.filter((match) => match.isSpecial)).toHaveLength(2)
+    expect(schedule.specialCompletedIds).toHaveLength(5)
+    expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(
+      settings.normalGameMinutes,
+    )
     expect(metrics.maximumBetweenWaitMinutes).toBeLessThanOrEqual(25)
-    expect(metrics.maximumFinalIdleMinutes).toBeLessThanOrEqual(25)
     expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
     expect(metrics.maximumGroupMeetings).toBeLessThanOrEqual(2)
     expect(metrics.structuralIssues).toEqual([])

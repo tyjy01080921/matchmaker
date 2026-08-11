@@ -41,7 +41,7 @@ import {
   preferredPartnerBonusStage,
   preferredPartnerStrength,
 } from './preferredPartners'
-import { getBookingDurationMinutes, getBookingRoundCount } from './scheduleTime'
+import { getBookingDurationMinutes } from './scheduleTime'
 import { generateMeetingScheduleV2WithWaitResolution } from './matchmaker/engine'
 import {
   findMeetingConsecutiveGameLimitViolations,
@@ -444,7 +444,7 @@ export const analyzeScheduleWait = (
   ).length
   const guestAppearancesPerWindow = Math.max(
     1,
-    Math.ceil(rotationWindowMinutes / GAME_SLOT_MINUTES),
+    Math.ceil(rotationWindowMinutes / normalGameMinutes),
   )
   const repeatedGuestSlots =
     repeatingGuestCount * Math.max(0, guestAppearancesPerWindow - 1)
@@ -1488,7 +1488,12 @@ const specialLimitGameTarget = (settings: MatchSettings) => {
     settings.specialTimeLimitEnabled
   ) {
     limits.push(
-      Math.max(1, Math.floor(settings.specialTimeLimitMinutes / GAME_SLOT_MINUTES)),
+      Math.max(
+        1,
+        Math.floor(
+          settings.specialTimeLimitMinutes / settings.normalGameMinutes,
+        ),
+      ),
     )
   }
   return limits.length > 0 ? Math.min(...limits) : Number.POSITIVE_INFINITY
@@ -1503,7 +1508,13 @@ const specialPlannedGameTarget = (
     const limitedTarget = specialLimitGameTarget(settings)
     return Number.isFinite(limitedTarget)
       ? limitedTarget
-      : getBookingRoundCount(settings.startTime, settings.endTime)
+      : Math.max(
+          1,
+          Math.floor(
+            getBookingDurationMinutes(settings.startTime, settings.endTime) /
+              settings.normalGameMinutes,
+          ),
+        )
   }
 
   const eligibleCount = activePlayers.filter(
@@ -1606,7 +1617,7 @@ const guestWithinSpecialLimit = (
   if (
     usesContinuousSpecialWindow(settings) &&
     settings.specialTimeLimitEnabled &&
-    history.currentStartOffset + GAME_SLOT_MINUTES >
+    history.currentStartOffset + settings.normalGameMinutes >
       settings.specialTimeLimitMinutes
   ) {
     return false
@@ -1629,17 +1640,17 @@ const guestWithinSpecialLimit = (
       ? Math.min(scheduledBookingMinutes, settings.specialTimeLimitMinutes)
       : scheduledBookingMinutes
     const targetGames = Math.min(
-      Math.max(1, Math.floor(allocationMinutes / GAME_SLOT_MINUTES)),
+      Math.max(1, Math.floor(allocationMinutes / settings.normalGameMinutes)),
       Math.max(1, Math.floor(settings.specialGameLimit)),
     )
     const nextGameNumber = completedGames + 1
     const idleMinutes = Math.max(
       0,
-      allocationMinutes - targetGames * GAME_SLOT_MINUTES,
+      allocationMinutes - targetGames * settings.normalGameMinutes,
     )
     const plannedStart = Math.round(
       nextGameNumber * idleMinutes / (targetGames + 1) +
-        (nextGameNumber - 1) * GAME_SLOT_MINUTES,
+        (nextGameNumber - 1) * settings.normalGameMinutes,
     )
     if (history.currentStartOffset < plannedStart) return false
   }
@@ -2861,7 +2872,7 @@ const hasWaitCapacityPressure = (
   const rotationWindowMinutes = rotationRounds * settings.normalGameMinutes
   const guestAppearancesPerWindow = Math.max(
     1,
-    Math.ceil(rotationWindowMinutes / GAME_SLOT_MINUTES),
+    Math.ceil(rotationWindowMinutes / settings.normalGameMinutes),
   )
   const activeGuestCount = activePlayers.filter((player) => player.isGuest).length
   const participantCapacity = Math.max(
@@ -5283,14 +5294,6 @@ const generateSchedulePass = (
   const normalGameMinutes = [10, 12, 15].includes(settings.normalGameMinutes)
     ? settings.normalGameMinutes
     : GAME_SLOT_MINUTES
-  const greatestCommonDivisor = (left: number, right: number) => {
-    let a = Math.abs(Math.floor(left))
-    let b = Math.abs(Math.floor(right))
-    while (b > 0) [a, b] = [b, a % b]
-    return Math.max(1, a)
-  }
-  const specialGamesPerCourt = normalGameMinutes /
-    greatestCommonDivisor(normalGameMinutes, GAME_SLOT_MINUTES)
   const plannedSpecialMatchCount = specialMatchesEnabled
     ? activeGuests.reduce(
         (sum, guest) => sum + specialPlannedGameTarget(
@@ -5303,7 +5306,7 @@ const generateSchedulePass = (
     : 0
   const specialCourtCount = Math.min(
     settings.courtCount,
-    Math.max(1, Math.ceil(plannedSpecialMatchCount / specialGamesPerCourt)),
+    Math.max(1, plannedSpecialMatchCount),
   )
   const specialCourtIds = new Set(
     Array.from({ length: specialCourtCount }, (_, index) => index + 1),
@@ -5317,7 +5320,7 @@ const generateSchedulePass = (
     targetRoundCount,
     requiredCompletionRoundLimit,
     settings.courtCount *
-      Math.ceil(bookingMinutes / Math.min(normalGameMinutes, GAME_SLOT_MINUTES)) +
+      Math.ceil(bookingMinutes / normalGameMinutes) +
       (conditions.strictSkillLimit ? bookingMinutes : 0),
   )
   let stalledRounds = 0
@@ -5338,8 +5341,8 @@ const generateSchedulePass = (
     const matches: Match[] = []
     const completedBeforeRound = history.specialCompleted.size
     const allowExtraSpecial =
-      settings.specialLimitEnabled || startOffset < pacingRoundCount * GAME_SLOT_MINUTES
-    const timeRoundNumber = Math.floor(startOffset / GAME_SLOT_MINUTES) + 1
+      settings.specialLimitEnabled || startOffset < pacingRoundCount * normalGameMinutes
+    const timeRoundNumber = Math.floor(startOffset / normalGameMinutes) + 1
     const pacing = {
       roundNumber: timeRoundNumber,
       targetRoundCount: pacingRoundCount,
@@ -5351,7 +5354,7 @@ const generateSchedulePass = (
       for (const court of courts) {
         if (!specialCourtIds.has(court)) continue
         if (matches.some((match) => match.court === court)) continue
-        if (startOffset + GAME_SLOT_MINUTES > schedulingMinutes) continue
+        if (startOffset + normalGameMinutes > schedulingMinutes) continue
         const group = pickSpecialGroup(
           activePlayers,
           usedIds,
@@ -5375,7 +5378,7 @@ const generateSchedulePass = (
           true,
         )
         match.startOffsetMinutes = startOffset
-        match.durationMinutes = GAME_SLOT_MINUTES
+        match.durationMinutes = normalGameMinutes
         matches.push(match)
         for (const player of group) usedIds.add(player.id)
         updateHistoryForMatch(history, match)

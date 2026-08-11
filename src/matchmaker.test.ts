@@ -1290,35 +1290,38 @@ describe('generateSchedule', () => {
       .every((match) => match.durationMinutes === minutes)).toBe(true)
   })
 
-  it('keeps special matches at 15 minutes and prevents overlapping assignments', () => {
-    const guest = makeTestPlayer('timed-guest', '스페셜', 'none', false, true)
-    const regulars = Array.from({ length: 16 }, (_, index) =>
-      makeTestPlayer(`timed-${index}`, 'B'),
-    )
-    const schedule = generateSchedule([guest, ...regulars], {
-      ...defaultSettings,
-      courtCount: 3,
-      normalGameMinutes: 10,
-    })
-    const matches = schedule.rounds.flatMap((round) => round.matches)
+  it.each([10, 12, 15] as const)(
+    'uses the configured %d-minute duration for special matches without overlapping assignments',
+    (minutes) => {
+      const guest = makeTestPlayer('timed-guest', '스페셜', 'none', false, true)
+      const regulars = Array.from({ length: 16 }, (_, index) =>
+        makeTestPlayer(`timed-${index}`, 'B'),
+      )
+      const schedule = generateSchedule([guest, ...regulars], {
+        ...defaultSettings,
+        courtCount: 3,
+        normalGameMinutes: minutes,
+      })
+      const matches = schedule.rounds.flatMap((round) => round.matches)
 
-    expect(matches.filter((match) => match.isSpecial)
-      .every((match) => match.durationMinutes === 15)).toBe(true)
-    for (let left = 0; left < matches.length; left += 1) {
-      for (let right = left + 1; right < matches.length; right += 1) {
-        const a = matches[left]
-        const b = matches[right]
-        const sharesPlayer = [...a.teamA, ...a.teamB].some((player) =>
-          [...b.teamA, ...b.teamB].some((other) => other.id === player.id),
-        )
-        if (!sharesPlayer) continue
-        const aStart = a.startOffsetMinutes ?? 0
-        const bStart = b.startOffsetMinutes ?? 0
-        expect(aStart + (a.durationMinutes ?? 15) <= bStart ||
-          bStart + (b.durationMinutes ?? 15) <= aStart).toBe(true)
+      expect(matches.filter((match) => match.isSpecial)
+        .every((match) => match.durationMinutes === minutes)).toBe(true)
+      for (let left = 0; left < matches.length; left += 1) {
+        for (let right = left + 1; right < matches.length; right += 1) {
+          const a = matches[left]
+          const b = matches[right]
+          const sharesPlayer = [...a.teamA, ...a.teamB].some((player) =>
+            [...b.teamA, ...b.teamB].some((other) => other.id === player.id),
+          )
+          if (!sharesPlayer) continue
+          const aStart = a.startOffsetMinutes ?? 0
+          const bStart = b.startOffsetMinutes ?? 0
+          expect(aStart + (a.durationMinutes ?? minutes) <= bStart ||
+            bStart + (b.durationMinutes ?? minutes) <= aStart).toBe(true)
+        }
       }
-    }
-  })
+    },
+  )
   it('creates court-limited doubles matches without round duplicates', () => {
     const schedule = generateSchedule(samplePlayers, defaultSettings)
 

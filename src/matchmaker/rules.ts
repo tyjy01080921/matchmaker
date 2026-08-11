@@ -15,7 +15,6 @@ export const MEETING_SKILL_DANGER_GAP = 40
 export const MEETING_STRICT_CAUTION_LIMIT = 5
 export const MEETING_TIGHT_GAME_MINIMUM = 2
 export const MEETING_TIGHT_GAME_TARGET = 3
-export const SPECIAL_GAME_MINUTES = 15
 
 export type MeetingHardRules = {
   singleGuestPerMatch: boolean
@@ -187,7 +186,10 @@ export const plannedGuestGames = (
     settings.specialTimeLimitEnabled
       ? Math.min(schedulingMinutes, settings.specialTimeLimitMinutes)
       : schedulingMinutes
-  const timeCapacity = Math.max(0, Math.floor(timeLimit / SPECIAL_GAME_MINUTES))
+  const timeCapacity = Math.max(
+    0,
+    Math.floor(timeLimit / settings.normalGameMinutes),
+  )
 
   if (settings.specialLimitEnabled) {
     const configuredLimit = settings.specialGameLimitEnabled
@@ -251,7 +253,7 @@ export const preflightMeetingGeneration = (
     })
   }
   const schedulingMinutes = meetingSchedulingMinutes(settings)
-  if (schedulingMinutes < Math.min(settings.normalGameMinutes, SPECIAL_GAME_MINUTES)) {
+  if (schedulingMinutes < settings.normalGameMinutes) {
     issues.push({
       code: 'no-playable-slot',
       message: '운영 시간 안에 경기를 배치할 수 없습니다.',
@@ -261,7 +263,7 @@ export const preflightMeetingGeneration = (
     const issue = attendanceWindowIssue(
       player,
       settings,
-      player.isGuest ? SPECIAL_GAME_MINUTES : settings.normalGameMinutes,
+      settings.normalGameMinutes,
     )
     if (issue) {
       issues.push({ code: 'invalid-attendance-window', message: issue })
@@ -280,7 +282,7 @@ export const preflightMeetingGeneration = (
 
   const totalCourtMinutes = Math.max(0, settings.courtCount * schedulingMinutes)
   const maximumPlayerAppearances = Math.floor(
-    totalCourtMinutes / Math.min(settings.normalGameMinutes, SPECIAL_GAME_MINUTES),
+    totalCourtMinutes / settings.normalGameMinutes,
   ) * 4
   if (activeRegulars.length > maximumPlayerAppearances) {
     issues.push({
@@ -295,7 +297,8 @@ export const preflightMeetingGeneration = (
       0,
     )
     const maximumSpecialGames =
-      settings.courtCount * Math.floor(schedulingMinutes / SPECIAL_GAME_MINUTES)
+      settings.courtCount *
+        Math.floor(schedulingMinutes / settings.normalGameMinutes)
     if (plannedSpecialGames > maximumSpecialGames) {
       issues.push({
         code: 'insufficient-special-capacity',

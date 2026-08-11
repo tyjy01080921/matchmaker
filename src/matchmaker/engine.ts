@@ -17,7 +17,6 @@ import {
   MEETING_SKILL_CAUTION_GAP,
   MEETING_SKILL_DANGER_GAP,
   MEETING_TIGHT_GAME_MINIMUM,
-  SPECIAL_GAME_MINUTES,
   meetingSchedulingMinutes,
   plannedGuestGames,
   preflightMeetingGeneration,
@@ -129,13 +128,6 @@ const MAX_GROUP_CANDIDATES = 8
 const MAX_PLAYER_POOL = 12
 const MAX_BATCH_BEAM = 4
 
-const greatestCommonDivisor = (left: number, right: number) => {
-  let a = Math.abs(Math.floor(left))
-  let b = Math.abs(Math.floor(right))
-  while (b > 0) [a, b] = [b, a % b]
-  return Math.max(1, a)
-}
-
 const pairKey = (left: string, right: string) =>
   [left, right].sort().join('__')
 
@@ -183,9 +175,9 @@ const distributeSpecialChunks = (
   activePlayers: Player[],
   settings: MatchSettings,
   specialCourtCount: number,
-  gamesPerChunk: number,
   specialWindowMinutes: number,
 ): SpecialReservation[] => {
+  const gameMinutes = settings.normalGameMinutes
   const guests = activePlayers.filter((player) => player.isGuest)
   const requests = guests.flatMap((guest) => {
     const attendance = resolveMeetingAttendanceWindow(guest, settings)
@@ -194,7 +186,7 @@ const distributeSpecialChunks = (
       plannedGuestGames(guest, activePlayers, settings),
       Math.max(
         0,
-        Math.floor((guestWindowEnd - attendance.start) / SPECIAL_GAME_MINUTES),
+        Math.floor((guestWindowEnd - attendance.start) / gameMinutes),
       ),
     )
     return Array.from({ length: target }, (_, index) => ({
@@ -204,7 +196,7 @@ const distributeSpecialChunks = (
         ? attendance.start
         : Math.round(
             attendance.start +
-            (guestWindowEnd - attendance.start - SPECIAL_GAME_MINUTES) *
+            (guestWindowEnd - attendance.start - gameMinutes) *
               index /
               (target - 1),
           ),
@@ -219,16 +211,12 @@ const distributeSpecialChunks = (
 
   const courtAvailableAt = Array.from({ length: specialCourtCount }, () => 0)
   const courtAssignedCount = Array.from({ length: specialCourtCount }, () => 0)
-  const courtQuotas = Array.from({ length: specialCourtCount }, (_, index) => {
-    if (settings.normalGameMinutes === SPECIAL_GAME_MINUTES) {
-      return Math.floor(requests.length / specialCourtCount) +
-        Number(index < requests.length % specialCourtCount)
-    }
-    const fullCourtCount = Math.floor(requests.length / gamesPerChunk)
-    if (index < fullCourtCount) return gamesPerChunk
-    if (index === fullCourtCount) return requests.length % gamesPerChunk
-    return 0
-  })
+  const courtQuotas = Array.from(
+    { length: specialCourtCount },
+    (_, index) =>
+      Math.floor(requests.length / specialCourtCount) +
+      Number(index < requests.length % specialCourtCount),
+  )
   const guestAvailableAt = new Map(
     guests.map((guest) => [
       guest.id,
@@ -266,8 +254,8 @@ const distributeSpecialChunks = (
         const remainingOnCourt =
           courtQuotas[courtIndex] - courtAssignedCount[courtIndex] - 1
         if (
-          start + SPECIAL_GAME_MINUTES > request.windowEnd ||
-          start + SPECIAL_GAME_MINUTES * (remainingOnCourt + 1) >
+          start + gameMinutes > request.windowEnd ||
+          start + gameMinutes * (remainingOnCourt + 1) >
             specialWindowMinutes
         ) {
           return []
@@ -292,11 +280,11 @@ const distributeSpecialChunks = (
       id: `special-c${courtChoice.courtIndex + 1}-s${courtChoice.start}-${request.guest.id}`,
       court: courtChoice.courtIndex + 1,
       start: courtChoice.start,
-      duration: SPECIAL_GAME_MINUTES,
+      duration: gameMinutes,
       kind: 'special',
       guestId: request.guest.id,
     })
-    const endsAt = courtChoice.start + SPECIAL_GAME_MINUTES
+    const endsAt = courtChoice.start + gameMinutes
     courtAvailableAt[courtChoice.courtIndex] = endsAt
     courtAssignedCount[courtChoice.courtIndex] += 1
     guestAvailableAt.set(request.guest.id, endsAt)
@@ -319,14 +307,8 @@ export const planMeetingSlotsV2 = (
         0,
       )
     : 0
-  const gamesPerChunk =
-    settings.normalGameMinutes /
-    greatestCommonDivisor(settings.normalGameMinutes, SPECIAL_GAME_MINUTES)
   const specialCourtCount = totalSpecialGames > 0
-    ? Math.min(
-        settings.courtCount,
-        Math.max(1, Math.ceil(totalSpecialGames / gamesPerChunk)),
-      )
+    ? Math.min(settings.courtCount, totalSpecialGames)
     : 0
   const specialWindowMinutes =
     settings.specialScheduleMode !== 'spread' &&
@@ -337,7 +319,6 @@ export const planMeetingSlotsV2 = (
     activePlayers,
     settings,
     specialCourtCount,
-    gamesPerChunk,
     specialWindowMinutes,
   )
   const slots: PlannedMeetingSlot[] = [...reservations]
@@ -408,7 +389,7 @@ const initializeState = (
           player,
           settings,
           start,
-          SPECIAL_GAME_MINUTES,
+          settings.normalGameMinutes,
         ),
       )
     const generalStarts = generalSlots
@@ -423,7 +404,7 @@ const initializeState = (
           !plannedStarts.some(
             (start) =>
               start < slot.start + slot.duration &&
-              slot.start < start + SPECIAL_GAME_MINUTES,
+              slot.start < start + settings.normalGameMinutes,
           ),
       )
       .map((slot) => slot.start)
@@ -919,7 +900,7 @@ const availablePlayers = (
   return !(state.plannedSpecialStarts.get(player.id) ?? []).some(
     (start) =>
       start < slot.start + slot.duration &&
-      slot.start < start + SPECIAL_GAME_MINUTES,
+      slot.start < start + slot.duration,
   )
 })
 
