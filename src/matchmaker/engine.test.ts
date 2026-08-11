@@ -106,6 +106,7 @@ describe('meeting V2 rules', () => {
       requireEveryStandardPlayer: true,
       maxStandardGameSpread: 1,
       maxWaitMinutes: 25,
+      finalIdleLimitMinutes: 30,
     })
     expect(profile.priorityOrder.slice(0, 3)).toEqual([
       'games',
@@ -259,6 +260,38 @@ describe('meeting V2 generation', () => {
     expect(Math.min(...regularCounts)).toBe(7)
     expect(Math.max(...regularCounts)).toBeLessThanOrEqual(8)
   }, 20000)
+
+  it('rejects a 26 regular and 2 special plan that exceeds final idle policy', () => {
+    const players = makePlayers(26, 2)
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 3,
+      courtAssignmentMode: 'fixed',
+      startTime: '18:00',
+      endTime: '21:00',
+      normalGameMinutes: 12,
+      targetRoundCount: 15,
+      pacingRoundCount: 15,
+      roundCountLocked: true,
+      singleGuestPerMatch: true,
+      specialLimitEnabled: false,
+    }
+
+    const result = generateMeetingScheduleV2WithWaitResolution(
+      players,
+      settings,
+      3,
+    )
+    const metrics = analyzeMeetingScheduleV2(result.schedule, players, settings)
+
+    expect(metrics.maximumFinalIdleMinutes).toBeGreaterThanOrEqual(30)
+    expect(result.waitLimitFailure).not.toBeNull()
+    expect(
+      result.waitLimitFailure?.participantViolations.some(
+        (violation) => violation.phase === 'final',
+      ),
+    ).toBe(true)
+  }, 30000)
 
   it.each([
     { regularCount: 20, courtCount: 3 },
@@ -602,7 +635,7 @@ describe('meeting V2 generation', () => {
     )).toBe(true)
   })
 
-  it('keeps final idle as information instead of an operational failure', () => {
+  it('treats 30 minutes or more after the final match as a failure', () => {
     const players = makeClubPlayers(8)
     const settings: MatchSettings = {
       ...defaultSettings,
@@ -619,8 +652,58 @@ describe('meeting V2 generation', () => {
 
     expect(metrics.maximumFinalIdleMinutes).toBeGreaterThan(25)
     expect(metrics.maximumWaitMinutes).toBe(0)
-    expect(metrics.participantsOverWaitLimit).toBe(0)
-    expect(metrics.successIssues).toEqual([])
+    expect(metrics.participantsOverWaitLimit).toBe(8)
+    expect(metrics.participantViolations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ phase: 'final' }),
+      ]),
+    )
+    expect(metrics.successIssues).toEqual([
+      `마지막 경기 후 ${metrics.maximumFinalIdleMinutes}분`,
+    ])
+  })
+
+  it('allows 29 final idle minutes and rejects 30 minutes in V2 validation', () => {
+    const players = makeClubPlayers(4)
+    const rejectedSettings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 1,
+      startTime: '18:00',
+      endTime: '18:45',
+      normalGameMinutes: 15,
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
+      roundCountLocked: true,
+      conditionOptions: {
+        ...defaultMatchConditionOptions,
+        specialMatchCreation: false,
+      },
+    }
+    const schedule = generateMeetingScheduleV2(players, rejectedSettings)
+    const allowed = analyzeMeetingScheduleV2(schedule, players, {
+      ...rejectedSettings,
+      endTime: '18:44',
+    })
+    const rejected = analyzeMeetingScheduleV2(
+      schedule,
+      players,
+      rejectedSettings,
+    )
+
+    expect(allowed.maximumFinalIdleMinutes).toBe(29)
+    expect(allowed.participantsOverWaitLimit).toBe(0)
+    expect(allowed.successIssues).toEqual([])
+    expect(rejected.maximumFinalIdleMinutes).toBe(30)
+    expect(rejected.participantsOverWaitLimit).toBe(4)
+    expect(rejected.participantViolations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          waitMinutes: 30,
+          phase: 'final',
+        }),
+      ]),
+    )
+    expect(rejected.successIssues).toEqual(['마지막 경기 후 30분'])
   })
 
   it('fills the unified-duration large schedule and reaches the special target', () => {
@@ -875,7 +958,10 @@ describe('meeting V2 generation', () => {
     expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
     expect(metrics.maximumGroupMeetings).toBeLessThanOrEqual(2)
     expect(metrics.structuralIssues).toEqual([])
-    expect(metrics.successIssues).toEqual([])
+    expect(metrics.maximumFinalIdleMinutes).toBeGreaterThanOrEqual(30)
+    expect(metrics.successIssues).toContain(
+      `마지막 경기 후 ${metrics.maximumFinalIdleMinutes}분`,
+    )
   }, 20000)
 
   it('stops at two identical four-player meetings when repetition protection is on', () => {

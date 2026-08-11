@@ -9,6 +9,7 @@ import type {
 } from '../types'
 import {
   allowsFixedCourtGuestOverflow,
+  MEETING_FINAL_IDLE_LIMIT_MINUTES,
   MEETING_MAX_GROUP_MEETINGS,
   MEETING_MAX_STANDARD_GAME_SPREAD,
   MEETING_MAX_WAIT_MINUTES,
@@ -246,13 +247,31 @@ const waitDetails = (
       nextMatchId: playerMatches[index].id,
     })
   }
-  const finalIdleMinutes = Math.max(
-    0,
-    analysisEnd - windows[windows.length - 1].end,
-  )
-  const maximumGap = [...operationalGaps].sort(
+  const finalGap: (typeof operationalGaps)[number] = {
+    waitMinutes: Math.max(
+      0,
+      analysisEnd - windows[windows.length - 1].end,
+    ),
+    phase: 'final',
+    previousMatchId: playerMatches[playerMatches.length - 1].id,
+  }
+  const maximumOperationalGap = [...operationalGaps].sort(
     (left, right) => right.waitMinutes - left.waitMinutes,
   )[0]
+  const operationalViolation =
+    maximumOperationalGap.waitMinutes > MEETING_MAX_WAIT_MINUTES
+      ? maximumOperationalGap
+      : null
+  const finalViolation =
+    finalGap.waitMinutes >= MEETING_FINAL_IDLE_LIMIT_MINUTES
+      ? finalGap
+      : null
+  const policyViolation = operationalViolation && finalViolation
+    ? [operationalViolation, finalViolation].sort(
+        (left, right) => right.waitMinutes - left.waitMinutes,
+      )[0]
+    : operationalViolation ?? finalViolation
+  const policyGaps = [...operationalGaps, finalGap]
   return {
     initial: operationalGaps[0].waitMinutes,
     between: Math.max(
@@ -261,21 +280,20 @@ const waitDetails = (
         .filter((gap) => gap.phase === 'between')
         .map((gap) => gap.waitMinutes),
     ),
-    final: finalIdleMinutes,
-    maximum: maximumGap.waitMinutes,
+    final: finalGap.waitMinutes,
+    maximum: maximumOperationalGap.waitMinutes,
     average:
-      operationalGaps.reduce((sum, gap) => sum + gap.waitMinutes, 0) /
-      operationalGaps.length,
-    violation:
-      maximumGap.waitMinutes > MEETING_MAX_WAIT_MINUTES
-        ? ({
-            playerId: player.id,
-            waitMinutes: maximumGap.waitMinutes,
-            phase: maximumGap.phase,
-            previousMatchId: maximumGap.previousMatchId,
-            nextMatchId: maximumGap.nextMatchId,
-          } satisfies WaitLimitParticipantViolation)
-        : null,
+      policyGaps.reduce((sum, gap) => sum + gap.waitMinutes, 0) /
+      policyGaps.length,
+    violation: policyViolation
+      ? ({
+          playerId: player.id,
+          waitMinutes: policyViolation.waitMinutes,
+          phase: policyViolation.phase,
+          previousMatchId: policyViolation.previousMatchId,
+          nextMatchId: policyViolation.nextMatchId,
+        } satisfies WaitLimitParticipantViolation)
+      : null,
   }
 }
 
@@ -532,10 +550,15 @@ export const analyzeMeetingScheduleV2 = (
   if (standardGameSpread > MEETING_MAX_STANDARD_GAME_SPREAD) {
     successIssues.push(`일반 참가자 경기 수 차 ${standardGameSpread}경기`)
   }
-  if (participantViolations.length > 0) {
+  const maximumWaitMinutes = Math.max(0, ...waits.map((wait) => wait.maximum))
+  const maximumFinalIdleMinutes = Math.max(0, ...waits.map((wait) => wait.final))
+  if (maximumWaitMinutes > MEETING_MAX_WAIT_MINUTES) {
     successIssues.push(
-      `최장 대기 ${Math.max(...participantViolations.map((item) => item.waitMinutes))}분`,
+      `최장 대기 ${maximumWaitMinutes}분`,
     )
+  }
+  if (maximumFinalIdleMinutes >= MEETING_FINAL_IDLE_LIMIT_MINUTES) {
+    successIssues.push(`마지막 경기 후 ${maximumFinalIdleMinutes}분`)
   }
   if (groupMetrics.maximum > MEETING_MAX_GROUP_MEETINGS) {
     successIssues.push(`동일 4인 최대 ${groupMetrics.maximum}경기`)
@@ -578,10 +601,10 @@ export const analyzeMeetingScheduleV2 = (
     postWarmupBalancedMixedMatches,
     postWarmupGenderExceptionMatches,
     genderUnknownParticipants,
-    maximumWaitMinutes: Math.max(0, ...waits.map((wait) => wait.maximum)),
+    maximumWaitMinutes,
     maximumInitialWaitMinutes: Math.max(0, ...waits.map((wait) => wait.initial)),
     maximumBetweenWaitMinutes: Math.max(0, ...waits.map((wait) => wait.between)),
-    maximumFinalIdleMinutes: Math.max(0, ...waits.map((wait) => wait.final)),
+    maximumFinalIdleMinutes,
     participantsOverWaitLimit: participantViolations.length,
     participantViolations,
     maximumGroupMeetings: groupMetrics.maximum,

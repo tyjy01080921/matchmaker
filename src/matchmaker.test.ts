@@ -1086,7 +1086,7 @@ describe('generateSchedule', () => {
     expect(participantViolations[0].nextMatchId).toBeTruthy()
   })
 
-  it('reports final idle time without treating it as an operational wait failure', () => {
+  it('includes final idle of 30 minutes or more in the wait policy', () => {
     const players = Array.from({ length: 8 }, (_, index) =>
       makeTestPlayer(`wait-range-${index + 1}`, 'B'),
     )
@@ -1113,8 +1113,62 @@ describe('generateSchedule', () => {
     expect(analysis.maximumBetweenWaitMinutes).toBe(0)
     expect(analysis.maximumFinalIdleMinutes).toBe(105)
     expect(analysis.zeroGameParticipantCount).toBe(0)
-    expect(analysis.exceedsLimit).toBe(false)
-    expect(quality.participantsOverWaitLimit).toBe(0)
+    expect(analysis.exceedsLimit).toBe(true)
+    expect(analysis.warning).toContain('30분 미만 조정 필요')
+    expect(quality.participantsOverWaitLimit).toBe(8)
+    expect(
+      analyzeParticipantWaitLimitViolations(schedule, players, settings),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          waitMinutes: 105,
+          phase: 'final',
+        }),
+      ]),
+    )
+  })
+
+  it('allows 29 final idle minutes and rejects 30 minutes', () => {
+    const players = Array.from({ length: 4 }, (_, index) =>
+      makeTestPlayer(`wait-final-boundary-${index + 1}`, 'B'),
+    )
+    const baseSettings = {
+      ...defaultSettings,
+      courtCount: 1,
+      startTime: '18:00',
+      endTime: '18:45',
+      targetRoundCount: 1,
+      pacingRoundCount: 1,
+      roundCountLocked: true,
+    }
+    const schedule = generateSchedule(players, baseSettings)
+    schedule.rounds[0].matches[0].startOffsetMinutes = 0
+    schedule.rounds[0].matches[0].durationMinutes = 15
+
+    const allowed = analyzeScheduleWait(schedule, players, {
+      ...baseSettings,
+      endTime: '18:44',
+    })
+    const rejected = analyzeScheduleWait(schedule, players, baseSettings)
+
+    expect(allowed.maximumFinalIdleMinutes).toBe(29)
+    expect(allowed.exceedsLimit).toBe(false)
+    expect(rejected.maximumFinalIdleMinutes).toBe(30)
+    expect(rejected.exceedsLimit).toBe(true)
+    expect(
+      analyzeParticipantWaitLimitViolations(
+        schedule,
+        players,
+        baseSettings,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          waitMinutes: 30,
+          phase: 'final',
+        }),
+      ]),
+    )
   })
 
   it('links an excessive first-game wait to the participant first match', () => {

@@ -60,7 +60,11 @@ import {
   TournamentProgressMode,
 } from './ProgressModeView'
 import { analyzeMeetingScheduleV2 } from './matchmaker/validation'
-import { balancedParticipantGameTarget } from './matchmaker/rules'
+import {
+  balancedParticipantGameTarget,
+  MEETING_FINAL_IDLE_LIMIT_MINUTES,
+  MEETING_MAX_WAIT_MINUTES,
+} from './matchmaker/rules'
 import {
   canConfirmMeetingGenerationFailure,
   isSpecialTargetFailureIssue,
@@ -3953,7 +3957,7 @@ function App() {
         ? `일반 참가자 경기 수 차 ${nextQuality.standardGameSpread}경기`
         : '',
       nextQuality.participantsOverWaitLimit > baseQuality.participantsOverWaitLimit
-        ? `25분 초과 ${nextQuality.participantsOverWaitLimit}명`
+        ? `대기 기준 초과 ${nextQuality.participantsOverWaitLimit}명`
         : '',
       nextQuality.teamSkillDangerMatches > baseQuality.teamSkillDangerMatches
         ? `큰 실력 차 ${nextQuality.teamSkillDangerMatches}경기`
@@ -4340,7 +4344,9 @@ function App() {
           setMeetingOperationLabel('대진 검증 실패')
           const waitFailureMessage = unassignedCount > 0
             ? `0경기 ${unassignedCount}명 · 현재 운영 조건에서 전원 배정 불가`
-            : `운영 중 최장 대기 ${response.waitLimitFailure.maximumWaitMinutes}분 · ` +
+            : `대기 기준 초과 · 경기 중 최대 ` +
+              `${response.waitLimitFailure.maximumWaitMinutes}분 · 마지막 경기 후 최대 ` +
+              `${response.waitLimitFailure.maximumFinalIdleMinutes}분 · ` +
               `조정 필요 ${response.waitLimitFailure.participantsOverLimit}명`
           const additionalFailureMessage = response.failureIssues?.length
             ? ` · ${response.failureIssues.join(' · ')}`
@@ -4348,7 +4354,7 @@ function App() {
           setMeetingGenerationMessage(
             `${waitFailureMessage}${additionalFailureMessage}`,
           )
-          setNotice('25분 제한으로 대진 생성 불가')
+          setNotice('대기 기준으로 대진 생성 불가')
           return
         }
         if (response.failureIssues?.length) {
@@ -5651,7 +5657,7 @@ function App() {
       ? `${failureIssues.join(' · ')} · 참가자 교체 후 현황을 확인하세요.`
       : violation
         ? `${waitViolationDetail(violation)} · 참가자 교체 후 현황을 확인하세요.`
-        : '25분 초과 대진 · 수동 수정 후 현황을 확인하세요.'
+        : '대기 기준 초과 대진 · 수동 수정 후 현황을 확인하세요.'
     setNotice(manualEditNotice)
   }
 
@@ -5673,8 +5679,9 @@ function App() {
     }
     const isWaitLimitFailure = Boolean(failure)
     const confirmationMessage = failure
-      ? `최장 대기 ${failure.maximumWaitMinutes}분 · ` +
-        `${failure.participantsOverLimit}명이 25분을 초과합니다.\n` +
+      ? `경기 전·간 최대 ${failure.maximumWaitMinutes}분 · ` +
+        `마지막 경기 후 최대 ${failure.maximumFinalIdleMinutes}분\n` +
+        `대기 기준 초과 ${failure.participantsOverLimit}명입니다.\n` +
         '현장 조정을 전제로 이 대진을 사용하시겠습니까?'
       : `${meetingGenerationFailureIssues.join(' · ')}\n` +
         '스페셜 목표 미달을 확인하고 이 대진을 사용하시겠습니까?'
@@ -5689,7 +5696,7 @@ function App() {
     setView('schedule')
     setNotice(
       failure
-        ? `25분 초과 ${failure.participantsOverLimit}명 · 확인 후 사용`
+        ? `대기 기준 초과 ${failure.participantsOverLimit}명 · 확인 후 사용`
         : '스페셜 목표 미달 · 확인 후 사용',
     )
     if (isWaitLimitFailure) {
@@ -6142,7 +6149,8 @@ function App() {
               <div className="generation-wait-failure">
                 <div className="generation-wait-metrics">
                   <span className={
-                    meetingWaitLimitFailure.maximumInitialWaitMinutes > 25
+                    meetingWaitLimitFailure.maximumInitialWaitMinutes >
+                      MEETING_MAX_WAIT_MINUTES
                       ? 'over-limit'
                       : ''
                   }>
@@ -6152,7 +6160,8 @@ function App() {
                     </strong>
                   </span>
                   <span className={
-                    meetingWaitLimitFailure.maximumBetweenWaitMinutes > 25
+                    meetingWaitLimitFailure.maximumBetweenWaitMinutes >
+                      MEETING_MAX_WAIT_MINUTES
                       ? 'over-limit'
                       : ''
                   }>
@@ -6161,8 +6170,13 @@ function App() {
                       {meetingWaitLimitFailure.maximumBetweenWaitMinutes}분
                     </strong>
                   </span>
-                  <span>
-                    종료 후 여유
+                  <span className={
+                    meetingWaitLimitFailure.maximumFinalIdleMinutes >=
+                      MEETING_FINAL_IDLE_LIMIT_MINUTES
+                      ? 'over-limit'
+                      : ''
+                  }>
+                    마지막 경기 후
                     <strong>
                       {meetingWaitLimitFailure.maximumFinalIdleMinutes}분
                     </strong>
@@ -6198,6 +6212,16 @@ function App() {
                         <b>경기 간 대기</b>{' '}
                         {meetingWaitLimitFailure.participantViolations.filter(
                           (violation) => violation.phase === 'between',
+                        ).length}명
+                      </span>
+                    ) : null}
+                    {meetingWaitLimitFailure.participantViolations.some(
+                      (violation) => violation.phase === 'final',
+                    ) ? (
+                      <span>
+                        <b>마지막 경기 후</b>{' '}
+                        {meetingWaitLimitFailure.participantViolations.filter(
+                          (violation) => violation.phase === 'final',
                         ).length}명
                       </span>
                     ) : null}
@@ -6265,7 +6289,8 @@ function App() {
                   )}
                 </div>
                 <small className="generation-search-count">
-                  변경안마다 새 대진을 만들어 25분 제한을 다시 검증했습니다.
+                  첫 경기 전·경기 간 25분 이하, 마지막 경기 후 30분 미만으로
+                  다시 검증했습니다.
                 </small>
               </div>
             ) : null}
@@ -6312,28 +6337,40 @@ function App() {
                   </strong>
                 </span>
                 <span>평균 대기 <strong>{meetingAverageWaitMinutes}분</strong></span>
-                <span className={scheduleWaitAnalysis.exceedsLimit ? 'wait-warning' : ''}>
+                <span className={
+                  scheduleWaitAnalysis.maximumWaitMinutes >
+                    MEETING_MAX_WAIT_MINUTES
+                    ? 'wait-warning'
+                    : ''
+                }>
                   최장 대기 <strong>{meetingMaximumWaitMinutes}분</strong>
                 </span>
                 <span className={
-                  scheduleWaitAnalysis.maximumInitialWaitMinutes > 25
+                  scheduleWaitAnalysis.maximumInitialWaitMinutes >
+                    MEETING_MAX_WAIT_MINUTES
                     ? 'wait-warning'
                     : ''
                 }>
                   첫 경기 대기 <strong>{scheduleWaitAnalysis.maximumInitialWaitMinutes}분</strong>
                 </span>
                 <span className={
-                  scheduleWaitAnalysis.maximumBetweenWaitMinutes > 25
+                  scheduleWaitAnalysis.maximumBetweenWaitMinutes >
+                    MEETING_MAX_WAIT_MINUTES
                     ? 'wait-warning'
                     : ''
                 }>
                   경기 간 대기 <strong>{scheduleWaitAnalysis.maximumBetweenWaitMinutes}분</strong>
                 </span>
-                <span>
-                  종료 후 여유 <strong>{scheduleWaitAnalysis.maximumFinalIdleMinutes}분</strong>
+                <span className={
+                  scheduleWaitAnalysis.maximumFinalIdleMinutes >=
+                    MEETING_FINAL_IDLE_LIMIT_MINUTES
+                    ? 'wait-warning'
+                    : ''
+                }>
+                  마지막 경기 후 <strong>{scheduleWaitAnalysis.maximumFinalIdleMinutes}분</strong>
                 </span>
                 <span className={scheduleQualityAnalysis.participantsOverWaitLimit > 0 ? 'wait-warning' : ''}>
-                  25분 초과 <strong>{scheduleQualityAnalysis.participantsOverWaitLimit}명</strong>
+                  대기 기준 초과 <strong>{scheduleQualityAnalysis.participantsOverWaitLimit}명</strong>
                 </span>
                 <span>
                   양보 설정 <strong>
@@ -8250,9 +8287,9 @@ function App() {
               <div className="wait-limit-operator-heading">
                 <div>
                   <span className="eyebrow">운영자 확인</span>
-                  <h2>25분 초과 참가자 {participantWaitLimitViolations.length}명</h2>
+                  <h2>대기 기준 초과 참가자 {participantWaitLimitViolations.length}명</h2>
                 </div>
-                <span>교체 후 목록이 자동으로 다시 계산됩니다.</span>
+                <span>첫·경기 간 25분 이하 · 마지막 경기 후 30분 미만</span>
               </div>
               <div className="wait-limit-participant-list">
                 {participantWaitLimitViolations.map((violation) => {

@@ -8,6 +8,7 @@ import type {
 import { attendanceWindowIssue } from '../meetingAvailability'
 
 export const MEETING_MAX_WAIT_MINUTES = 25
+export const MEETING_FINAL_IDLE_LIMIT_MINUTES = 30
 export const MEETING_MAX_STANDARD_GAME_SPREAD = 1
 export const MEETING_MAX_GROUP_MEETINGS = 2
 export const MEETING_SKILL_CAUTION_GAP = 30
@@ -27,6 +28,7 @@ export type MeetingSuccessRules = {
   requireEveryStandardPlayer: boolean
   maxStandardGameSpread: number
   maxWaitMinutes: number
+  finalIdleLimitMinutes: number
 }
 
 export type MeetingPreferenceKey =
@@ -150,6 +152,7 @@ export const resolveMeetingRuleProfile = (
       requireEveryStandardPlayer: true,
       maxStandardGameSpread: MEETING_MAX_STANDARD_GAME_SPREAD,
       maxWaitMinutes: MEETING_MAX_WAIT_MINUTES,
+      finalIdleLimitMinutes: MEETING_FINAL_IDLE_LIMIT_MINUTES,
     },
     priorityOrder: priorityOrder('balanced'),
   }

@@ -84,11 +84,6 @@
   overflow: hidden;
 }
 
-.generation-card.review.failure-review {
-  grid-template-rows: repeat(6, auto);
-  overflow-y: auto;
-}
-
 .generation-result-icon {
   display: grid;
   width: 42px;
@@ -187,8 +182,14 @@
 
 .generation-wait-failure {
   display: grid;
+  min-height: 0;
   width: 100%;
+  align-content: start;
   gap: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
   text-align: left;
 }
 
@@ -268,15 +269,16 @@
 
 .generation-wait-participants > div {
   display: grid;
-  max-height: 154px;
+  grid-auto-rows: minmax(44px, auto);
+  align-content: start;
   gap: 5px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
 }
 
 .generation-wait-participants button {
   display: grid;
-  min-height: 0;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
@@ -288,7 +290,14 @@
 
 .generation-wait-participants button > span {
   display: grid;
+  min-width: 0;
   gap: 2px;
+}
+
+.generation-wait-participants b,
+.generation-wait-participants small {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .generation-wait-participants b {
@@ -429,11 +438,6 @@
     border-radius: 12px;
   }
 
-  .generation-card.review.failure-review {
-    grid-template-rows: repeat(6, auto);
-    overflow: hidden;
-  }
-
   .generation-card.review img {
     width: 72px;
     height: 30px;
@@ -494,10 +498,6 @@
 
   .generation-card.review.failure-review .generation-wait-failure {
     max-height: calc(100svh - 210px);
-    min-height: 0;
-    align-content: start;
-    overflow-y: auto;
-    overscroll-behavior: contain;
     padding-right: 2px;
   }
 
@@ -522,10 +522,7 @@
   }
 
   .generation-wait-participants > div {
-    max-height: none;
     grid-auto-rows: minmax(40px, auto);
-    align-content: start;
-    overflow: visible;
   }
 
   .generation-wait-participants button {

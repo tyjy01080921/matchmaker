@@ -165,6 +165,7 @@ export type WaitLimitRecommendationOutcome = {
   maximumWaitMinutes: number
   maximumInitialWaitMinutes: number
   maximumBetweenWaitMinutes: number
+  maximumFinalIdleMinutes: number
   participantsOverLimit: number
 }
 

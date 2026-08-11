@@ -45,6 +45,7 @@ import { getBookingDurationMinutes } from './scheduleTime'
 import { generateMeetingScheduleV2WithWaitResolution } from './matchmaker/engine'
 import {
   allowsFixedCourtGuestOverflow,
+  MEETING_FINAL_IDLE_LIMIT_MINUTES,
   plannedGuestGames,
 } from './matchmaker/rules'
 import {
@@ -268,6 +269,38 @@ const playerOperationalWaitGaps = (
   ]
 }
 
+const playerFinalIdleMinutes = (
+  matches: Match[],
+  playerId: string,
+  endMinutes: number,
+  eligibleFromMinutes = 0,
+) => {
+  const windows = playerMatchWindows(matches, playerId)
+  return windows.length > 0
+    ? Math.max(0, endMinutes - windows[windows.length - 1].end)
+    : Math.max(0, endMinutes - eligibleFromMinutes)
+}
+
+const playerPolicyWaitGaps = (
+  matches: Match[],
+  playerId: string,
+  endMinutes: number,
+  eligibleFromMinutes = 0,
+) => [
+  ...playerOperationalWaitGaps(
+    matches,
+    playerId,
+    endMinutes,
+    eligibleFromMinutes,
+  ),
+  playerFinalIdleMinutes(
+    matches,
+    playerId,
+    endMinutes,
+    eligibleFromMinutes,
+  ),
+]
+
 const playerMaximumWaitMinutes = (
   matches: Match[],
   playerId: string,
@@ -282,6 +315,25 @@ const playerMaximumWaitMinutes = (
     eligibleFromMinutes,
   ),
 )
+
+const playerExceedsWaitPolicy = (
+  matches: Match[],
+  playerId: string,
+  endMinutes: number,
+  eligibleFromMinutes = 0,
+) =>
+  playerMaximumWaitMinutes(
+    matches,
+    playerId,
+    endMinutes,
+    eligibleFromMinutes,
+  ) > WAIT_PRIORITY_MINUTES ||
+  playerFinalIdleMinutes(
+    matches,
+    playerId,
+    endMinutes,
+    eligibleFromMinutes,
+  ) >= MEETING_FINAL_IDLE_LIMIT_MINUTES
 
 const playerWaitAnalysisEndMinutes = (
   player: Player,
@@ -435,7 +487,10 @@ export const analyzeScheduleWait = (
       ),
     ),
   )
-  const exceedsLimit = maximumWaitMinutes > WAIT_PRIORITY_MINUTES
+  const exceedsOperationalWaitLimit = maximumWaitMinutes > WAIT_PRIORITY_MINUTES
+  const exceedsFinalIdleLimit = maximumFinalIdleMinutes >=
+    MEETING_FINAL_IDLE_LIMIT_MINUTES
+  const exceedsLimit = exceedsOperationalWaitLimit || exceedsFinalIdleLimit
   const normalGameMinutes = [10, 12, 15].includes(settings.normalGameMinutes)
     ? settings.normalGameMinutes
     : GAME_SLOT_MINUTES
@@ -456,7 +511,7 @@ export const analyzeScheduleWait = (
     4,
     settings.courtCount * participantSlotsPerCourt - repeatedGuestSlots,
   )
-  const waitRatioParticipantCount = exceedsLimit
+  const waitRatioParticipantCount = exceedsOperationalWaitLimit
     ? Math.max(
         4,
         Math.floor(
@@ -464,13 +519,15 @@ export const analyzeScheduleWait = (
         ),
       )
     : activePlayers.length
-  const recommendedParticipantCount = exceedsLimit
+  const recommendedParticipantCount = exceedsOperationalWaitLimit
     ? Math.min(capacityParticipantCount, waitRatioParticipantCount)
     : capacityParticipantCount
   const warning = zeroGameParticipantCount > 0
     ? `0경기 참가자 ${zeroGameParticipantCount}명 · 대진을 다시 생성해 주세요.`
-    : exceedsLimit
+    : exceedsOperationalWaitLimit
       ? `최장 대기 ${maximumWaitMinutes}분 · 권장 참가 ${recommendedParticipantCount}명 이하`
+      : exceedsFinalIdleLimit
+        ? `마지막 경기 후 ${maximumFinalIdleMinutes}분 · 30분 미만 조정 필요`
     : null
 
   return {
@@ -553,6 +610,19 @@ export const analyzeParticipantWaitLimitViolations = (
         phase: 'between',
         previousMatchId: previousMatch.id,
         nextMatchId: nextMatch.id,
+      })
+    }
+    const lastMatch = scheduledMatches[scheduledMatches.length - 1]
+    const finalIdleMinutes = Math.max(
+      0,
+      analysisEndMinutes - matchTimeWindow(lastMatch).end,
+    )
+    if (finalIdleMinutes >= MEETING_FINAL_IDLE_LIMIT_MINUTES) {
+      candidates.push({
+        playerId: player.id,
+        waitMinutes: finalIdleMinutes,
+        phase: 'final',
+        previousMatchId: lastMatch.id,
       })
     }
     const maximumViolation = candidates.sort(
@@ -739,7 +809,7 @@ export const analyzeScheduleQuality = (
     ]),
   )
   const waitsByPlayer = activePlayers.map((player) =>
-    playerOperationalWaitGaps(
+    playerPolicyWaitGaps(
       matches,
       player.id,
       analysisEndByPlayer.get(player.id) ?? analysisEndMinutes,
@@ -828,13 +898,12 @@ export const analyzeScheduleQuality = (
     maximumIndividualSkillSpread: Math.max(0, ...individualSkillSpreads),
     participantsOverWaitLimit: activePlayers.filter(
       (player) =>
-        playerMaximumWaitMinutes(
+        playerExceedsWaitPolicy(
           matches,
           player.id,
           analysisEndByPlayer.get(player.id) ?? analysisEndMinutes,
           options.eligibleFromOffsetMinutesByPlayer?.[player.id] ?? 0,
-        ) >
-          WAIT_PRIORITY_MINUTES,
+        ),
     ).length,
     maximumPartnerMeetings: Math.max(0, ...partnerCounts),
     averageWaitMinutes: participantAverageWaits.length > 0
@@ -1309,7 +1378,10 @@ export const rankMeetingSwapCandidates = (
       if (quality.preferredPartnerUnfulfilled < baseQuality.preferredPartnerUnfulfilled) {
         reasons.push('선호 파트너 반영')
       }
-      if (wait.maximumWaitMinutes < baseWait.maximumWaitMinutes) {
+      if (
+        wait.maximumWaitMinutes < baseWait.maximumWaitMinutes ||
+        wait.maximumFinalIdleMinutes < baseWait.maximumFinalIdleMinutes
+      ) {
         reasons.push('대기 균형 개선')
       }
       if (reasons.length === 1) reasons.push('필수 조건 유지')
@@ -1338,6 +1410,7 @@ export const rankMeetingSwapCandidates = (
           quality.repeatedOpponentAssignments,
           quality.preferredPartnerUnfulfilled,
           wait.maximumWaitMinutes,
+          wait.maximumFinalIdleMinutes,
           quality.averageWaitMinutes,
         ],
       }]
@@ -6749,9 +6822,14 @@ export const deferSkillWarningMatches = (
   settings: MatchSettings,
 ) => {
   let current = schedule
+  const baselineWait = analyzeScheduleWait(schedule, players, settings)
   const maximumAllowedWait = Math.max(
     WAIT_PRIORITY_MINUTES,
-    analyzeScheduleWait(schedule, players, settings).maximumWaitMinutes,
+    baselineWait.maximumWaitMinutes,
+  )
+  const maximumAllowedFinalIdle = Math.max(
+    MEETING_FINAL_IDLE_LIMIT_MINUTES - 1,
+    baselineWait.maximumFinalIdleMinutes,
   )
   const initialWarnings = schedule.rounds
     .flatMap((round) => round.matches)
@@ -6798,9 +6876,10 @@ export const deferSkillWarningMatches = (
     for (const balancedBlock of balancedBlocks) {
       const swapped = swapScheduleMatchBlocks(current, warningBlock, balancedBlock)
       if (validateMeetingSchedule(swapped, players, settings).length > 0) continue
+      const swappedWait = analyzeScheduleWait(swapped, players, settings)
       if (
-        analyzeScheduleWait(swapped, players, settings).maximumWaitMinutes >
-        maximumAllowedWait
+        swappedWait.maximumWaitMinutes > maximumAllowedWait ||
+        swappedWait.maximumFinalIdleMinutes > maximumAllowedFinalIdle
       ) continue
       current = swapped
       movedAsBlock = true
@@ -6826,9 +6905,10 @@ export const deferSkillWarningMatches = (
     for (const balanced of laterBalancedMatches) {
       const swapped = swapScheduleMatchSlots(current, warning, balanced)
       if (validateMeetingSchedule(swapped, players, settings).length > 0) continue
+      const swappedWait = analyzeScheduleWait(swapped, players, settings)
       if (
-        analyzeScheduleWait(swapped, players, settings).maximumWaitMinutes >
-        maximumAllowedWait
+        swappedWait.maximumWaitMinutes > maximumAllowedWait ||
+        swappedWait.maximumFinalIdleMinutes > maximumAllowedFinalIdle
       ) continue
       current = swapped
       break
@@ -7165,11 +7245,11 @@ export const reduceGeneralGenderImbalanceMatches = (
     const opponentCounts = assignmentCounts(
       allMatches.flatMap(matchOpponentAssignmentKeys),
     )
-    const maximumWaitMinutes = analyzeScheduleWait(
+    const baseWait = analyzeScheduleWait(
       optimized,
       players,
       settings,
-    ).maximumWaitMinutes
+    )
     const candidates: GenderImbalanceSwapCandidate[] = []
 
     for (let leftIndex = 0; leftIndex < imbalancedMatches.length - 1; leftIndex += 1) {
@@ -7301,9 +7381,15 @@ export const reduceGeneralGenderImbalanceMatches = (
       ) {
         continue
       }
+      const candidateWait = analyzeScheduleWait(
+        candidateSchedule,
+        players,
+        settings,
+      )
       if (
-        analyzeScheduleWait(candidateSchedule, players, settings)
-          .maximumWaitMinutes > maximumWaitMinutes
+        candidateWait.maximumWaitMinutes > baseWait.maximumWaitMinutes ||
+        candidateWait.maximumFinalIdleMinutes >
+          baseWait.maximumFinalIdleMinutes
       ) {
         continue
       }
@@ -7353,6 +7439,11 @@ const candidateQualityFailure = (
     Math.max(0, quality.standardGameSpread - 1),
     Math.max(0, wait.maximumWaitMinutes - WAIT_PRIORITY_MINUTES) /
       normalGameMinutes,
+    Math.max(
+      0,
+      wait.maximumFinalIdleMinutes -
+        (MEETING_FINAL_IDLE_LIMIT_MINUTES - 1),
+    ) / normalGameMinutes,
     missingMatchCapacity,
     conditions.groupRepeat
       ? Math.max(0, quality.maximumGroupMeetings - MAX_GROUP_MEETINGS)
@@ -7519,6 +7610,10 @@ const rebalanceStandardGameCounts = (
                 WAIT_PRIORITY_MINUTES,
                 baseWait.maximumWaitMinutes,
               ) ||
+              wait.maximumFinalIdleMinutes > Math.max(
+                MEETING_FINAL_IDLE_LIMIT_MINUTES - 1,
+                baseWait.maximumFinalIdleMinutes,
+              ) ||
               wait.zeroGameParticipantCount > baseWait.zeroGameParticipantCount
             ) {
               continue
@@ -7539,6 +7634,7 @@ const rebalanceStandardGameCounts = (
               quality.repeatedPartnerAssignments,
               quality.repeatedOpponentAssignments,
               wait.maximumWaitMinutes,
+              wait.maximumFinalIdleMinutes,
               quality.averageWaitMinutes,
             ]
             if (
@@ -7633,11 +7729,13 @@ const compareMultiObjectiveCandidates = (
     const waitDifference = compareNumberTuples(
       [
         left.wait.maximumWaitMinutes,
+        left.wait.maximumFinalIdleMinutes,
         left.quality.averageWaitMinutes,
         left.quality.participantsOverWaitLimit,
       ],
       [
         right.wait.maximumWaitMinutes,
+        right.wait.maximumFinalIdleMinutes,
         right.quality.averageWaitMinutes,
         right.quality.participantsOverWaitLimit,
       ],

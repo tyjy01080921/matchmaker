@@ -13,6 +13,7 @@ import {
   preferredPartnerStrength,
 } from '../preferredPartners'
 import {
+  MEETING_FINAL_IDLE_LIMIT_MINUTES,
   MEETING_MAX_GROUP_MEETINGS,
   MEETING_MAX_WAIT_MINUTES,
   MEETING_SKILL_CAUTION_GAP,
@@ -2354,6 +2355,12 @@ const repairStandardGameSpread = (
           if (metrics.zeroGameStandardParticipants > 0) continue
           if (metrics.maximumInitialWaitMinutes > initialWaitLimit) continue
           if (metrics.maximumWaitMinutes > MEETING_MAX_WAIT_MINUTES) continue
+          if (
+            metrics.maximumFinalIdleMinutes >=
+            MEETING_FINAL_IDLE_LIMIT_MINUTES
+          ) {
+            continue
+          }
           if (metrics.maximumGroupMeetings > 2) {
             continue
           }
@@ -2368,6 +2375,7 @@ const repairStandardGameSpread = (
             metrics.skillDangerMatches,
             metrics.skillCautionMatches,
             metrics.maximumWaitMinutes,
+            metrics.maximumFinalIdleMinutes,
             metrics.repeatedGroupAssignments,
             metrics.repeatedPartnerAssignments,
             metrics.repeatedOpponentAssignments,
@@ -2615,9 +2623,11 @@ export const generateMeetingScheduleV2 = (
 const candidateScore = (candidate: GenerationCandidate) => [
   candidate.metrics.structuralIssues.length,
   candidate.metrics.successIssues.length,
+  candidate.metrics.participantsOverWaitLimit,
   candidate.metrics.zeroGameStandardParticipants,
   candidate.metrics.standardGameSpread,
   candidate.metrics.maximumWaitMinutes,
+  candidate.metrics.maximumFinalIdleMinutes,
   candidate.metrics.participantsBelowTightMinimum,
   -candidate.metrics.participantsAtTightTarget,
   candidate.metrics.postWarmupGenderExceptionMatches,
@@ -2714,6 +2724,7 @@ const recommendationOutcome = (
   maximumWaitMinutes: metrics.maximumWaitMinutes,
   maximumInitialWaitMinutes: metrics.maximumInitialWaitMinutes,
   maximumBetweenWaitMinutes: metrics.maximumBetweenWaitMinutes,
+  maximumFinalIdleMinutes: metrics.maximumFinalIdleMinutes,
   participantsOverLimit: metrics.participantsOverWaitLimit,
 })
 
@@ -2732,7 +2743,8 @@ const verifyRecommendation = (
     detail:
       `${context} · 재계산 결과 첫 경기 최대 ` +
       `${candidate.metrics.maximumInitialWaitMinutes}분, 경기 간 최대 ` +
-      `${candidate.metrics.maximumBetweenWaitMinutes}분`,
+      `${candidate.metrics.maximumBetweenWaitMinutes}분, 마지막 경기 후 최대 ` +
+      `${candidate.metrics.maximumFinalIdleMinutes}분`,
     verified: true,
     settings,
     outcome: recommendationOutcome(candidate.metrics),
@@ -2831,7 +2843,9 @@ export const generateMeetingScheduleV2WithWaitResolution = (
   const scheduleFailureIssues = [
     ...selected.metrics.structuralIssues,
     ...selected.metrics.successIssues.filter(
-      (issue) => !issue.startsWith('최장 대기 '),
+      (issue) =>
+        !issue.startsWith('최장 대기 ') &&
+        !issue.startsWith('마지막 경기 후 '),
     ),
     ...selected.schedule.warnings.filter((warning) =>
       warning.includes('부족') ||
