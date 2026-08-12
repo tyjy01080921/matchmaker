@@ -7468,6 +7468,74 @@ textarea {
 }
 
 @media (max-width: 619px) {
+  .available-progress-mode .progress-mode-header {
+    position: sticky;
+    gap: 4px;
+    padding: 5px 7px 6px;
+  }
+
+  .available-progress-mode .progress-mode-title {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .available-progress-mode .progress-mode-title > span {
+    font-size: 9px;
+    white-space: nowrap;
+  }
+
+  .available-progress-mode .progress-mode-title h1 {
+    margin: 0;
+    font-size: 16px;
+    line-height: 1.15;
+  }
+
+  .available-progress-mode .progress-mode-status {
+    grid-template-columns: minmax(62px, 0.7fr) minmax(62px, 0.7fr) minmax(118px, 1.6fr);
+    gap: 4px;
+  }
+
+  .available-progress-mode .progress-mode-status > div:not(.progress-mode-meter) {
+    min-height: 34px;
+    padding: 2px 4px;
+    border-radius: 6px;
+  }
+
+  .available-progress-mode .progress-mode-status span {
+    font-size: 9px;
+    line-height: 1;
+  }
+
+  .available-progress-mode .progress-mode-status strong {
+    font-size: 14px;
+    line-height: 1;
+  }
+
+  .available-progress-mode .progress-mode-meter {
+    grid-column: auto;
+    height: 18px;
+  }
+
+  .available-progress-mode .progress-mode-meter > strong {
+    font-size: 9px;
+  }
+
+  .available-progress-mode .progress-mode-header-actions {
+    grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+    gap: 3px;
+  }
+
+  .available-progress-mode .progress-mode-header-actions button {
+    min-height: 32px;
+    padding: 3px 2px;
+    font-size: 10px;
+    line-height: 1.1;
+    white-space: normal;
+  }
+
   .available-waiting-queue {
     gap: 4px;
     margin: 4px 6px 0;
@@ -7492,13 +7560,14 @@ textarea {
 
   .available-progress-mode .progress-court-board {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-auto-rows: minmax(184px, auto);
+    grid-auto-rows: max-content;
     gap: 5px;
     padding: 5px 6px 6px;
   }
 
   .available-progress-mode .progress-court-lane {
-    min-height: 184px;
+    height: auto;
+    min-height: 0;
   }
 
   .available-progress-mode .progress-court-lane > header {
@@ -7507,6 +7576,16 @@ textarea {
 
   .available-progress-mode .progress-card-heading {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .available-progress-mode .progress-court-matches {
+    grid-template-rows: auto;
+    overflow: visible;
+  }
+
+  .available-progress-mode .progress-match-card {
+    height: auto;
+    overflow: hidden;
   }
 
   .available-progress-mode .progress-card-identity {
