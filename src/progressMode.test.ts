@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  assignAvailableMeetingMatch,
+  assignAvailableMeetingMatchToFirstEmptyCourt,
   assignNextAvailableMeetingMatch,
   buildAvailableMeetingCourtLanes,
   buildMeetingCourtLanes,
@@ -172,6 +174,37 @@ describe('progress mode helpers', () => {
     expect(getMeetingCourtMatchNumber(lanes[0], second.id)).toBe(2)
   })
 
+  it('allows a later fixed-court match to finish before the current match', () => {
+    const current = meetingMatch('current', 1, 0)
+    const skippedTo = meetingMatch('skipped-to', 1, 30)
+    const schedule: Schedule = {
+      rounds: [
+        {
+          id: 'round-1',
+          number: 1,
+          matches: [skippedTo, current],
+          resting: [],
+        },
+      ],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+
+    const lanes = buildMeetingCourtLanes(schedule, {
+      [skippedTo.id]: {
+        teamAScore: '21',
+        teamBScore: '17',
+        completed: true,
+        note: '',
+        winnerSide: 'A',
+      },
+    })
+
+    expect(lanes[0].pending.map((match) => match.id)).toEqual(['current'])
+    expect(lanes[0].completed.map((match) => match.id)).toEqual(['skipped-to'])
+  })
+
   it('assigns the opening sequence across available courts', () => {
     const first = meetingMatchWithPlayers('first', 1, 0, ['a', 'b', 'c', 'd'])
     const second = meetingMatchWithPlayers('second', 2, 0, ['e', 'f', 'g', 'h'])
@@ -224,6 +257,91 @@ describe('progress mode helpers', () => {
     expect(assigned.blocked).toBeUndefined()
     expect(buildAvailableMeetingCourtLanes(schedule, 2, assigned, results)[0])
       .toMatchObject({ court: 1, active: { id: 'playable' } })
+  })
+
+  it('keeps a completed court empty until the operator selects a waiting match', () => {
+    const first = meetingMatchWithPlayers('first', 1, 0, ['a', 'b', 'c', 'd'])
+    const second = meetingMatchWithPlayers('second', 2, 0, ['e', 'f', 'g', 'h'])
+    const third = meetingMatchWithPlayers('third', 1, 15, ['i', 'j', 'k', 'l'])
+    const schedule: Schedule = {
+      rounds: [
+        { id: 'round-1', number: 1, matches: [first, second], resting: [] },
+        { id: 'round-2', number: 2, matches: [third], resting: [] },
+      ],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+    const assignments = initializeAvailableMeetingAssignments(schedule, 2)
+
+    const completedResults = {
+      first: {
+        teamAScore: '21',
+        teamBScore: '17',
+        completed: true,
+        note: '',
+        winnerSide: 'A' as const,
+      },
+    }
+    const emptyLane = buildAvailableMeetingCourtLanes(
+      schedule,
+      2,
+      assignments,
+      completedResults,
+    )[0]
+
+    expect(emptyLane.active).toBeUndefined()
+
+    const assigned = assignAvailableMeetingMatch(
+      schedule,
+      assignments,
+      completedResults,
+      1,
+      third.id,
+    )
+
+    expect(assigned.third).toEqual({ court: 1, dispatchOrder: 3 })
+  })
+
+  it('places selected waiting matches into empty courts in court order', () => {
+    const first = meetingMatchWithPlayers('first', 1, 0, ['a', 'b', 'c', 'd'])
+    const second = meetingMatchWithPlayers('second', 2, 0, ['e', 'f', 'g', 'h'])
+    const third = meetingMatchWithPlayers('third', 1, 15, ['i', 'j', 'k', 'l'])
+    const fourth = meetingMatchWithPlayers('fourth', 2, 15, ['m', 'n', 'o', 'p'])
+    const schedule: Schedule = {
+      rounds: [
+        { id: 'round-1', number: 1, matches: [first, second], resting: [] },
+        { id: 'round-2', number: 2, matches: [third, fourth], resting: [] },
+      ],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+    const initial = initializeAvailableMeetingAssignments(schedule, 2)
+    const completedResults = {
+      first: { teamAScore: '', teamBScore: '', completed: true, note: '' },
+      second: { teamAScore: '', teamBScore: '', completed: true, note: '' },
+    }
+
+    const firstPlacement = assignAvailableMeetingMatchToFirstEmptyCourt(
+      schedule,
+      2,
+      initial,
+      completedResults,
+      third.id,
+    )
+    const secondPlacement = assignAvailableMeetingMatchToFirstEmptyCourt(
+      schedule,
+      2,
+      firstPlacement.assignments,
+      completedResults,
+      fourth.id,
+    )
+
+    expect(firstPlacement.court).toBe(1)
+    expect(firstPlacement.assignments.third).toEqual({ court: 1, dispatchOrder: 3 })
+    expect(secondPlacement.court).toBe(2)
+    expect(secondPlacement.assignments.fourth).toEqual({ court: 2, dispatchOrder: 4 })
   })
 
   it('only allows undo before a later match is assigned to the same court', () => {

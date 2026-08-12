@@ -1088,7 +1088,7 @@ h2 {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -1098,6 +1098,17 @@ h2 {
 
 .event-name-field input {
   font-weight: 900;
+}
+
+.game-duration-field {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.game-duration-field select {
+  min-width: 0;
+  margin-top: 0;
 }
 
 .court-assignment-settings {
@@ -4791,6 +4802,25 @@ textarea {
     white-space: nowrap;
   }
 
+  #meeting-settings > .section-heading {
+    flex-wrap: nowrap;
+  }
+
+  #meeting-settings > .section-heading .section-title-stack {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    width: 100%;
+    gap: 8px;
+  }
+
+  #meeting-settings > .section-heading .title-with-controls {
+    flex-wrap: nowrap;
+  }
+
+  #meeting-settings > .section-heading > .compact-actions {
+    display: none;
+  }
+
   .round-meta-actions {
     width: 100%;
     justify-content: space-between;
@@ -4828,7 +4858,9 @@ textarea {
 
   .settings-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns:
+      repeat(3, minmax(0, 1fr))
+      minmax(0, 1.15fr);
     gap: 6px;
     margin-inline: 0;
     overflow-x: visible;
@@ -4902,13 +4934,19 @@ textarea {
     font-size: 10px;
   }
 
+  .game-duration-field {
+    gap: 3px;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+
   .stepper-control {
-    grid-template-columns: 28px minmax(28px, 1fr) 28px;
+    grid-template-columns: 24px minmax(20px, 1fr) 24px;
     min-height: 32px;
   }
 
   .stepper-control button {
-    width: 28px;
+    width: 24px;
     min-height: 32px;
     font-size: 14px;
   }
@@ -6958,5 +6996,553 @@ textarea {
 
   .attendance-window-error {
     font-size: 9px;
+  }
+}
+
+/* 코트 고정 배정 진행 화면: 코트는 세로 열, 경기는 같은 높이의 컴팩트 카드로 표시한다. */
+.fixed-court-progress-mode {
+  --fixed-progress-card-height: 110px;
+}
+
+.fixed-court-progress-mode .progress-court-board {
+  grid-template-rows: minmax(0, 1fr);
+  gap: 6px;
+  padding: 6px 8px 8px;
+}
+
+.fixed-court-progress-mode .progress-court-lane {
+  height: 100%;
+  min-height: 0;
+}
+
+.fixed-court-progress-mode .progress-court-matches {
+  grid-template-rows: none;
+  grid-auto-rows: var(--fixed-progress-card-height);
+  align-content: start;
+  gap: 4px;
+  padding: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.fixed-court-progress-mode .progress-court-matches:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: -2px;
+}
+
+.fixed-court-progress-mode .progress-match-card {
+  height: var(--fixed-progress-card-height);
+  min-height: var(--fixed-progress-card-height);
+  grid-template-rows: 20px minmax(0, 1fr);
+  gap: 2px;
+  padding: 4px;
+  overflow: hidden;
+  border-left-width: 3px;
+}
+
+.fixed-court-progress-mode .progress-match-card.current {
+  border-left-width: 3px;
+}
+
+.fixed-court-progress-mode .progress-card-heading {
+  min-height: 20px;
+  gap: 4px;
+}
+
+.fixed-court-progress-mode .progress-card-identity {
+  gap: 3px;
+}
+
+.fixed-court-progress-mode .progress-card-identity > strong,
+.fixed-court-progress-mode .progress-match-card.current .progress-card-identity > strong,
+.fixed-court-progress-mode .progress-match-card.upcoming-later .progress-card-identity > strong {
+  font-size: 12px;
+}
+
+.fixed-court-progress-mode .progress-card-identity > span,
+.fixed-court-progress-mode .progress-card-identity > em {
+  min-height: 16px;
+  padding: 1px 4px;
+  font-size: 7px;
+}
+
+.fixed-court-progress-mode .progress-card-heading time > strong,
+.fixed-court-progress-mode .progress-match-card.upcoming-later .progress-card-heading time > strong {
+  font-size: 14px;
+}
+
+.fixed-court-progress-mode .progress-card-heading time > span {
+  font-size: 8px;
+}
+
+.fixed-court-progress-mode .progress-result-editor {
+  grid-template-rows: repeat(2, 26px) 24px;
+  gap: 1px;
+}
+
+.fixed-court-progress-mode .progress-result-team {
+  min-height: 26px;
+  grid-template-columns: 22px minmax(0, 1fr) 40px 28px;
+  gap: 2px;
+  padding: 1px 3px;
+}
+
+.fixed-court-progress-mode .progress-result-team > strong,
+.fixed-court-progress-mode .progress-upcoming-teams .progress-team-row strong {
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fixed-court-progress-mode .progress-result-team input,
+.fixed-court-progress-mode .progress-result-team button {
+  min-height: 22px;
+}
+
+.fixed-court-progress-mode .progress-result-actions {
+  min-height: 24px;
+  grid-template-columns: minmax(0, 1fr) minmax(72px, 0.5fr);
+  gap: 3px;
+}
+
+.fixed-court-progress-mode .progress-result-actions > span {
+  font-size: 9px;
+}
+
+.fixed-court-progress-mode .progress-result-actions .progress-complete-button {
+  min-height: 24px;
+  padding: 2px 5px;
+  font-size: 10px;
+}
+
+.fixed-court-progress-mode .progress-upcoming-teams {
+  height: 100%;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.fixed-court-progress-mode .progress-upcoming-teams .progress-team-row {
+  min-height: 0;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 3px;
+  padding: 2px 4px;
+}
+
+.fixed-court-progress-mode .progress-court-matches::-webkit-scrollbar {
+  width: 6px;
+}
+
+.fixed-court-progress-mode .progress-court-matches::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(12, 143, 127, 0.35);
+}
+
+@media (max-width: 1099px), (orientation: portrait) {
+  .fixed-court-progress-mode {
+    height: 100svh;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .fixed-court-progress-mode .progress-court-board {
+    min-height: 0;
+    flex: 1 1 auto;
+    grid-template-rows: minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .fixed-court-progress-mode .progress-court-lane {
+    height: 100%;
+    min-height: 0;
+  }
+
+  .fixed-court-progress-mode .progress-court-matches {
+    min-height: 0;
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 619px) {
+  .fixed-court-progress-mode {
+    --fixed-progress-card-height: 110px;
+  }
+
+  .fixed-court-progress-mode .progress-mode-header {
+    gap: 5px;
+    padding: 6px 7px;
+  }
+
+  .fixed-court-progress-mode .progress-mode-title > span {
+    font-size: 9px;
+  }
+
+  .fixed-court-progress-mode .progress-mode-title h1 {
+    margin-top: 1px;
+    font-size: 17px;
+  }
+
+  .fixed-court-progress-mode .progress-mode-status {
+    grid-template-columns: repeat(2, minmax(0, 0.55fr)) minmax(96px, 1fr);
+    gap: 4px;
+  }
+
+  .fixed-court-progress-mode .progress-mode-status > div:not(.progress-mode-meter) {
+    min-height: 36px;
+    padding: 3px 5px;
+  }
+
+  .fixed-court-progress-mode .progress-mode-status span {
+    font-size: 8px;
+  }
+
+  .fixed-court-progress-mode .progress-mode-status strong {
+    font-size: 14px;
+  }
+
+  .fixed-court-progress-mode .progress-mode-meter {
+    grid-column: auto;
+    height: 20px;
+  }
+
+  .fixed-court-progress-mode .progress-mode-header-actions {
+    gap: 4px;
+  }
+
+  .fixed-court-progress-mode .progress-mode-header-actions button {
+    min-height: 32px;
+    padding-inline: 6px;
+    font-size: 10px;
+  }
+
+  .fixed-court-progress-mode .progress-orientation-hint,
+  .fixed-court-progress-mode .progress-court-pagination {
+    display: none;
+  }
+
+  .fixed-court-progress-mode .progress-court-board {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-auto-rows: max-content;
+    align-content: start;
+    gap: 6px;
+    padding: 4px 6px 6px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+  }
+
+  .fixed-court-progress-mode .progress-court-lane,
+  .fixed-court-progress-mode .progress-court-lane.selected {
+    height: auto;
+    min-height: 0;
+    grid-template-rows: 30px 118px;
+    border-color: rgba(7, 31, 61, 0.14);
+    box-shadow: 0 6px 16px rgba(7, 31, 61, 0.07);
+  }
+
+  .fixed-court-progress-mode .progress-court-lane > header {
+    min-height: 30px;
+    padding: 3px 7px;
+  }
+
+  .fixed-court-progress-mode .progress-court-lane > header h2 {
+    font-size: 15px;
+  }
+
+  .fixed-court-progress-mode .progress-court-matches {
+    display: grid;
+    grid-auto-flow: column;
+    grid-template-columns: none;
+    grid-template-rows: var(--fixed-progress-card-height);
+    grid-auto-columns: min(82vw, 300px);
+    align-content: center;
+    gap: 4px;
+    padding: 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-gutter: auto;
+    scroll-padding-inline: 4px;
+    scroll-snap-type: x proximity;
+    touch-action: pan-x pan-y;
+  }
+
+  .fixed-court-progress-mode .progress-match-card,
+  .fixed-court-progress-mode .progress-court-empty {
+    scroll-snap-align: start;
+  }
+}
+
+/* 빈 코트 순차 배정의 전역 대기열을 순번 카드로 압축해 보여준다. */
+.available-waiting-queue {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 5px;
+  margin: 5px 8px 0;
+  padding: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(12, 143, 127, 0.28);
+  border-radius: 9px;
+  background: linear-gradient(135deg, #e8faf5, #fff);
+}
+
+.available-waiting-queue > header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.available-waiting-queue > header > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.available-waiting-queue > header strong {
+  color: var(--navy);
+  font-size: 13px;
+}
+
+.available-waiting-queue > header span,
+.available-waiting-queue > header small {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.available-waiting-list {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 226px;
+  gap: 5px;
+  min-width: 0;
+  padding-bottom: 2px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+}
+
+.available-waiting-list:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 1px;
+}
+
+.available-waiting-card {
+  display: grid;
+  height: 86px;
+  min-width: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 3px;
+  padding: 5px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-left: 3px solid #aebdb9;
+  border-radius: 7px;
+  background: #fff;
+  scroll-snap-align: start;
+}
+
+.available-waiting-card.assignable {
+  border-color: rgba(12, 143, 127, 0.48);
+  border-left-color: var(--mint);
+  background: #f5fffc;
+}
+
+.available-waiting-card > header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+}
+
+.available-waiting-card > header strong {
+  color: var(--navy);
+  font-size: 11px;
+}
+
+.available-waiting-card > header span {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.available-waiting-card.assignable > header span {
+  color: var(--green);
+}
+
+.available-waiting-card .progress-team-preview {
+  min-height: 0;
+  padding: 2px 4px;
+  overflow: hidden;
+}
+
+.available-waiting-card .progress-team-preview strong {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.available-assign-button {
+  min-height: 24px;
+  padding: 2px 7px;
+  border-color: var(--green);
+  color: #fff;
+  background: var(--green);
+  font-size: 9px;
+  font-weight: 950;
+}
+
+.available-assign-button:disabled {
+  border-color: #cbd5d3;
+  color: #899592;
+  background: #edf1f0;
+}
+
+.available-waiting-empty {
+  display: grid;
+  min-width: min(320px, calc(100vw - 30px));
+  height: 46px;
+  place-items: center;
+  padding: 8px;
+  border: 1px dashed #b7c7c3;
+  border-radius: 7px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+/* 순차 배정 코트는 모든 화면에서 한 줄에 두 코트씩 아래로 이어진다. */
+.available-progress-mode {
+  height: 100svh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.available-progress-mode .progress-court-pagination {
+  display: none;
+}
+
+.available-progress-mode .progress-court-board {
+  min-height: 0;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: none;
+  grid-auto-rows: minmax(184px, auto);
+  align-content: start;
+  gap: 6px;
+  padding: 6px 8px 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
+.available-progress-mode .progress-court-lane {
+  height: 100%;
+  min-height: 184px;
+}
+
+.available-progress-mode .progress-court-matches {
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.available-progress-mode .progress-court-empty {
+  min-height: 0;
+}
+
+@media (max-width: 619px) {
+  .available-waiting-queue {
+    gap: 4px;
+    margin: 4px 6px 0;
+    padding: 5px;
+  }
+
+  .available-waiting-queue > header small {
+    max-width: 64vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .available-waiting-list {
+    grid-auto-columns: min(76vw, 270px);
+    gap: 4px;
+  }
+
+  .available-progress-mode .progress-orientation-hint {
+    display: none;
+  }
+
+  .available-progress-mode .progress-court-board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: minmax(184px, auto);
+    gap: 5px;
+    padding: 5px 6px 6px;
+  }
+
+  .available-progress-mode .progress-court-lane {
+    min-height: 184px;
+  }
+
+  .available-progress-mode .progress-court-lane > header {
+    padding-inline: 6px;
+  }
+
+  .available-progress-mode .progress-card-heading {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .available-progress-mode .progress-card-identity {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+
+  .available-progress-mode .progress-card-identity > strong {
+    font-size: 11px;
+  }
+
+  .available-progress-mode .progress-result-team {
+    grid-template-columns: 19px minmax(0, 1fr) 36px 27px;
+    gap: 2px;
+    padding-inline: 2px;
+  }
+
+  .available-progress-mode .progress-result-team > strong {
+    overflow: hidden;
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .available-progress-mode .progress-result-actions {
+    grid-template-columns: minmax(0, 1fr) 68px;
+    gap: 2px;
+  }
+
+  .available-progress-mode .progress-result-actions > span {
+    font-size: 8px;
+  }
+
+  .available-progress-mode .progress-result-actions .progress-complete-button {
+    padding-inline: 3px;
+    font-size: 9px;
+  }
+
+  .available-progress-mode .available-cancel-assignment {
+    min-height: 24px;
   }
 }

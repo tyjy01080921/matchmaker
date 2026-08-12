@@ -81,7 +81,7 @@ import {
 import { SharedScheduleFinder } from './SharedScheduleFinder'
 import type { SharedScheduleCandidate } from './sharedSchedule'
 import {
-  assignNextAvailableMeetingMatch,
+  assignAvailableMeetingMatchToFirstEmptyCourt,
   buildAvailableMeetingCourtLanes,
   buildMeetingCourtLanes,
   buildTournamentCourtLanes,
@@ -89,7 +89,6 @@ import {
   getMeetingMatchSequence,
   getMeetingReplanLockedMatchIds,
   getMeetingSequenceNumber,
-  getNextAvailableMeetingMatch,
   getProgressWinnerSide,
   getUndoableTournamentMatchId,
   initializeAvailableMeetingAssignments,
@@ -4898,12 +4897,13 @@ function App() {
   }
 
   const completeMeetingProgressMatch = (matchId: string) => {
+    if (generatedMeetingSettings.courtAssignmentMode === 'available') {
+      updateResult(matchId, { completed: true })
+      setNotice('경기 완료 · 대기 경기에서 빈 코트에 배정하세요.')
+      return
+    }
     updateResult(matchId, { completed: true })
-    setNotice(
-      generatedMeetingSettings.courtAssignmentMode === 'available'
-        ? '경기 완료 · 빈 코트에 다음 경기를 배정하세요.'
-        : '친목 경기 완료',
-    )
+    setNotice('친목 경기 완료')
   }
 
   const updateMeetingProgressScore = (
@@ -4944,21 +4944,21 @@ function App() {
     setNotice('친목 완료 취소')
   }
 
-  const assignNextMeetingMatch = (court: number) => {
-    const nextMatch = getNextAvailableMeetingMatch(
+  const assignWaitingMeetingMatch = (matchId: string) => {
+    const assigned = assignAvailableMeetingMatchToFirstEmptyCourt(
       schedule,
+      generatedMeetingSettings.courtCount,
       meetingCourtAssignments,
       results,
+      matchId,
     )
-    if (!nextMatch) {
-      setNotice('현재 배정 가능한 대진이 없습니다.')
+    if (!assigned.court) {
+      setNotice('배정할 수 없습니다. 빈 코트와 참가자 상태를 확인하세요.')
       return
     }
-    setMeetingCourtAssignments((current) =>
-      assignNextAvailableMeetingMatch(schedule, current, results, court),
-    )
+    setMeetingCourtAssignments(assigned.assignments)
     setNotice(
-      `${court}코트 · 전체 ${getMeetingSequenceNumber(schedule, nextMatch.id)}번 배정`,
+      `${assigned.court}코트 · 전체 ${getMeetingSequenceNumber(schedule, matchId)}번 배정`,
     )
   }
 
@@ -6030,7 +6030,7 @@ function App() {
               onWinner={selectMeetingProgressWinner}
               onComplete={completeMeetingProgressMatch}
               onUndo={undoMeetingProgressMatch}
-              onAssignNext={assignNextMeetingMatch}
+              onAssignMatch={assignWaitingMeetingMatch}
               onCancelAssignment={cancelMeetingCourtAssignment}
               onToggleFullscreen={toggleProgressFullscreen}
               onManageParticipants={manageProgressParticipants}
@@ -6973,16 +6973,17 @@ function App() {
                       }))
                     }}
                   />
-                  <label>
-                    일반 경기 시간
+                  <label className="game-duration-field">
+                    경기 시간 배정
                     <select
+                      aria-label="경기 시간 배정"
                       value={settings.normalGameMinutes}
                       onChange={(event) => {
                         setSettings((current) => ({
                           ...current,
                           normalGameMinutes: Number(event.target.value) as 10 | 12 | 15,
                         }))
-                        setNotice('일반 경기 시간 변경됨 · 생성 필요')
+                        setNotice('경기 시간 배정 변경됨 · 생성 필요')
                       }}
                     >
                       <option value={10}>10분</option>

@@ -188,17 +188,89 @@ export const getNextAvailableMeetingMatch = (
   assignments: MeetingCourtAssignments,
   results: ResultsByMatch,
 ) => {
-  const assignedIds = new Set(Object.keys(assignments))
   const activePlayerIds = new Set(
     activeAvailableMeetingMatches(schedule, assignments, results)
       .flatMap(meetingMatchPlayerIds),
   )
 
   return getMeetingMatchSequence(schedule).find((match) =>
-    !assignedIds.has(match.id) &&
+    !assignments[match.id] &&
     !results[match.id]?.completed &&
     meetingMatchPlayerIds(match).every((playerId) => !activePlayerIds.has(playerId)),
   )
+}
+
+export const canAssignAvailableMeetingMatch = (
+  schedule: Schedule,
+  assignments: MeetingCourtAssignments,
+  results: ResultsByMatch,
+  matchId: string,
+) => {
+  const match = getMeetingMatchSequence(schedule)
+    .find((candidate) => candidate.id === matchId)
+  if (!match || assignments[matchId] || results[matchId]?.completed) return false
+  const activePlayerIds = new Set(
+    activeAvailableMeetingMatches(schedule, assignments, results)
+      .flatMap(meetingMatchPlayerIds),
+  )
+  return meetingMatchPlayerIds(match)
+    .every((playerId) => !activePlayerIds.has(playerId))
+}
+
+export const assignAvailableMeetingMatch = (
+  schedule: Schedule,
+  assignments: MeetingCourtAssignments,
+  results: ResultsByMatch,
+  court: number,
+  matchId: string,
+): MeetingCourtAssignments => {
+  const courtOccupied = Object.entries(assignments).some(
+    ([assignedMatchId, assignment]) =>
+      assignment.court === court && !results[assignedMatchId]?.completed,
+  )
+  if (
+    courtOccupied ||
+    !canAssignAvailableMeetingMatch(schedule, assignments, results, matchId)
+  ) return assignments
+
+  const dispatchOrder = Math.max(
+    0,
+    ...Object.values(assignments).map((assignment) => assignment.dispatchOrder),
+  ) + 1
+  return {
+    ...assignments,
+    [matchId]: { court, dispatchOrder },
+  }
+}
+
+export const assignAvailableMeetingMatchToFirstEmptyCourt = (
+  schedule: Schedule,
+  courtCount: number,
+  assignments: MeetingCourtAssignments,
+  results: ResultsByMatch,
+  matchId: string,
+) => {
+  const court = Array.from({ length: courtCount }, (_, index) => index + 1)
+    .find((candidateCourt) =>
+      !Object.entries(assignments).some(
+        ([assignedMatchId, assignment]) =>
+          assignment.court === candidateCourt &&
+          !results[assignedMatchId]?.completed,
+      ),
+    )
+  if (!court) return { assignments, court: undefined }
+
+  const nextAssignments = assignAvailableMeetingMatch(
+    schedule,
+    assignments,
+    results,
+    court,
+    matchId,
+  )
+  return {
+    assignments: nextAssignments,
+    court: nextAssignments === assignments ? undefined : court,
+  }
 }
 
 export const assignNextAvailableMeetingMatch = (
@@ -207,22 +279,15 @@ export const assignNextAvailableMeetingMatch = (
   results: ResultsByMatch,
   court: number,
 ): MeetingCourtAssignments => {
-  const courtOccupied = Object.entries(assignments).some(
-    ([matchId, assignment]) =>
-      assignment.court === court && !results[matchId]?.completed,
-  )
-  if (courtOccupied) return assignments
-
   const nextMatch = getNextAvailableMeetingMatch(schedule, assignments, results)
   if (!nextMatch) return assignments
-  const dispatchOrder = Math.max(
-    0,
-    ...Object.values(assignments).map((assignment) => assignment.dispatchOrder),
-  ) + 1
-  return {
-    ...assignments,
-    [nextMatch.id]: { court, dispatchOrder },
-  }
+  return assignAvailableMeetingMatch(
+    schedule,
+    assignments,
+    results,
+    court,
+    nextMatch.id,
+  )
 }
 
 export const initializeAvailableMeetingAssignments = (

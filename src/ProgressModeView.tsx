@@ -20,10 +20,10 @@ import type {
   TournamentCourtLane,
 } from './progressMode'
 import {
+  canAssignAvailableMeetingMatch,
   getMeetingCourtMatchNumber,
   getMeetingMatchSequence,
   getMeetingSequenceNumber,
-  getNextAvailableMeetingMatch,
   getProgressCourtPageSize,
   getProgressScoreWinnerSide,
   getProgressWinnerSide,
@@ -119,27 +119,48 @@ const ProgressHeader = ({
   )
 }
 
-const getCourtPageSize = () => {
+const getCourtPageSize = (columnLayout = false, courtCount = 0) => {
   if (typeof window === 'undefined') return 6
+  if (columnLayout) {
+    if (window.innerWidth < 620) return Math.max(1, courtCount)
+    if (window.innerWidth >= 1760) return 6
+    if (window.innerWidth >= 1420) return 5
+    if (window.innerWidth >= 1120) return 4
+    if (window.innerWidth >= 840) return 3
+    if (window.innerWidth >= 620) return 2
+    return 1
+  }
   return getProgressCourtPageSize(window.innerWidth, window.innerHeight)
 }
 
-const useCourtPage = <Lane extends { court: number }>(lanes: Lane[]) => {
-  const [pageSize, setPageSize] = useState(getCourtPageSize)
+const useCourtPage = <Lane extends { court: number }>(
+  lanes: Lane[],
+  columnLayout = false,
+  showAllCourts = false,
+) => {
+  const [pageSize, setPageSize] = useState(() =>
+    showAllCourts ? Math.max(1, lanes.length) : getCourtPageSize(columnLayout, lanes.length),
+  )
   const [page, setPageState] = useState(0)
   const [selectedCourt, setSelectedCourt] = useState<number | undefined>(
     lanes[0]?.court,
   )
 
   useEffect(() => {
-    const updatePageSize = () => setPageSize(getCourtPageSize())
+    const updatePageSize = () =>
+      setPageSize(
+        showAllCourts
+          ? Math.max(1, lanes.length)
+          : getCourtPageSize(columnLayout, lanes.length),
+      )
+    updatePageSize()
     window.addEventListener('resize', updatePageSize)
     window.addEventListener('orientationchange', updatePageSize)
     return () => {
       window.removeEventListener('resize', updatePageSize)
       window.removeEventListener('orientationchange', updatePageSize)
     }
-  }, [])
+  }, [columnLayout, lanes.length, showAllCourts])
 
   useEffect(() => {
     if (selectedCourt && lanes.some((lane) => lane.court === selectedCourt)) return
@@ -175,12 +196,16 @@ const useCourtPage = <Lane extends { court: number }>(lanes: Lane[]) => {
     safePage * pageSize,
     safePage * pageSize + pageSize,
   )
-  const columns = pageSize === 6
-    ? visibleLanes.length === 4
-      ? 2
-      : Math.max(1, Math.min(3, visibleLanes.length))
-    : Math.max(1, Math.min(pageSize, visibleLanes.length))
-  const rows = Math.max(1, Math.ceil(visibleLanes.length / columns))
+  const columns = columnLayout
+    ? Math.max(1, visibleLanes.length)
+    : pageSize === 6
+      ? visibleLanes.length === 4
+        ? 2
+        : Math.max(1, Math.min(3, visibleLanes.length))
+      : Math.max(1, Math.min(pageSize, visibleLanes.length))
+  const rows = columnLayout
+    ? 1
+    : Math.max(1, Math.ceil(visibleLanes.length / columns))
 
   return {
     page: safePage,
@@ -467,7 +492,7 @@ export const MeetingProgressMode = ({
   ...headerProps
 }: MeetingProgressModeProps) => {
   const [completedOpen, setCompletedOpen] = useState(false)
-  const courtPage = useCourtPage(lanes)
+  const courtPage = useCourtPage(lanes, true)
   const completedMatches = lanes
     .flatMap((lane) => lane.completed)
     .sort((left, right) =>
@@ -486,7 +511,7 @@ export const MeetingProgressMode = ({
   }
 
   return (
-    <main className="progress-mode-shell">
+    <main className="progress-mode-shell fixed-court-progress-mode">
       <ProgressHeader
         {...headerProps}
         modeLabel="친목"
@@ -524,7 +549,11 @@ export const MeetingProgressMode = ({
               <h2>{lane.court}코트</h2>
               <span>남음 {lane.pending.length}경기</span>
             </header>
-            <div className="progress-court-matches">
+            <div
+              className="progress-court-matches"
+              aria-label={`${lane.court}코트 경기 목록`}
+              tabIndex={0}
+            >
               {lane.pending.length > 0 ? lane.pending.map((match, index) => {
                 const stageClass = index === 0
                   ? 'current'
@@ -555,24 +584,16 @@ export const MeetingProgressMode = ({
                       endsAt={times.end}
                       detail={match.isSpecial ? '스페셜' : undefined}
                     />
-                    {index === 0 ? (
-                      <ProgressResultEditor
-                        matchId={match.id}
-                        teamAName={teamAName}
-                        teamBName={teamBName}
-                        result={results[match.id]}
-                        winnerRequired={false}
-                        onScoreChange={onScoreChange}
-                        onWinner={onWinner}
-                        onComplete={onComplete}
-                      />
-                    ) : (
-                      <UpcomingTeams
-                        teamAName={teamAName}
-                        teamBName={teamBName}
-                        compact={index >= 2}
-                      />
-                    )}
+                    <ProgressResultEditor
+                      matchId={match.id}
+                      teamAName={teamAName}
+                      teamBName={teamBName}
+                      result={results[match.id]}
+                      winnerRequired={false}
+                      onScoreChange={onScoreChange}
+                      onWinner={onWinner}
+                      onComplete={onComplete}
+                    />
                   </article>
                 )
               }) : (
@@ -633,7 +654,7 @@ type AvailableMeetingProgressModeProps = Omit<ProgressHeaderProps, 'modeLabel'> 
   onWinner: (matchId: string, winnerSide: MatchWinnerSide) => void
   onComplete: (matchId: string) => void
   onUndo: (matchId: string) => void
-  onAssignNext: (court: number) => void
+  onAssignMatch: (matchId: string) => void
   onCancelAssignment: (matchId: string) => void
 }
 
@@ -648,18 +669,20 @@ export const AvailableMeetingProgressMode = ({
   onWinner,
   onComplete,
   onUndo,
-  onAssignNext,
+  onAssignMatch,
   onCancelAssignment,
   ...headerProps
 }: AvailableMeetingProgressModeProps) => {
   const [completedOpen, setCompletedOpen] = useState(false)
-  const courtPage = useCourtPage(lanes)
+  const emptyCourts = lanes
+    .filter((lane) => !lane.active)
+    .map((lane) => lane.court)
+  const nextEmptyCourt = emptyCourts[0]
+  const courtPage = useCourtPage(lanes, false, true)
   const sequence = getMeetingMatchSequence(schedule)
-  const nextMatch = getNextAvailableMeetingMatch(schedule, assignments, results)
   const pendingMatches = sequence.filter(
     (match) => !assignments[match.id] && !results[match.id]?.completed,
   )
-  const firstPending = pendingMatches[0]
   const completedMatches = lanes
     .flatMap((lane) => lane.completed.map((match) => ({ court: lane.court, match })))
     .sort((left, right) =>
@@ -668,9 +691,15 @@ export const AvailableMeetingProgressMode = ({
     )
   const allDone = headerProps.totalCount > 0 &&
     headerProps.completedCount >= headerProps.totalCount
-  const nextSequenceNumber = nextMatch
-    ? getMeetingSequenceNumber(schedule, nextMatch.id)
-    : 0
+
+  const assignMatch = (match: Match) => {
+    if (!nextEmptyCourt) return
+    const sequenceNumber = getMeetingSequenceNumber(schedule, match.id)
+    if (!window.confirm(
+      `전체 ${sequenceNumber}번 경기를 ${nextEmptyCourt}코트로 배정할까요?`,
+    )) return
+    onAssignMatch(match.id)
+  }
 
   return (
     <main className="progress-mode-shell available-progress-mode">
@@ -686,29 +715,61 @@ export const AvailableMeetingProgressMode = ({
           <span>전체 순번 대진을 모두 진행했습니다.</span>
         </section>
       ) : (
-        <section className="available-next-call">
-          <div>
-            <span>다음 호출</span>
-            {nextMatch ? (
-              <strong>{nextSequenceNumber}번 대진</strong>
-            ) : pendingMatches.length > 0 ? (
-              <strong>참가자 경기 중</strong>
-            ) : (
-              <strong>배정 대기 없음</strong>
+        <section className="available-waiting-queue">
+          <header>
+            <div>
+              <strong>대기 경기</strong>
+              <span>{pendingMatches.length}경기</span>
+            </div>
+            <small>
+              {nextEmptyCourt
+                ? `빈 코트 ${emptyCourts.length}개 · ${nextEmptyCourt}코트부터 배정`
+                : '경기 완료 후 배치 버튼이 활성화됩니다.'}
+            </small>
+          </header>
+          <div
+            className="available-waiting-list"
+            aria-label="순차 배정 대기 경기 목록"
+            tabIndex={0}
+          >
+            {pendingMatches.length > 0 ? pendingMatches.map((match) => {
+              const assignable = canAssignAvailableMeetingMatch(
+                schedule,
+                assignments,
+                results,
+                match.id,
+              )
+              const sequenceNumber = getMeetingSequenceNumber(schedule, match.id)
+              return (
+                <article
+                  className={`available-waiting-card ${assignable ? 'assignable' : ''}`}
+                  key={match.id}
+                >
+                  <header>
+                    <strong>전체 {sequenceNumber}번</strong>
+                    <span>{assignable ? '배정 가능' : '참가자 경기 중'}</span>
+                  </header>
+                  <UpcomingTeams
+                    teamAName={teamName(match, 'A')}
+                    teamBName={teamName(match, 'B')}
+                    compact
+                  />
+                  <button
+                    type="button"
+                    className="available-assign-button"
+                    disabled={!assignable || !nextEmptyCourt}
+                    onClick={() => assignMatch(match)}
+                  >
+                    배치
+                  </button>
+                </article>
+              )
+            }) : (
+              <div className="available-waiting-empty">
+                진행 중인 경기 외에 대기 경기가 없습니다.
+              </div>
             )}
           </div>
-          {nextMatch ? (
-            <p>
-              {teamName(nextMatch, 'A')} <b>vs</b> {teamName(nextMatch, 'B')}
-            </p>
-          ) : (
-            <p>진행 중인 경기가 끝나면 다음 대진을 배정할 수 있습니다.</p>
-          )}
-          <small>
-            {firstPending && nextMatch && firstPending.id !== nextMatch.id
-              ? `${getMeetingSequenceNumber(schedule, firstPending.id)}번 참가자 경기 중 · ${nextSequenceNumber}번 먼저 진행`
-              : `미배정 ${pendingMatches.length}경기`}
-          </small>
         </section>
       )}
       <CourtPageNavigation
@@ -772,21 +833,7 @@ export const AvailableMeetingProgressMode = ({
                 ) : (
                   <div className="progress-court-empty available-court-empty">
                     <strong>코트가 비었습니다.</strong>
-                    <span>
-                      {nextMatch
-                        ? `${nextSequenceNumber}번 대진을 배정할 수 있습니다.`
-                        : pendingMatches.length > 0
-                          ? '진행 중인 참가자를 기다리고 있습니다.'
-                          : '남은 대진이 없습니다.'}
-                    </span>
-                    <button
-                      type="button"
-                      className="primary-action"
-                      disabled={!nextMatch}
-                      onClick={() => onAssignNext(lane.court)}
-                    >
-                      다음 경기 배정
-                    </button>
+                    <span>대기 경기의 배치 버튼을 누르세요.</span>
                   </div>
                 )}
               </div>
