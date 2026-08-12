@@ -1629,7 +1629,7 @@ h2 {
 
 .stepper-control {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 40px;
+  grid-template-columns: 24px minmax(34px, 1fr) 24px;
   min-width: 0;
   align-items: center;
   gap: 0;
@@ -1642,7 +1642,7 @@ h2 {
 
 .stepper-control button {
   min-height: 40px;
-  width: 40px;
+  width: 24px;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -1653,13 +1653,16 @@ h2 {
 }
 
 .stepper-control input {
-  min-width: 0;
+  width: 100%;
+  min-width: 34px;
   min-height: 40px;
   margin-top: 0;
   border: 0;
   border-inline: 1px solid var(--line);
   border-radius: 0;
+  padding-inline: 2px;
   text-align: center;
+  font-variant-numeric: tabular-nums;
   font-weight: 800;
 }
 
@@ -3528,11 +3531,11 @@ textarea {
   }
 
   .stepper-control {
-    grid-template-columns: 34px minmax(0, 1fr) 34px;
+    grid-template-columns: 24px minmax(34px, 1fr) 24px;
   }
 
   .stepper-control button {
-    width: 34px;
+    width: 24px;
     font-size: 14px;
   }
 
@@ -4858,9 +4861,7 @@ textarea {
 
   .settings-grid {
     display: grid;
-    grid-template-columns:
-      repeat(3, minmax(0, 1fr))
-      minmax(0, 1.15fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px;
     margin-inline: 0;
     overflow-x: visible;
@@ -4935,13 +4936,14 @@ textarea {
   }
 
   .game-duration-field {
+    grid-column: 1 / -1;
     gap: 3px;
     font-size: 10px;
     white-space: nowrap;
   }
 
   .stepper-control {
-    grid-template-columns: 24px minmax(20px, 1fr) 24px;
+    grid-template-columns: 24px minmax(34px, 1fr) 24px;
     min-height: 32px;
   }
 
@@ -4952,8 +4954,9 @@ textarea {
   }
 
   .stepper-control input {
+    min-width: 34px;
     min-height: 32px;
-    padding-inline: 3px;
+    padding-inline: 2px;
     font-size: 14px;
   }
 
