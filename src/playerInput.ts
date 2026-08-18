@@ -2,6 +2,7 @@ import type { AgeGroup, Gender, Level, Player } from './types'
 
 const regularLevelTokens = ['OA', 'S', 'A', 'B', 'C', 'D', 'E', 'O']
 const specialLevelTokens = ['스페셜', 'SPECIAL']
+const numberedListPrefix = /^\d+\s*[.)]\s*/
 
 export const parseBulkAgeGroup = (value: string): AgeGroup | undefined => {
   const normalized = value.trim().replace(/\s+/g, '')
@@ -71,7 +72,10 @@ export const parseBulkPlayerDrafts = (
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const [name, ...attributeTokens] = line.split(/[\s,\t]+/).filter(Boolean)
+      const normalizedLine = line.replace(numberedListPrefix, '')
+      const [name, ...attributeTokens] = normalizedLine
+        .split(/[\s,/]+/)
+        .filter(Boolean)
       const levels = attributeTokens
         .map((token) => parseBulkLevel(token))
         .filter((level): level is Level => Boolean(level))

@@ -1527,11 +1527,11 @@ const mergeParsedPlayersWithRosterDraft = (
 }
 
 const bulkPlayerPlaceholder = [
-  '이름 또는 번호는 첫 순서에 작성',
-  '이후 레벨 · 성별 · 연령은 순서 무관',
+  '앞 번호(1.)는 자동 제외',
+  '이름 / 성별 / 레벨 · 이후 정보 순서 무관',
   '김민수',
   '이지연',
-  '박태호 남 30 B',
+  '1. 박태호 / 남 / B',
   '최수빈 40 여 A',
   '홍길동 B 경기양보 대기양보',
   '스페셜1 스페셜',
@@ -7613,7 +7613,7 @@ function App() {
                     }`}
                   >
                     <div className="bulk-help">
-                      이름만 입력 시 O · 무관 · 무관
+                      앞 번호 자동 제외 · 이름만 입력 시 O · 무관 · 무관
                     </div>
                     <textarea
                       aria-label="참가자 명단 입력"
