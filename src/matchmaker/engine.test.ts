@@ -8,6 +8,7 @@ import type { MatchSettings, Player, Schedule } from '../types'
 import {
   generateMeetingScheduleV2,
   generateMeetingScheduleV2WithWaitResolution,
+  insertConfiguredEventMatch,
   planMeetingSlotsV2,
 } from './engine'
 import {
@@ -147,6 +148,56 @@ describe('meeting V2 rules', () => {
       Object.values(metrics.gameCounts).reduce((sum, count) => sum + count, 0),
     ).toBe(matches.length * 4)
     expect(metrics.structuralIssues).toEqual([])
+  })
+
+  it('counts every linked event participant as having played a special match', () => {
+    const players = makePlayers(8, 1)
+    const eventPlayers = players.slice(0, 4)
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 1,
+      startTime: '18:00',
+      endTime: '20:00',
+      normalGameMinutes: 12,
+      eventMatch: {
+        enabled: true,
+        startTime: '19:00',
+        court: 1,
+        participants: eventPlayers.map((player) => ({
+          name: player.name,
+          playerId: player.id,
+        })) as MatchSettings['eventMatch']['participants'],
+      },
+    }
+    const baseSchedule: Schedule = {
+      rounds: [{
+        id: 'base-round',
+        number: 1,
+        matches: [{
+          id: 'base-match',
+          round: 1,
+          court: 1,
+          teamA: [players[4], players[5]],
+          teamB: [players[6], players[7]],
+          isSpecial: false,
+          startOffsetMinutes: 0,
+          durationMinutes: 12,
+        }],
+        resting: [],
+      }],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: { [players[0].id]: 0 },
+    }
+
+    const inserted = insertConfiguredEventMatch(baseSchedule, settings, players)
+    const reinserted = insertConfiguredEventMatch(inserted, settings, players)
+
+    expect(reinserted.guestGameCounts[players[0].id]).toBe(1)
+    expect(reinserted.specialCompletedIds).toEqual(
+      expect.arrayContaining(eventPlayers.slice(1).map((player) => player.id)),
+    )
+    expect(reinserted.specialCompletedIds).not.toContain(players[4].id)
   })
 
   it('keeps structural and success rules separate from ordered preferences', () => {

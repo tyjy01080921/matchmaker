@@ -2063,7 +2063,7 @@ function App() {
     const matches = schedule.rounds.flatMap((round) => round.matches)
     const specialRegularIds = new Set(
       matches
-        .filter((match) => match.isSpecial)
+        .filter((match) => match.isSpecial || match.isEventMatch)
         .flatMap((match) => [...match.teamA, ...match.teamB])
         .filter((player) => !player.isGuest)
         .map((player) => player.id),
@@ -2703,7 +2703,7 @@ function App() {
       : scheduledBookingMinutes,
   )
   const actualSpecialEndOffset = allScheduledMatches
-    .filter((match) => match.isSpecial)
+    .filter((match) => match.isSpecial || match.isEventMatch)
     .reduce((latest, match) => Math.max(latest, matchEndOffset(match)), 0)
   const actualSpecialEndTime = actualSpecialEndOffset > 0
     ? clockTimeAtOffset(
@@ -2718,7 +2718,8 @@ function App() {
     ? allScheduledMatches.filter(
         (match) =>
           matchStartOffset(match) >= generatedMeetingSettings.specialTimeLimitMinutes &&
-          !match.isSpecial,
+          !match.isSpecial &&
+          !match.isEventMatch,
       ).length
     : 0
   const automaticSpecialGamesPerGuest = hasScheduledActiveGuests
@@ -2784,7 +2785,7 @@ function App() {
   const scheduledSpecialParticipantIds = new Set(
     schedule.rounds
       .flatMap((round) => round.matches)
-      .filter((match) => match.isSpecial)
+      .filter((match) => match.isSpecial || match.isEventMatch)
       .flatMap((match) => [...match.teamA, ...match.teamB])
       .filter((player) => !player.isGuest)
       .map((player) => player.id),
@@ -2847,7 +2848,7 @@ function App() {
   }
   const maximumMeetingGroupCount = Math.max(0, ...meetingGroupCounts.values())
   const scheduledSpecialMatchCount = allScheduledMatches.filter(
-    (match) => match.isSpecial,
+    (match) => match.isSpecial || match.isEventMatch,
   ).length
   const activeTournamentTeams = tournamentTeams.filter(
     (team) => team.active && team.name.trim(),
@@ -9465,11 +9466,7 @@ function App() {
                           <td>{stat.losses}</td>
                           <td>{winRate}%</td>
                           <td>{stat.pointsFor - stat.pointsAgainst}</td>
-                          <td>
-                            {stat.player.isGuest
-                              ? `${schedule.guestGameCounts[stat.player.id] ?? 0}경기`
-                              : `${stat.guestGames}경기`}
-                          </td>
+                          <td>{stat.guestGames}경기</td>
                         </tr>
                       )
                     })}

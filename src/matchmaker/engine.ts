@@ -131,13 +131,48 @@ export const meetingScheduleWithoutEventMatches = (
     .filter((round) => round.matches.length > 0),
 })
 
+const refreshSpecialMatchMetadata = (
+  schedule: Schedule,
+  roster: Player[],
+): Schedule => {
+  const matches = schedule.rounds.flatMap((round) => round.matches)
+  const guestGameCounts: Record<string, number> = Object.fromEntries(
+    roster
+      .filter((player) => player.active && player.isGuest)
+      .map((player) => [player.id, 0]),
+  )
+  for (const match of matches) {
+    for (const player of [...match.teamA, ...match.teamB]) {
+      if (player.isGuest) {
+        guestGameCounts[player.id] = (guestGameCounts[player.id] ?? 0) + 1
+      }
+    }
+  }
+  const specialCompletedIds = [...new Set(
+    matches
+      .filter((match) => match.isSpecial || match.isEventMatch)
+      .flatMap((match) => [...match.teamA, ...match.teamB])
+      .filter((player) => !player.isGuest)
+      .map((player) => player.id),
+  )]
+
+  return {
+    ...schedule,
+    specialCompletedIds,
+    guestGameCounts,
+  }
+}
+
 export const insertConfiguredEventMatch = (
   schedule: Schedule,
   settings: MatchSettings,
   roster: Player[],
 ): Schedule => {
   const eventWindow = getConfiguredEventMatchWindow(settings)
-  const baseSchedule = meetingScheduleWithoutEventMatches(schedule)
+  const baseSchedule = refreshSpecialMatchMetadata(
+    meetingScheduleWithoutEventMatches(schedule),
+    roster,
+  )
   if (!eventWindow || baseSchedule.rounds.length === 0) return baseSchedule
 
   const rosterById = new Map(roster.map((player) => [player.id, player]))
@@ -190,7 +225,7 @@ export const insertConfiguredEventMatch = (
         },
       ]
 
-  return {
+  return refreshSpecialMatchMetadata({
     ...baseSchedule,
     rounds: rounds
       .sort((left, right) =>
@@ -204,7 +239,7 @@ export const insertConfiguredEventMatch = (
           .map((match) => ({ ...match, round: index + 1 }))
           .sort((left, right) => left.court - right.court),
       })),
-  }
+  }, roster)
 }
 
 type SpecialReservation = PlannedMeetingSlot & {
@@ -2604,7 +2639,6 @@ const repairStandardGameSpread = (
 
 const scheduleWarnings = (
   schedule: Schedule,
-  state: EngineState,
   activePlayers: Player[],
   settings: MatchSettings,
   plannedSlots: PlannedMeetingSlot[],
@@ -2630,11 +2664,18 @@ const scheduleWarnings = (
     const eligibleCount = activePlayers.filter(
       (player) => !player.isGuest && (player.specialMatchEligible ?? true),
     ).length
+    const completedSpecialIds = new Set(schedule.specialCompletedIds)
+    const completedEligibleCount = activePlayers.filter(
+      (player) =>
+        !player.isGuest &&
+        (player.specialMatchEligible ?? true) &&
+        completedSpecialIds.has(player.id),
+    ).length
     if (settings.specialLimitEnabled && eligibleCount < target) {
       warnings.push(`스페셜 참가 대상 부족: ${eligibleCount}/${target}명`)
-    } else if (state.specialParticipantIds.size < target) {
+    } else if (completedEligibleCount < target) {
       warnings.push(
-        `스페셜 참가 목표 미달: ${state.specialParticipantIds.size}/${target}명`,
+        `스페셜 참가 목표 미달: ${completedEligibleCount}/${target}명`,
       )
     }
     const eventGuestIds = new Set(
@@ -2654,17 +2695,16 @@ const scheduleWarnings = (
         ),
         0,
       )
-    const achievedGames = [...state.guestGames.values()].reduce(
+    const achievedGames = Object.values(schedule.guestGameCounts).reduce(
       (sum, count) => sum + count,
       0,
-    ) + activePlayers.filter(
-      (player) => player.isGuest && eventGuestIds.has(player.id),
-    ).length
+    )
     if (achievedGames < plannedGames) {
       warnings.push(`스페셜 경기 목표 미달: ${achievedGames}/${plannedGames}경기`)
     }
     const unplayedGuests = activePlayers.filter(
-      (player) => player.isGuest && (state.guestGames.get(player.id) ?? 0) === 0,
+      (player) =>
+        player.isGuest && (schedule.guestGameCounts[player.id] ?? 0) === 0,
     )
     if (unplayedGuests.length > 0) {
       warnings.push(
@@ -2830,7 +2870,6 @@ export const generateMeetingScheduleV2 = (
       .map((issue) => issue.message),
     ...scheduleWarnings(
       schedule,
-      state,
       activePlayers,
       effectiveSettings,
       slots,

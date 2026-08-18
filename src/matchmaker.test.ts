@@ -1949,6 +1949,46 @@ describe('generateSchedule', () => {
     expect(regularStats.some((stat) => stat.guestGames >= 2)).toBe(true)
   })
 
+  it('counts an event match as a special match for guests and regulars', () => {
+    const guest = makeTestPlayer('event-guest', '스페셜', 'none', false, true)
+    const regulars = Array.from({ length: 3 }, (_, index) =>
+      makeTestPlayer(`event-regular-${index + 1}`, 'A'),
+    )
+    const eventMatch: Match = {
+      id: 'event-special-count',
+      round: 1,
+      court: 1,
+      teamA: [guest, regulars[0]],
+      teamB: [regulars[1], regulars[2]],
+      isSpecial: false,
+      isEventMatch: true,
+      startOffsetMinutes: 0,
+      durationMinutes: 12,
+    }
+    const schedule: Schedule = {
+      rounds: [{
+        id: 'event-round',
+        number: 1,
+        matches: [eventMatch],
+        resting: [],
+      }],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: { [guest.id]: 1 },
+    }
+    const stats = calculateStats([guest, ...regulars], schedule, {})
+
+    expect(stats.find((stat) => stat.player.id === guest.id)).toMatchObject({
+      specialDone: true,
+      guestGames: 1,
+    })
+    expect(
+      stats
+        .filter((stat) => regulars.some((player) => player.id === stat.player.id))
+        .every((stat) => stat.specialDone && stat.guestGames === 1),
+    ).toBe(true)
+  })
+
   it('keeps available courts filled while applying streak penalties', () => {
     const schedule = generateSchedule(samplePlayers, defaultSettings)
     const availableCourts = Math.min(

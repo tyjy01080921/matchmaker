@@ -690,6 +690,9 @@ export const getMatchIndividualSkillSpread = (match: Match) => {
 const matchOverallSkillGap = (match: Match) =>
   Math.max(matchTeamSkillGap(match), getMatchIndividualSkillSpread(match))
 
+const isSpecialParticipationMatch = (match: Match) =>
+  match.isSpecial || Boolean(match.isEventMatch)
+
 export type MatchGenderCompositionReview = {
   maleCount: number
   femaleCount: number
@@ -995,7 +998,7 @@ export const applyMeetingLineups = (
     )
     const specialCompletedIds = Array.from(new Set(
       matches
-        .filter((match) => match.isSpecial)
+        .filter(isSpecialParticipationMatch)
         .flatMap((match) => [...match.teamA, ...match.teamB])
         .filter((player) => !player.isGuest)
         .map((player) => player.id),
@@ -5965,7 +5968,7 @@ const continuationScheduleMetadata = (rounds: Round[]) => {
   const matches = rounds.flatMap((round) => round.matches)
   const specialCompletedIds = [...new Set(
     matches
-      .filter((match) => match.isSpecial)
+      .filter(isSpecialParticipationMatch)
       .flatMap((match) => matchPlayers(match))
       .filter((player) => !player.isGuest)
       .map((player) => player.id),
@@ -8023,15 +8026,19 @@ export const calculateStats = (
       const [teamA0, teamA1, teamB0, teamB1] = playersInMatch
       const teamA: Team = [teamA0, teamA1]
       const teamB: Team = [teamB0, teamB1]
-      const guestMatch = !match.isEventMatch && hasGuest(playersInMatch)
+      const specialParticipationMatch =
+        isSpecialParticipationMatch(match) || hasGuest(playersInMatch)
 
       for (const player of playersInMatch) {
         const stat = ensureStat(player)
         stat.games += 1
+        if (specialParticipationMatch) {
+          stat.specialDone = true
+          stat.guestGames += 1
+        }
         const windows = matchWindowsByPlayer.get(player.id) ?? []
         windows.push(matchTimeWindow(match))
         matchWindowsByPlayer.set(player.id, windows)
-        if (!player.isGuest && guestMatch) stat.guestGames += 1
       }
 
       if (!completed) continue
