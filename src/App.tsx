@@ -162,6 +162,7 @@ import {
   getBookingDurationMinutes,
   getBookingRoundCount,
   normalizeClockTime,
+  rawBookingDurationMinutes,
   roundTimeRange,
 } from './scheduleTime'
 
@@ -581,6 +582,53 @@ const normalizeMeetingPhaseBoundaries = (
   return { earlyPhaseEndPercent, middlePhaseEndPercent }
 }
 
+const normalizeEventMatchSettings = (
+  value: Partial<MatchSettings['eventMatch']> | undefined,
+  booking: { startTime: string; durationMinutes: number },
+  normalGameMinutes: MatchSettings['normalGameMinutes'],
+  courtCount: number,
+): MatchSettings['eventMatch'] => {
+  const slotCount = Math.floor(booking.durationMinutes / normalGameMinutes)
+  const fallbackSlotIndex = Math.max(1, Math.floor(slotCount / 2))
+  const requestedOffset = rawBookingDurationMinutes(
+    booking.startTime,
+    normalizeClockTime(
+      value?.startTime,
+      clockTimeAtOffset(
+        booking.startTime,
+        fallbackSlotIndex * normalGameMinutes,
+      ),
+    ),
+  )
+  const requestedSlotIndex = Math.round(requestedOffset / normalGameMinutes)
+  const maximumStartSlotIndex = Math.max(1, slotCount - 2)
+  const slotIndex = slotCount >= 3
+    ? Math.min(maximumStartSlotIndex, Math.max(1, requestedSlotIndex))
+    : 0
+  const rawParticipants = Array.isArray(value?.participants)
+    ? value.participants
+    : []
+  const participants = Array.from({ length: 4 }, (_, index) => {
+    const participant = rawParticipants[index]
+    return {
+      name: String(participant?.name ?? '').trim().slice(0, 40),
+      ...(typeof participant?.playerId === 'string' && participant.playerId
+        ? { playerId: participant.playerId }
+        : {}),
+    }
+  }) as MatchSettings['eventMatch']['participants']
+
+  return {
+    enabled: Boolean(value?.enabled),
+    startTime: clockTimeAtOffset(
+      booking.startTime,
+      slotIndex * normalGameMinutes,
+    ),
+    court: normalizePositiveInteger(value?.court, 1, 1, courtCount),
+    participants,
+  }
+}
+
 const normalizeMatchConditionOptions = (
   value: unknown,
 ): MatchConditionOptions => {
@@ -741,24 +789,28 @@ const normalizeMatchSettings = (
     3,
     Math.floor(rawSpecialParticipantTarget / 3) * 3,
   )
+  const courtCount = normalizePositiveInteger(
+    settings?.courtCount,
+    defaultSettings.courtCount,
+    1,
+    12,
+  )
+  const normalGameMinutes = [10, 12, 15].includes(
+    Number(settings?.normalGameMinutes),
+  )
+    ? Number(settings?.normalGameMinutes) as 10 | 12 | 15
+    : meetingDefaultSettings.normalGameMinutes
 
   return {
     ...meetingDefaultSettings,
     ...settings,
     eventName: normalizeEventName(settings?.eventName),
-    courtCount: normalizePositiveInteger(
-      settings?.courtCount,
-      defaultSettings.courtCount,
-      1,
-      12,
-    ),
+    courtCount,
     courtAssignmentMode:
       settings?.courtAssignmentMode === 'available' ? 'available' : 'fixed',
     startTime: booking.startTime,
     endTime: booking.endTime,
-    normalGameMinutes: [10, 12, 15].includes(Number(settings?.normalGameMinutes))
-      ? Number(settings?.normalGameMinutes) as 10 | 12 | 15
-      : meetingDefaultSettings.normalGameMinutes,
+    normalGameMinutes,
     seed: normalizePositiveInteger(settings?.seed, defaultSettings.seed, 1, 999999),
     shuffleDirection: normalizeMeetingShuffleDirection(
       settings?.shuffleDirection,
@@ -800,6 +852,12 @@ const normalizeMatchSettings = (
       settings?.startTime && settings?.endTime
         ? (settings.roundCountLocked ?? true)
         : true,
+    eventMatch: normalizeEventMatchSettings(
+      settings?.eventMatch,
+      booking,
+      normalGameMinutes,
+      courtCount,
+    ),
     ...phaseBoundaries,
     conditionOptions: normalizeMatchConditionOptions(settings?.conditionOptions),
   }
@@ -2532,9 +2590,11 @@ function App() {
       section.matches.map((match, index) => [
         match.id,
         generatedMeetingSettings.courtAssignmentMode === 'available'
-          ? meetingCourtAssignments[match.id]
-            ? `${meetingCourtAssignments[match.id].court}코트 ${index + 1}번 경기`
-            : `코트 미배정 ${index + 1}번 경기`
+          ? match.isEventMatch
+            ? `${match.court}코트 이벤트 · ${index + 1}번 경기`
+            : meetingCourtAssignments[match.id]
+              ? `${meetingCourtAssignments[match.id].court}코트 ${index + 1}번 경기`
+              : `코트 미배정 ${index + 1}번 경기`
           : `${section.number}코트 ${index + 1}번 경기`,
       ] as const),
     ),
@@ -2577,6 +2637,40 @@ function App() {
     settings.startTime,
     settings.endTime,
   )
+  const eventMatchStartOptions = Array.from(
+    {
+      length: Math.max(
+        0,
+        Math.floor(bookingMinutes / settings.normalGameMinutes) - 2,
+      ),
+    },
+    (_, index) => clockTimeAtOffset(
+      settings.startTime,
+      (index + 1) * settings.normalGameMinutes,
+    ),
+  )
+  const eventMatchSetupIssue = (() => {
+    if (!settings.eventMatch.enabled) return null
+    if (eventMatchStartOptions.length === 0) {
+      return '이벤트 매치와 다음 경기 휴식 시간을 확보할 수 없습니다.'
+    }
+    if (settings.eventMatch.participants.some((participant) => !participant.name.trim())) {
+      return '이벤트 참가자 4명을 입력해 주세요.'
+    }
+    const activePlayerIds = new Set(activePlayers.map((player) => player.id))
+    const linkedIds = settings.eventMatch.participants.flatMap((participant) =>
+      participant.playerId && activePlayerIds.has(participant.playerId)
+        ? [participant.playerId]
+        : [],
+    )
+    if (linkedIds.length !== 4) {
+      return '참가자 명단의 이름을 선택해야 다음 경기 휴식이 적용됩니다.'
+    }
+    if (new Set(linkedIds).size !== 4) {
+      return '이벤트 참가자는 서로 다른 4명이어야 합니다.'
+    }
+    return null
+  })()
   const scheduledBookingMinutes = getBookingDurationMinutes(
     generatedMeetingSettings.startTime,
     generatedMeetingSettings.endTime,
@@ -2744,6 +2838,7 @@ function App() {
   ).length
   const meetingGroupCounts = new Map<string, number>()
   for (const match of allScheduledMatches) {
+    if (match.isEventMatch) continue
     const key = [...match.teamA, ...match.teamB]
       .map((player) => player.id)
       .sort()
@@ -3243,14 +3338,14 @@ function App() {
       const startTime = normalizeClockTime(value, current.startTime)
       const endTime = clockTimeAtOffset(startTime, duration)
       const targetRoundCount = Math.floor(duration / GAME_SLOT_MINUTES)
-      return {
+      return normalizeMatchSettings({
         ...current,
         startTime,
         endTime,
         targetRoundCount,
         pacingRoundCount: targetRoundCount,
         roundCountLocked: true,
-      }
+      })
     })
     setNotice('예약 시작 변경됨 · 생성 필요')
   }
@@ -3263,7 +3358,7 @@ function App() {
       return
     }
     const targetRoundCount = Math.floor(duration / GAME_SLOT_MINUTES)
-    setSettings((current) => ({
+    setSettings((current) => normalizeMatchSettings({
       ...current,
       endTime,
       specialTimeLimitMinutes: normalizeSpecialTimeLimit(
@@ -3280,7 +3375,7 @@ function App() {
   const updateMeetingDuration = (duration: number) => {
     const safeDuration = Math.min(MAX_BOOKING_MINUTES, Math.max(GAME_SLOT_MINUTES, duration))
     const targetRoundCount = Math.floor(safeDuration / GAME_SLOT_MINUTES)
-    setSettings((current) => ({
+    setSettings((current) => normalizeMatchSettings({
       ...current,
       endTime: clockTimeAtOffset(current.startTime, safeDuration),
       specialTimeLimitMinutes: Math.min(current.specialTimeLimitMinutes, safeDuration),
@@ -3290,6 +3385,41 @@ function App() {
     }))
     setCustomBookingTime(false)
     setNotice(`대관 ${formatDuration(safeDuration)} · 생성 필요`)
+  }
+
+  const updateEventMatchParticipant = (index: number, name: string) => {
+    const normalizedName = name.trim()
+    setSettings((current) => {
+      const usedIds = new Set(
+        current.eventMatch.participants.flatMap((participant, participantIndex) =>
+          participantIndex !== index && participant.playerId
+            ? [participant.playerId]
+            : [],
+        ),
+      )
+      const exactMatches = players.filter(
+        (player) =>
+          player.active &&
+          !usedIds.has(player.id) &&
+          playerDisplayName(player, displayNames) === normalizedName,
+      )
+      const participants = current.eventMatch.participants.map(
+        (participant, participantIndex) =>
+          participantIndex === index
+            ? {
+                name,
+                ...(exactMatches.length === 1
+                  ? { playerId: exactMatches[0].id }
+                  : {}),
+              }
+            : participant,
+      ) as MatchSettings['eventMatch']['participants']
+      return {
+        ...current,
+        eventMatch: { ...current.eventMatch, participants },
+      }
+    })
+    setNotice('이벤트 매치 변경됨 · 생성 필요')
   }
 
   const setAppModeAndNotice = (mode: AppMode) => {
@@ -4479,6 +4609,12 @@ function App() {
   }
 
   const generateBookingSchedule = () => {
+    if (eventMatchSetupIssue) {
+      setSettingsOpen(true)
+      setNotice(eventMatchSetupIssue)
+      window.setTimeout(() => scrollToSection('meeting-settings'), 0)
+      return
+    }
     const bookingRoundTarget = getBookingRoundCount(
       settings.startTime,
       settings.endTime,
@@ -5892,13 +6028,15 @@ function App() {
               (courtMatch) => courtMatch.id === match.id,
             ) + 1
             const sequenceNumber = getMeetingSequenceNumber(schedule, match.id)
-            const actualCourt = meetingCourtAssignments[match.id]?.court
+            const actualCourt = match.isEventMatch
+              ? match.court
+              : meetingCourtAssignments[match.id]?.court
             const availableAssignment =
               generatedMeetingSettings.courtAssignmentMode === 'available'
 
             return {
               id: match.id,
-              time: availableAssignment
+              time: availableAssignment && !match.isEventMatch
                 ? '전체 순번대로 진행'
                 : `${clockTimeAtOffset(
                     generatedMeetingSettings.startTime,
@@ -5912,8 +6050,12 @@ function App() {
                 ? `${sequenceNumber}번`
                 : `${courtMatchNumber}경기`,
               detail: [
-                match.isSpecial ? '스페셜' : '',
-                availableAssignment && !actualCourt ? '코트 현장 배정' : '',
+                match.isEventMatch
+                  ? '이벤트'
+                  : match.isSpecial ? '스페셜' : '',
+                availableAssignment && match.isEventMatch
+                  ? `${match.court}코트 고정`
+                  : availableAssignment && !actualCourt ? '코트 현장 배정' : '',
               ].filter(Boolean).join(' · ') || undefined,
               team: ownTeam
                 .filter((matchPlayer) => matchPlayer.id !== player.id)
@@ -6961,6 +7103,10 @@ function App() {
                       setSettings((current) => ({
                         ...current,
                         courtCount,
+                        eventMatch: {
+                          ...current.eventMatch,
+                          court: Math.min(courtCount, current.eventMatch.court),
+                        },
                         targetRoundCount: getBookingRoundCount(
                           current.startTime,
                           current.endTime,
@@ -6979,7 +7125,7 @@ function App() {
                       aria-label="경기 시간 배정"
                       value={settings.normalGameMinutes}
                       onChange={(event) => {
-                        setSettings((current) => ({
+                        setSettings((current) => normalizeMatchSettings({
                           ...current,
                           normalGameMinutes: Number(event.target.value) as 10 | 12 | 15,
                         }))
@@ -7109,6 +7255,134 @@ function App() {
                           +10분
                         </button>
                       </div>
+                    ) : null}
+                  </div>
+                  <div className={`event-match-settings ${
+                    settings.eventMatch.enabled ? 'expanded' : ''
+                  }`}>
+                    <div className="event-match-heading">
+                      <label className="settings-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={settings.eventMatch.enabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked
+                            setSettings((current) => normalizeMatchSettings({
+                              ...current,
+                              eventMatch: {
+                                ...current.eventMatch,
+                                enabled,
+                              },
+                            }))
+                            setNotice(
+                              enabled
+                                ? '이벤트 매치 사용 · 참가자 입력 필요'
+                                : '이벤트 매치 해제됨',
+                            )
+                          }}
+                        />
+                        이벤트 매치
+                      </label>
+                      <span>이벤트 후 다음 1경기 휴식</span>
+                    </div>
+                    {settings.eventMatch.enabled ? (
+                      <>
+                        <div className="event-match-controls">
+                          <label>
+                            시작 시각
+                            <select
+                              aria-label="이벤트 매치 시작 시각"
+                              value={settings.eventMatch.startTime}
+                              onChange={(event) => {
+                                setSettings((current) => ({
+                                  ...current,
+                                  eventMatch: {
+                                    ...current.eventMatch,
+                                    startTime: event.target.value,
+                                  },
+                                }))
+                                setNotice('이벤트 시간 변경됨 · 생성 필요')
+                              }}
+                            >
+                              {!eventMatchStartOptions.includes(
+                                settings.eventMatch.startTime,
+                              ) ? (
+                                <option value={settings.eventMatch.startTime}>
+                                  {settings.eventMatch.startTime}
+                                </option>
+                              ) : null}
+                              {eventMatchStartOptions.map((time) => (
+                                <option value={time} key={time}>{time}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <NumberStepper
+                            label="이벤트 코트"
+                            min={1}
+                            max={settings.courtCount}
+                            value={settings.eventMatch.court}
+                            onChange={(court) => {
+                              setSettings((current) => ({
+                                ...current,
+                                eventMatch: { ...current.eventMatch, court },
+                              }))
+                              setNotice('이벤트 코트 변경됨 · 생성 필요')
+                            }}
+                          />
+                        </div>
+                        <div className="event-match-teams">
+                          {(['A팀', 'B팀'] as const).map((teamLabel, teamIndex) => (
+                            <fieldset key={teamLabel}>
+                              <legend>{teamLabel}</legend>
+                              {[0, 1].map((playerIndex) => {
+                                const participantIndex = teamIndex * 2 + playerIndex
+                                const participant =
+                                  settings.eventMatch.participants[participantIndex]
+                                return (
+                                  <label key={participantIndex}>
+                                    {playerIndex + 1}번
+                                    <input
+                                      type="text"
+                                      list="event-match-player-options"
+                                      placeholder="참가자 이름"
+                                      value={participant.name}
+                                      onChange={(event) =>
+                                        updateEventMatchParticipant(
+                                          participantIndex,
+                                          event.target.value,
+                                        )
+                                      }
+                                    />
+                                    <small className={
+                                      participant.playerId ? 'linked' : ''
+                                    }>
+                                      {participant.playerId
+                                        ? '명단 연결됨'
+                                        : '명단에서 선택'}
+                                    </small>
+                                  </label>
+                                )
+                              })}
+                            </fieldset>
+                          ))}
+                        </div>
+                        <datalist id="event-match-player-options">
+                          {activePlayers.map((player) => (
+                            <option
+                              value={playerDisplayName(player, displayNames)}
+                              key={player.id}
+                            />
+                          ))}
+                        </datalist>
+                        <p className={
+                          eventMatchSetupIssue
+                            ? 'event-match-note error'
+                            : 'event-match-note'
+                        }>
+                          {eventMatchSetupIssue ??
+                            '다른 코트는 계속 진행하며, 4명은 이벤트 시간과 다음 경기에서 제외됩니다.'}
+                        </p>
+                      </>
                     ) : null}
                   </div>
                   {guestPlayers.length > 0 ? (
@@ -8638,7 +8912,9 @@ function App() {
                               id={`meeting-match-${match.id}`}
                               className={`match-card collapsed-match-card ${
                                 availableAssignment ? 'available-assignment-match' : ''
-                              } ${skillWarningClass} ${genderReviewClass}`}
+                              } ${match.isEventMatch ? 'event-match' : ''} ${
+                                skillWarningClass
+                              } ${genderReviewClass}`}
                               key={match.id}
                             >
                               {availableAssignment ? (
@@ -8669,10 +8945,13 @@ function App() {
                         const matchMission = prizeDraw.matchMissions[match.id]
                         const selectedWinnerSide = resultWinnerSide(result)
                         const assignmentLocked = Boolean(
-                          availableAssignment && meetingCourtAssignments[match.id],
+                          match.isEventMatch ||
+                          (availableAssignment && meetingCourtAssignments[match.id]),
                         )
                         const assignmentPending = Boolean(
-                          availableAssignment && !meetingCourtAssignments[match.id],
+                          availableAssignment &&
+                          !match.isEventMatch &&
+                          !meetingCourtAssignments[match.id],
                         )
                         const renderTeamName = (team: Team, teamLabel: string) =>
                           isEditingMatch && !isSharedMode ? (
@@ -8856,14 +9135,16 @@ function App() {
                           <article
                             id={`meeting-match-${match.id}`}
                             className={`match-card ${
-                              match.isSpecial ? 'special-match' : ''
+                              match.isEventMatch
+                                ? 'event-match'
+                                : match.isSpecial ? 'special-match' : ''
                             } ${
                               availableAssignment ? 'available-assignment-match' : ''
                             } ${skillWarningClass} ${genderReviewClass}`}
                             key={match.id}
                           >
                             <header>
-                              {availableAssignment ? (
+                              {availableAssignment && !match.isEventMatch ? (
                                 <span className="available-match-heading">
                                   <span className="available-match-number">
                                     <b>{matchIndex + 1}</b>
@@ -8886,40 +9167,48 @@ function App() {
                                       generatedMeetingSettings.startTime,
                                       (match.startOffsetMinutes ?? startsAt) +
                                         (match.durationMinutes ?? GAME_SLOT_MINUTES),
-                                    )} · ${match.durationMinutes ?? GAME_SLOT_MINUTES}분`}
+                                    )} · ${match.durationMinutes ?? GAME_SLOT_MINUTES}분${
+                                      availableAssignment && match.isEventMatch
+                                        ? ` · ${match.court}코트 고정`
+                                        : ''
+                                    }`}
                                 </span>
                               )}
                               <div className="match-card-actions">
                                 {!isSharedMode ? (
                                   <>
-                                    <button
-                                      type="button"
-                                      disabled={assignmentLocked}
-                                      title={
-                                        assignmentLocked
-                                          ? '코트 배정 후에는 참가자를 수정할 수 없습니다.'
-                                          : ''
-                                      }
-                                      onClick={() =>
-                                        isEditingMatch
-                                          ? saveMatchEditor(match)
-                                          : openMatchEditor(match)
-                                      }
-                                    >
-                                      {isEditingMatch ? '완료' : '수정'}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      disabled={assignmentLocked}
-                                      title={
-                                        assignmentLocked
-                                          ? '코트 배정 후에는 조합을 바꿀 수 없습니다.'
-                                          : ''
-                                      }
-                                      onClick={() => mixMatch(match.id)}
-                                    >
-                                      믹스
-                                    </button>
+                                    {!match.isEventMatch ? (
+                                      <>
+                                        <button
+                                          type="button"
+                                          disabled={assignmentLocked}
+                                          title={
+                                            assignmentLocked
+                                              ? '코트 배정 후에는 참가자를 수정할 수 없습니다.'
+                                              : ''
+                                          }
+                                          onClick={() =>
+                                            isEditingMatch
+                                              ? saveMatchEditor(match)
+                                              : openMatchEditor(match)
+                                          }
+                                        >
+                                          {isEditingMatch ? '완료' : '수정'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={assignmentLocked}
+                                          title={
+                                            assignmentLocked
+                                              ? '코트 배정 후에는 조합을 바꿀 수 없습니다.'
+                                              : ''
+                                          }
+                                          onClick={() => mixMatch(match.id)}
+                                        >
+                                          믹스
+                                        </button>
+                                      </>
+                                    ) : null}
                                     <button
                                       type="button"
                                       onClick={() => drawMissionForMatch(match.id)}
@@ -8936,6 +9225,7 @@ function App() {
                                   </strong>
                                 ) : null}
                                 {match.isSpecial ? <strong>스페셜</strong> : null}
+                                {match.isEventMatch ? <strong>이벤트</strong> : null}
                               </div>
                             </header>
                             {genderCompositionReview ? (

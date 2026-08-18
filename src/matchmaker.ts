@@ -42,7 +42,13 @@ import {
   preferredPartnerStrength,
 } from './preferredPartners'
 import { getBookingDurationMinutes } from './scheduleTime'
-import { generateMeetingScheduleV2WithWaitResolution } from './matchmaker/engine'
+import {
+  eventMatchUnavailablePlayerIds,
+  generateMeetingScheduleV2WithWaitResolution,
+  getConfiguredEventMatchWindow,
+  insertConfiguredEventMatch,
+  meetingScheduleWithoutEventMatches,
+} from './matchmaker/engine'
 import {
   allowsFixedCourtGuestOverflow,
   MEETING_FINAL_IDLE_LIMIT_MINUTES,
@@ -56,7 +62,11 @@ import {
   usesMeetingAttendanceGameLimit,
 } from './meetingAvailability'
 
-export { generateMeetingScheduleV2WithWaitResolution }
+export {
+  generateMeetingScheduleV2WithWaitResolution,
+  insertConfiguredEventMatch,
+  meetingScheduleWithoutEventMatches,
+}
 
 type HistoryState = {
   games: Record<string, number>
@@ -669,7 +679,7 @@ const matchTeamSkillGap = (match: Match) =>
   adaptiveTeamSkillGap(match.teamA, match.teamB)
 
 export const getMatchIndividualSkillSpread = (match: Match) => {
-  if (match.isSpecial) return 0
+  if (match.isSpecial || match.isEventMatch) return 0
   const fixedScores = [...match.teamA, ...match.teamB]
     .filter((player) => player.level !== 'O')
     .map(getPlayerMatchScore)
@@ -689,7 +699,7 @@ export type MatchGenderCompositionReview = {
 export const getMatchGenderCompositionReview = (
   match: Match,
 ): MatchGenderCompositionReview | null => {
-  if (match.isSpecial) return null
+  if (match.isSpecial || match.isEventMatch) return null
   const players = [...match.teamA, ...match.teamB]
   if (players.length !== 4 || players.some((player) => player.gender === 'none')) {
     return null
@@ -718,7 +728,7 @@ export type MatchSkillWarningLevel = 'none' | 'caution' | 'danger'
 export const getMatchSkillWarningLevel = (
   match: Match,
 ): MatchSkillWarningLevel => {
-  if (match.isSpecial) return 'none'
+  if (match.isSpecial || match.isEventMatch) return 'none'
   const gap = matchOverallSkillGap(match)
   if (gap > TEAM_SKILL_WARNING_GAP) return 'danger'
   if (gap >= TEAM_SKILL_PREFERRED_GAP) return 'caution'
@@ -731,13 +741,14 @@ export const analyzeScheduleQuality = (
   settings?: MatchSettings,
   options: MeetingScheduleAnalysisOptions = {},
 ): ScheduleQualityAnalysis => {
-  const matches = schedule.rounds.flatMap((round) => round.matches)
+  const allMatches = schedule.rounds.flatMap((round) => round.matches)
+  const matches = allMatches.filter((match) => !match.isEventMatch)
   const activePlayers = players.filter((player) => player.active)
   const regulars = activePlayers.filter((player) => !player.isGuest)
   const gameCounts = new Map(
     regulars.map((player) => [
       player.id,
-      matches.filter((match) =>
+      allMatches.filter((match) =>
         [...match.teamA, ...match.teamB].some(
           (matchPlayer) => matchPlayer.id === player.id,
         ),
@@ -788,14 +799,14 @@ export const analyzeScheduleQuality = (
     .map((match) => match.startOffsetMinutes ?? 0)
   const analysisEndMinutes = settings
     ? getBookingDurationMinutes(settings.startTime, settings.endTime)
-    : scheduleEndMinutes(matches)
+    : scheduleEndMinutes(allMatches)
   const analysisEndByPlayer = new Map(
     activePlayers.map((player) => [
       player.id,
       Math.min(
         playerWaitAnalysisEndMinutes(
           player,
-          matches,
+          allMatches,
           analysisEndMinutes,
           settings,
         ),
@@ -806,14 +817,14 @@ export const analyzeScheduleQuality = (
   )
   const waitsByPlayer = activePlayers.map((player) =>
     playerPolicyWaitGaps(
-      matches,
+      allMatches,
       player.id,
       analysisEndByPlayer.get(player.id) ?? analysisEndMinutes,
       options.eligibleFromOffsetMinutesByPlayer?.[player.id] ?? 0,
     ),
   )
   const windowsByPlayer = activePlayers.map((player) =>
-    playerMatchWindows(matches, player.id),
+    playerMatchWindows(allMatches, player.id),
   )
   const participantAverageWaits = waitsByPlayer
     .filter((gaps) => gaps.length > 0)
@@ -895,7 +906,7 @@ export const analyzeScheduleQuality = (
     participantsOverWaitLimit: activePlayers.filter(
       (player) =>
         playerExceedsWaitPolicy(
-          matches,
+          allMatches,
           player.id,
           analysisEndByPlayer.get(player.id) ?? analysisEndMinutes,
           options.eligibleFromOffsetMinutesByPlayer?.[player.id] ?? 0,
@@ -1067,6 +1078,7 @@ export const validateMeetingSchedule = (
       issues.add('경기 인원 구성 오류')
     }
     if (
+      !match.isEventMatch &&
       !allowedInactiveMatchIds.has(match.id) &&
       matchPlayers.some((player) => !activeIds.has(player.id))
     ) {
@@ -1076,6 +1088,7 @@ export const validateMeetingSchedule = (
       issues.add('코트 번호 오류')
     }
     if (
+      !match.isEventMatch &&
       settings.singleGuestPerMatch &&
       matchPlayers.filter((player) => player.isGuest).length > 1 &&
       !(
@@ -1088,6 +1101,7 @@ export const validateMeetingSchedule = (
     }
     const window = matchTimeWindow(match)
     if (
+      !match.isEventMatch &&
       !allowedAttendanceMatchIds.has(match.id) &&
       matchPlayers.some((player) =>
         !isPlayerAvailableForMeetingSlot(
@@ -1163,7 +1177,8 @@ export const validateMeetingFairness = (
   players: Player[],
   options: MeetingScheduleAnalysisOptions = {},
 ): string[] => {
-  const matches = schedule.rounds.flatMap((round) => round.matches)
+  const matches = schedule.rounds
+    .flatMap((round) => round.matches)
   const gameCountByPlayer = new Map(
     players
       .filter((player) => player.active && !player.isGuest)
@@ -5967,7 +5982,7 @@ const continuationScheduleMetadata = (rounds: Round[]) => {
 export const replanMeetingSchedule = (
   input: ReplanMeetingScheduleInput,
 ): MeetingReplanResolution => {
-  const allMatches = input.schedule.rounds
+  const allMatches = meetingScheduleWithoutEventMatches(input.schedule).rounds
     .flatMap((round) => round.matches)
     .sort((left, right) =>
       matchTimeWindow(left).start - matchTimeWindow(right).start ||
@@ -6228,10 +6243,20 @@ export const replanMeetingSchedule = (
   }
 
   const slots: MeetingContinuationSlot[] = []
+  const eventWindow = getConfiguredEventMatchWindow(input.settings)
   if (continuationMode === 'late-special-unlimited') {
     for (let court = 1; court <= input.settings.courtCount; court += 1) {
       let cursor = courtAvailableAt[court] ?? progressOffsetMinutes
       while (cursor + normalGameMinutes <= bookingMinutes) {
+        if (
+          eventWindow &&
+          court === input.settings.eventMatch.court &&
+          cursor < eventWindow.end &&
+          eventWindow.start < cursor + normalGameMinutes
+        ) {
+          cursor = eventWindow.end
+          continue
+        }
         slots.push({
           court,
           start: cursor,
@@ -6316,9 +6341,12 @@ export const replanMeetingSchedule = (
     const roundNumber = firstNewRoundNumber + startIndex
     history.currentStartOffset = start
     const usedIds = new Set(
-      schedulerPlayers
-        .filter((player) => (playerAvailableAt[player.id] ?? 0) > start)
-        .map((player) => player.id),
+      [
+        ...schedulerPlayers
+          .filter((player) => (playerAvailableAt[player.id] ?? 0) > start)
+          .map((player) => player.id),
+        ...eventMatchUnavailablePlayerIds(input.settings, start),
+      ],
     )
     const matches: Match[] = []
     const pacing: RoundPacing = {
@@ -6464,11 +6492,16 @@ export const replanMeetingSchedule = (
       .map((guest) => `${guest.name.trim() || '스페셜'} 남은 경기 0경기`),
   ]
   const metadata = continuationScheduleMetadata(rounds)
-  const schedule: Schedule = {
+  const generatedSchedule: Schedule = {
     rounds,
     warnings,
     ...metadata,
   }
+  const schedule = insertConfiguredEventMatch(
+    generatedSchedule,
+    input.settings,
+    input.players,
+  )
 
   const failureIssues = [...baseFailureIssues]
   const originalLockedSignatures = new Map(
@@ -6483,6 +6516,7 @@ export const replanMeetingSchedule = (
       failureIssues.push('경기 인원 구성 오류')
     }
     if (
+      !match.isEventMatch &&
       !lockedIdSet.has(match.id) &&
       playersInMatch.some((player) => !activePlayerIds.has(player.id))
     ) {
@@ -6492,12 +6526,14 @@ export const replanMeetingSchedule = (
       failureIssues.push('코트 번호 오류')
     }
     if (
+      !match.isEventMatch &&
       !lockedIdSet.has(match.id) &&
       matchTimeWindow(match).end > bookingMinutes
     ) {
       failureIssues.push('종료 시각을 넘는 경기가 있습니다.')
     }
     if (
+      !match.isEventMatch &&
       !lockedIdSet.has(match.id) &&
       playersInMatch.some((player) => {
         const window = matchTimeWindow(match)
@@ -6512,6 +6548,7 @@ export const replanMeetingSchedule = (
       failureIssues.push('참석 시간 밖에 배정된 경기가 있습니다.')
     }
     if (
+      !match.isEventMatch &&
       input.settings.singleGuestPerMatch &&
       playersInMatch.filter((player) => player.isGuest).length > 1 &&
       !(
@@ -6607,6 +6644,7 @@ export const appendGeneralCourtGames = (
   )
   const history = makeHistory(activePlayers, plannedSpecialIds)
   for (const match of existingMatches) {
+    if (match.isEventMatch) continue
     history.currentStartOffset = match.startOffsetMinutes ?? 0
     updateHistoryForMatch(history, match)
   }
@@ -7985,7 +8023,7 @@ export const calculateStats = (
       const [teamA0, teamA1, teamB0, teamB1] = playersInMatch
       const teamA: Team = [teamA0, teamA1]
       const teamB: Team = [teamB0, teamB1]
-      const guestMatch = hasGuest(playersInMatch)
+      const guestMatch = !match.isEventMatch && hasGuest(playersInMatch)
 
       for (const player of playersInMatch) {
         const stat = ensureStat(player)

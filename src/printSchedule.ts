@@ -496,7 +496,9 @@ const drawMatchItem = (
       x + (isIndexCell ? 16 : 18),
       y + 47,
       {
-        color: match.isSpecial ? '#a75e19' : '#18211f',
+        color: match.isEventMatch
+          ? '#6d28d9'
+          : match.isSpecial ? '#a75e19' : '#18211f',
         size: isIndexCell ? 24 : 26,
         weight: 900,
       },
@@ -507,13 +509,17 @@ const drawMatchItem = (
 
   return [
     rect(50, y, A4_IMAGE_WIDTH - 100, layout.matchHeight, {
-      fill: match.isSpecial ? '#fff8ef' : '#ffffff',
+      fill: match.isEventMatch
+        ? '#faf5ff'
+        : match.isSpecial ? '#fff8ef' : '#ffffff',
       stroke: '#dce3df',
       strokeWidth: 1,
     }),
-    match.isSpecial
-      ? text('스페셜', 62, y + 18, { color: '#a75e19', size: 11, weight: 900 })
-      : '',
+    match.isEventMatch
+      ? text('이벤트', 62, y + 18, { color: '#6d28d9', size: 11, weight: 900 })
+      : match.isSpecial
+        ? text('스페셜', 62, y + 18, { color: '#a75e19', size: 11, weight: 900 })
+        : '',
     ...cells,
   ].join('')
 }
@@ -854,13 +860,21 @@ const renderAvailableGridPageSvg = (
           .join(' + '),
         15,
       )
-    const accent = match.isSpecial ? '#c46b16' : '#0e3457'
-    const softAccent = match.isSpecial ? '#fff4e5' : '#edf8f5'
+    const accent = match.isEventMatch
+      ? '#6d28d9'
+      : match.isSpecial ? '#c46b16' : '#0e3457'
+    const softAccent = match.isEventMatch
+      ? '#f3e8ff'
+      : match.isSpecial ? '#fff4e5' : '#edf8f5'
 
     nodes.push(
       rect(x, y, cardWidth, cardHeight, {
-        fill: match.isSpecial ? '#fffaf3' : '#ffffff',
-        stroke: match.isSpecial ? '#e2a665' : '#cbd9d5',
+        fill: match.isEventMatch
+          ? '#faf5ff'
+          : match.isSpecial ? '#fffaf3' : '#ffffff',
+        stroke: match.isEventMatch
+          ? '#c4b5fd'
+          : match.isSpecial ? '#e2a665' : '#cbd9d5',
         strokeWidth: 1,
         radius: 8,
       }),
@@ -876,7 +890,12 @@ const renderAvailableGridPageSvg = (
       }),
       text(
         `${match.durationMinutes ?? GAME_SLOT_MINUTES}분${
-          match.isSpecial ? ' · 스페셜' : ''
+          match.isEventMatch
+            ? ` · ${clockTimeAtOffset(
+                options.settings.startTime,
+                match.startOffsetMinutes ?? 0,
+              )} · ${match.court}코트 이벤트`
+            : match.isSpecial ? ' · 스페셜' : ''
         }`,
         x + cardWidth - 9,
         y + 29,
@@ -1046,7 +1065,9 @@ const renderCourtGridPageSvg = (
       const match = matches[matchIndex]
       const x = left + indexWidth + courtIndex * courtWidth
       nodes.push(rect(x, y, courtWidth, rowHeight, {
-        fill: match?.isSpecial ? '#fff8ef' : '#ffffff',
+        fill: match?.isEventMatch
+          ? '#faf5ff'
+          : match?.isSpecial ? '#fff8ef' : '#ffffff',
         stroke: '#dce3df',
       }))
       if (!match) return
@@ -1058,10 +1079,10 @@ const renderCourtGridPageSvg = (
       const duration = match.durationMinutes ?? GAME_SLOT_MINUTES
       nodes.push(
         text(
-          `${clockTimeAtOffset(options.settings.startTime, start)}–${clockTimeAtOffset(options.settings.startTime, start + duration)} · ${duration}분${match.isSpecial ? ' · 스페셜' : ''}`,
+          `${clockTimeAtOffset(options.settings.startTime, start)}–${clockTimeAtOffset(options.settings.startTime, start + duration)} · ${duration}분${match.isEventMatch ? ' · 이벤트' : match.isSpecial ? ' · 스페셜' : ''}`,
           x + 5,
           y + Math.min(17, Math.floor(rowHeight * 0.28)),
-          { color: match.isSpecial ? '#a75e19' : '#65716e', size: compact ? 9 : 10, weight: 900 },
+          { color: match.isEventMatch ? '#6d28d9' : match.isSpecial ? '#a75e19' : '#65716e', size: compact ? 9 : 10, weight: 900 },
         ),
         text(truncateText(teamName(match.teamA), nameLimit), x + 5, y + Math.floor(rowHeight * 0.58), { size: compact ? 11 : 13, weight: 900 }),
         text(truncateText(teamName(match.teamB), nameLimit), x + 5, y + rowHeight - 9, { size: compact ? 11 : 13, weight: 900 }),

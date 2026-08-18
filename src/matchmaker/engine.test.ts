@@ -84,6 +84,71 @@ const largeSettings: MatchSettings = {
 }
 
 describe('meeting V2 rules', () => {
+  it('inserts an event match while keeping other courts active and rests its players next', () => {
+    const players = makePlayers(14, 2)
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 4,
+      courtAssignmentMode: 'available',
+      startTime: '18:00',
+      endTime: '20:00',
+      normalGameMinutes: 12,
+      seed: 13,
+      targetRoundCount: 10,
+      pacingRoundCount: 10,
+      eventMatch: {
+        enabled: true,
+        startTime: '19:00',
+        court: 1,
+        participants: players.slice(0, 4).map((player) => ({
+          name: player.name,
+          playerId: player.id,
+        })) as MatchSettings['eventMatch']['participants'],
+      },
+    }
+
+    const slots = planMeetingSlotsV2(players, settings)
+    expect(slots.some((slot) => slot.court === 1 && slot.start === 60)).toBe(false)
+    expect(slots.some((slot) => slot.court === 2 && slot.start === 60)).toBe(true)
+
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const matches = schedule.rounds.flatMap((round) => round.matches)
+    const eventMatch = matches.find((match) => match.isEventMatch)
+    expect(eventMatch).toMatchObject({
+      court: 1,
+      startOffsetMinutes: 60,
+      durationMinutes: 12,
+    })
+    expect(
+      matches.some(
+        (match) =>
+          !match.isEventMatch &&
+          match.court === 2 &&
+          match.startOffsetMinutes === 60,
+      ),
+    ).toBe(true)
+
+    const eventPlayerIds = new Set(players.slice(0, 4).map((player) => player.id))
+    const immediateAssignments = matches.filter(
+      (match) =>
+        !match.isEventMatch &&
+        (match.startOffsetMinutes === 60 || match.startOffsetMinutes === 72),
+    )
+    expect(
+      immediateAssignments.every((match) =>
+        [...match.teamA, ...match.teamB].every(
+          (player) => !eventPlayerIds.has(player.id),
+        ),
+      ),
+    ).toBe(true)
+
+    const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+    expect(
+      Object.values(metrics.gameCounts).reduce((sum, count) => sum + count, 0),
+    ).toBe(matches.length * 4)
+    expect(metrics.structuralIssues).toEqual([])
+  })
+
   it('keeps structural and success rules separate from ordered preferences', () => {
     const profile = resolveMeetingRuleProfile({
       ...defaultSettings,

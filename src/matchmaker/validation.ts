@@ -326,7 +326,10 @@ export const analyzeMeetingScheduleV2 = (
     ) {
       structuralIssues.add('경기 인원 구성 오류')
     }
-    if (assignedPlayers.some((player) => !activeIds.has(player.id))) {
+    if (
+      !match.isEventMatch &&
+      assignedPlayers.some((player) => !activeIds.has(player.id))
+    ) {
       structuralIssues.add('비활성 참가자 배정')
     }
     if (match.court < 1 || match.court > settings.courtCount) {
@@ -336,6 +339,7 @@ export const analyzeMeetingScheduleV2 = (
       structuralIssues.add('운영 시간 초과')
     }
     if (
+      !match.isEventMatch &&
       settings.singleGuestPerMatch &&
       assignedPlayers.filter((player) => player.isGuest).length > 1 &&
       !(
@@ -347,6 +351,7 @@ export const analyzeMeetingScheduleV2 = (
       structuralIssues.add('스페셜 인원 제한 위반')
     }
     if (
+      !match.isEventMatch &&
       !allowedAttendanceMatchIds.has(match.id) &&
       assignedPlayers.some((player) =>
         !isPlayerAvailableForMeetingSlot(
@@ -407,6 +412,12 @@ export const analyzeMeetingScheduleV2 = (
   )
   for (const match of orderedMatches) {
     const assignedPlayers = matchPlayers(match)
+    if (match.isEventMatch) {
+      for (const player of assignedPlayers) {
+        gameCounts[player.id] = (gameCounts[player.id] ?? 0) + 1
+      }
+      continue
+    }
     const regulars = assignedPlayers.filter((player) => !player.isGuest)
     const isWarmup =
       !match.isSpecial &&

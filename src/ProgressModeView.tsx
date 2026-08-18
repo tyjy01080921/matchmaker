@@ -582,7 +582,11 @@ export const MeetingProgressMode = ({
                       }
                       startsAt={times.start}
                       endsAt={times.end}
-                      detail={match.isSpecial ? '스페셜' : undefined}
+                      detail={
+                        match.isEventMatch
+                          ? '이벤트'
+                          : match.isSpecial ? '스페셜' : undefined
+                      }
                     />
                     <ProgressResultEditor
                       matchId={match.id}
@@ -693,10 +697,11 @@ export const AvailableMeetingProgressMode = ({
     headerProps.completedCount >= headerProps.totalCount
 
   const assignMatch = (match: Match) => {
-    if (!nextEmptyCourt) return
+    const targetCourt = match.isEventMatch ? match.court : nextEmptyCourt
+    if (!targetCourt) return
     const sequenceNumber = getMeetingSequenceNumber(schedule, match.id)
     if (!window.confirm(
-      `전체 ${sequenceNumber}번 경기를 ${nextEmptyCourt}코트로 배정할까요?`,
+      `전체 ${sequenceNumber}번 경기를 ${targetCourt}코트로 배정할까요?`,
     )) return
     onAssignMatch(match.id)
   }
@@ -739,6 +744,9 @@ export const AvailableMeetingProgressMode = ({
                 results,
                 match.id,
               )
+              const targetCourtAvailable = match.isEventMatch
+                ? emptyCourts.includes(match.court)
+                : Boolean(nextEmptyCourt)
               const sequenceNumber = getMeetingSequenceNumber(schedule, match.id)
               return (
                 <article
@@ -747,7 +755,11 @@ export const AvailableMeetingProgressMode = ({
                 >
                   <header>
                     <strong>전체 {sequenceNumber}번</strong>
-                    <span>{assignable ? '배정 가능' : '참가자 경기 중'}</span>
+                    <span>
+                      {match.isEventMatch
+                        ? `${match.court}코트 이벤트`
+                        : assignable ? '배정 가능' : '참가자 경기 중'}
+                    </span>
                   </header>
                   <UpcomingTeams
                     teamAName={teamName(match, 'A')}
@@ -757,7 +769,7 @@ export const AvailableMeetingProgressMode = ({
                   <button
                     type="button"
                     className="available-assign-button"
-                    disabled={!assignable || !nextEmptyCourt}
+                    disabled={!assignable || !targetCourtAvailable}
                     onClick={() => assignMatch(match)}
                   >
                     배치
@@ -810,7 +822,11 @@ export const AvailableMeetingProgressMode = ({
                       matchNumber={sequenceNumber}
                       status="현재"
                       label={`${lane.court}코트 · 전체 ${sequenceNumber}번`}
-                      detail={match.isSpecial ? '스페셜' : undefined}
+                      detail={
+                        match.isEventMatch
+                          ? '이벤트'
+                          : match.isSpecial ? '스페셜' : undefined
+                      }
                     />
                     <ProgressResultEditor
                       matchId={match.id}

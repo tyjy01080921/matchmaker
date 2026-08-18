@@ -227,6 +227,34 @@ describe('progress mode helpers', () => {
     })
   })
 
+  it('keeps an event match on its configured court in available-court mode', () => {
+    const eventMatch = {
+      ...meetingMatchWithPlayers('event', 2, 15, ['a', 'b', 'c', 'd']),
+      isEventMatch: true,
+    }
+    const schedule: Schedule = {
+      rounds: [
+        { id: 'event-round', number: 1, matches: [eventMatch], resting: [] },
+      ],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+
+    expect(assignAvailableMeetingMatch(schedule, {}, {}, 1, eventMatch.id))
+      .toEqual({})
+    expect(assignAvailableMeetingMatchToFirstEmptyCourt(
+      schedule,
+      3,
+      {},
+      {},
+      eventMatch.id,
+    )).toEqual({
+      assignments: { event: { court: 2, dispatchOrder: 1 } },
+      court: 2,
+    })
+  })
+
   it('skips a blocked sequence match and assigns the first playable match', () => {
     const first = meetingMatchWithPlayers('first', 1, 0, ['a', 'b', 'c', 'd'])
     const second = meetingMatchWithPlayers('second', 2, 0, ['e', 'f', 'g', 'h'])

@@ -76,6 +76,15 @@ export const defaultSettings: MatchSettings = {
   targetRoundCount: 8,
   pacingRoundCount: 8,
   roundCountLocked: true,
+  eventMatch: {
+    enabled: false,
+    startTime: '19:00',
+    court: 1,
+    participants: Array.from(
+      { length: 4 },
+      () => ({ name: '' }),
+    ) as MatchSettings['eventMatch']['participants'],
+  },
   earlyPhaseEndPercent: 30,
   middlePhaseEndPercent: 70,
   conditionOptions: defaultMatchConditionOptions,

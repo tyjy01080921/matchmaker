@@ -31,6 +31,23 @@ export type CourtAssignmentMode = 'fixed' | 'available'
 
 export type SpecialScheduleMode = 'continuous' | 'spread'
 
+export type EventMatchParticipant = {
+  name: string
+  playerId?: string
+}
+
+export type EventMatchSettings = {
+  enabled: boolean
+  startTime: string
+  court: number
+  participants: [
+    EventMatchParticipant,
+    EventMatchParticipant,
+    EventMatchParticipant,
+    EventMatchParticipant,
+  ]
+}
+
 export type TournamentFormat =
   | 'group-knockout'
   | 'knockout'
@@ -100,6 +117,7 @@ export type MatchSettings = {
   targetRoundCount: number
   pacingRoundCount: number
   roundCountLocked: boolean
+  eventMatch: EventMatchSettings
   earlyPhaseEndPercent: number
   middlePhaseEndPercent: number
   conditionOptions: MatchConditionOptions
@@ -138,6 +156,7 @@ export type Match = {
   teamA: Team
   teamB: Team
   isSpecial: boolean
+  isEventMatch?: boolean
   startOffsetMinutes?: number
   durationMinutes?: number
 }

@@ -187,6 +187,7 @@ export const getNextAvailableMeetingMatch = (
   schedule: Schedule,
   assignments: MeetingCourtAssignments,
   results: ResultsByMatch,
+  court?: number,
 ) => {
   const activePlayerIds = new Set(
     activeAvailableMeetingMatches(schedule, assignments, results)
@@ -196,6 +197,7 @@ export const getNextAvailableMeetingMatch = (
   return getMeetingMatchSequence(schedule).find((match) =>
     !assignments[match.id] &&
     !results[match.id]?.completed &&
+    (!match.isEventMatch || court === undefined || match.court === court) &&
     meetingMatchPlayerIds(match).every((playerId) => !activePlayerIds.has(playerId)),
   )
 }
@@ -228,8 +230,12 @@ export const assignAvailableMeetingMatch = (
     ([assignedMatchId, assignment]) =>
       assignment.court === court && !results[assignedMatchId]?.completed,
   )
+  const match = getMeetingMatchSequence(schedule)
+    .find((candidate) => candidate.id === matchId)
   if (
     courtOccupied ||
+    !match ||
+    (match.isEventMatch && match.court !== court) ||
     !canAssignAvailableMeetingMatch(schedule, assignments, results, matchId)
   ) return assignments
 
@@ -250,7 +256,12 @@ export const assignAvailableMeetingMatchToFirstEmptyCourt = (
   results: ResultsByMatch,
   matchId: string,
 ) => {
-  const court = Array.from({ length: courtCount }, (_, index) => index + 1)
+  const match = getMeetingMatchSequence(schedule)
+    .find((candidate) => candidate.id === matchId)
+  const courtCandidates = match?.isEventMatch
+    ? [match.court]
+    : Array.from({ length: courtCount }, (_, index) => index + 1)
+  const court = courtCandidates
     .find((candidateCourt) =>
       !Object.entries(assignments).some(
         ([assignedMatchId, assignment]) =>
@@ -279,7 +290,12 @@ export const assignNextAvailableMeetingMatch = (
   results: ResultsByMatch,
   court: number,
 ): MeetingCourtAssignments => {
-  const nextMatch = getNextAvailableMeetingMatch(schedule, assignments, results)
+  const nextMatch = getNextAvailableMeetingMatch(
+    schedule,
+    assignments,
+    results,
+    court,
+  )
   if (!nextMatch) return assignments
   return assignAvailableMeetingMatch(
     schedule,

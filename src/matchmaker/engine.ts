@@ -36,6 +36,7 @@ import {
   clockTimeAtOffset,
   getBookingDurationMinutes,
   getBookingRoundCount,
+  rawBookingDurationMinutes,
 } from '../scheduleTime'
 import {
   attendanceTargetGameCount,
@@ -57,6 +58,153 @@ export type PlannedMeetingSlot = {
   guestId?: string
   roamingGuestId?: string
   plannedPlayerIds?: string[]
+}
+
+export const getConfiguredEventMatchWindow = (settings: MatchSettings) => {
+  const eventMatch = settings.eventMatch
+  if (
+    !eventMatch?.enabled ||
+    eventMatch.participants.some((participant) => !participant.name.trim())
+  ) {
+    return null
+  }
+  const start = rawBookingDurationMinutes(
+    settings.startTime,
+    eventMatch.startTime,
+  )
+  const schedulingMinutes = meetingSchedulingMinutes(settings)
+  if (
+    start <= 0 ||
+    start + settings.normalGameMinutes * 2 > schedulingMinutes
+  ) {
+    return null
+  }
+  return {
+    start,
+    end: start + settings.normalGameMinutes,
+  }
+}
+
+export const eventMatchUnavailablePlayerIds = (
+  settings: MatchSettings,
+  start: number,
+) => {
+  const eventWindow = getConfiguredEventMatchWindow(settings)
+  if (
+    !eventWindow ||
+    start < eventWindow.start ||
+    start >= eventWindow.end + settings.normalGameMinutes
+  ) {
+    return new Set<string>()
+  }
+  return new Set(
+    settings.eventMatch.participants.flatMap((participant) =>
+      participant.playerId ? [participant.playerId] : [],
+    ),
+  )
+}
+
+const makeEventMatchPlayer = (name: string, index: number): Player => ({
+  id: `event-match-player-${index + 1}`,
+  name: name.trim(),
+  level: 'O',
+  ageGroup: '무관',
+  gender: 'none',
+  active: true,
+  specialRequired: false,
+  specialMatchEligible: false,
+  isGuest: false,
+  guestGameLimit: 0,
+  gameCountFlexible: true,
+  waitTimeFlexible: true,
+})
+
+export const meetingScheduleWithoutEventMatches = (
+  schedule: Schedule,
+): Schedule => ({
+  ...schedule,
+  rounds: schedule.rounds
+    .map((round) => ({
+      ...round,
+      matches: round.matches.filter((match) => !match.isEventMatch),
+    }))
+    .filter((round) => round.matches.length > 0),
+})
+
+export const insertConfiguredEventMatch = (
+  schedule: Schedule,
+  settings: MatchSettings,
+  roster: Player[],
+): Schedule => {
+  const eventWindow = getConfiguredEventMatchWindow(settings)
+  const baseSchedule = meetingScheduleWithoutEventMatches(schedule)
+  if (!eventWindow || baseSchedule.rounds.length === 0) return baseSchedule
+
+  const rosterById = new Map(roster.map((player) => [player.id, player]))
+  const eventPlayers = settings.eventMatch.participants.map(
+    (participant, index) =>
+      (participant.playerId ? rosterById.get(participant.playerId) : undefined) ??
+      makeEventMatchPlayer(participant.name, index),
+  ) as [Player, Player, Player, Player]
+  const eventMatch: Match = {
+    id: `event-match-${eventWindow.start}`,
+    round: 0,
+    court: Math.min(
+      settings.courtCount,
+      Math.max(1, Math.floor(settings.eventMatch.court)),
+    ),
+    teamA: [eventPlayers[0], eventPlayers[1]],
+    teamB: [eventPlayers[2], eventPlayers[3]],
+    isSpecial: false,
+    isEventMatch: true,
+    startOffsetMinutes: eventWindow.start,
+    durationMinutes: eventWindow.end - eventWindow.start,
+  }
+  const matchingRound = baseSchedule.rounds.find((round) =>
+    round.matches.some((match) =>
+      (match.startOffsetMinutes ?? 0) === eventWindow.start,
+    ),
+  )
+  const eventPlayerIds = new Set(eventPlayers.map((player) => player.id))
+  const rounds = matchingRound
+    ? baseSchedule.rounds.map((round) =>
+        round.id === matchingRound.id
+          ? {
+              ...round,
+              matches: [...round.matches, eventMatch],
+              resting: round.resting.filter(
+                (player) => !eventPlayerIds.has(player.id),
+              ),
+            }
+          : round,
+      )
+    : [
+        ...baseSchedule.rounds,
+        {
+          id: `event-round-${eventWindow.start}`,
+          number: 0,
+          matches: [eventMatch],
+          resting: roster.filter(
+            (player) => player.active && !eventPlayerIds.has(player.id),
+          ),
+        },
+      ]
+
+  return {
+    ...baseSchedule,
+    rounds: rounds
+      .sort((left, right) =>
+        Math.min(...left.matches.map((match) => match.startOffsetMinutes ?? 0)) -
+        Math.min(...right.matches.map((match) => match.startOffsetMinutes ?? 0)),
+      )
+      .map((round, index) => ({
+        ...round,
+        number: index + 1,
+        matches: round.matches
+          .map((match) => ({ ...match, round: index + 1 }))
+          .sort((left, right) => left.court - right.court),
+      })),
+  }
 }
 
 type SpecialReservation = PlannedMeetingSlot & {
@@ -432,7 +580,13 @@ export const planMeetingSlotsV2 = (
     settings.specialTimeLimitEnabled
       ? Math.min(schedulingMinutes, settings.specialTimeLimitMinutes)
       : schedulingMinutes
-  const reservations =
+  const eventWindow = getConfiguredEventMatchWindow(settings)
+  const eventPlayerIds = new Set(
+    settings.eventMatch.participants.flatMap((participant) =>
+      participant.playerId ? [participant.playerId] : [],
+    ),
+  )
+  const reservations = (
     settings.courtAssignmentMode === 'fixed' && settings.singleGuestPerMatch
       ? distributeFixedSpecialCourts(
           activePlayers,
@@ -445,14 +599,41 @@ export const planMeetingSlotsV2 = (
           specialCourtCount,
           specialWindowMinutes,
         )
+  ).filter((slot) => {
+    if (!eventWindow) return true
+    const overlapsEvent =
+      slot.start < eventWindow.end &&
+      eventWindow.start < slot.start + slot.duration
+    if (slot.court === settings.eventMatch.court && overlapsEvent) return false
+
+    const overlapsEventRest =
+      slot.start < eventWindow.end + settings.normalGameMinutes &&
+      eventWindow.start < slot.start + slot.duration
+    const usesEventGuest = [slot.guestId, slot.roamingGuestId].some(
+      (playerId) => playerId && eventPlayerIds.has(playerId),
+    )
+    return !overlapsEventRest || !usesEventGuest
+  })
   const slots: PlannedMeetingSlot[] = [...reservations]
 
   for (let court = 1; court <= settings.courtCount; court += 1) {
     const courtReservations = reservations
       .filter((slot) => slot.court === court)
       .sort((left, right) => left.start - right.start)
+    const blockedWindows = [
+      ...courtReservations,
+      ...(eventWindow && court === settings.eventMatch.court
+        ? [{
+            id: `event-match-c${court}`,
+            court,
+            start: eventWindow.start,
+            duration: eventWindow.end - eventWindow.start,
+            kind: 'general' as const,
+          }]
+        : []),
+    ].sort((left, right) => left.start - right.start)
     let cursor = 0
-    for (const reservation of courtReservations) {
+    for (const reservation of blockedWindows) {
       while (cursor + settings.normalGameMinutes <= reservation.start) {
         slots.push({
           id: `general-c${court}-s${cursor}`,
@@ -2039,16 +2220,21 @@ const chooseBatch = (
   settings: MatchSettings,
 ) => {
   const start = slots[0]?.start ?? 0
+  const unavailableEventPlayerIds = eventMatchUnavailablePlayerIds(
+    settings,
+    start,
+  )
   const requiredIds = requiredPlayerIdsForBatch(
     activePlayers,
     state,
     start,
     settings,
   )
+  for (const playerId of unavailableEventPlayerIds) requiredIds.delete(playerId)
   const scoreLength = profile.priorityOrder.length + 16
   let beams: BatchBeam[] = [{
     selections: [],
-    usedIds: new Set(),
+    usedIds: unavailableEventPlayerIds,
     score: Array.from({ length: scoreLength }, () => 0),
     cautionMatches: 0,
   }]
@@ -2319,6 +2505,14 @@ const repairStandardGameSpread = (
           if (!assigned.some((player) => player.id === outgoing.id)) continue
           if (assigned.some((player) => player.id === incoming.id)) continue
           if (
+            eventMatchUnavailablePlayerIds(
+              settings,
+              match.startOffsetMinutes ?? 0,
+            ).has(incoming.id)
+          ) {
+            continue
+          }
+          if (
             match.isSpecial &&
             (
               !(incoming.specialMatchEligible ?? true) ||
@@ -2443,16 +2637,29 @@ const scheduleWarnings = (
         `스페셜 참가 목표 미달: ${state.specialParticipantIds.size}/${target}명`,
       )
     }
+    const eventGuestIds = new Set(
+      settings.eventMatch.enabled
+        ? settings.eventMatch.participants.flatMap((participant) =>
+            participant.playerId ? [participant.playerId] : [],
+          )
+        : [],
+    )
     const plannedGames = activePlayers
       .filter((player) => player.isGuest)
       .reduce(
-        (sum, guest) => sum + plannedGuestGames(guest, activePlayers, settings),
+        (sum, guest) => sum + Math.max(
+          0,
+          plannedGuestGames(guest, activePlayers, settings) -
+            (eventGuestIds.has(guest.id) ? 1 : 0),
+        ),
         0,
       )
     const achievedGames = [...state.guestGames.values()].reduce(
       (sum, count) => sum + count,
       0,
-    )
+    ) + activePlayers.filter(
+      (player) => player.isGuest && eventGuestIds.has(player.id),
+    ).length
     if (achievedGames < plannedGames) {
       warnings.push(`스페셜 경기 목표 미달: ${achievedGames}/${plannedGames}경기`)
     }
@@ -2577,6 +2784,11 @@ export const generateMeetingScheduleV2 = (
     schedule,
     activePlayers,
     effectiveSettings,
+  )
+  schedule = insertConfiguredEventMatch(
+    schedule,
+    effectiveSettings,
+    activePlayers,
   )
   const qualityMetrics = analyzeMeetingScheduleV2(
     schedule,
