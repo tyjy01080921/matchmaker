@@ -107,6 +107,11 @@ import {
   resolvePreferredPartnerNames,
 } from './preferredPartners'
 import {
+  filterEventMatchPlayerOptions,
+  type EventMatchPlayerOption,
+} from './eventMatchPlayerSearch'
+import { disableEventMatchOnEntry } from './eventMatchSettings'
+import {
   A4_IMAGE_HEIGHT,
   A4_IMAGE_WIDTH,
   createSchedulePrintImages,
@@ -1228,6 +1233,7 @@ const readStoredState = (): StoredState => {
     const cachedMeetingSchedule = savedMeetingPlayers
       ? normalizeStoredSchedule(savedMeetingSchedule?.schedule, savedMeetingPlayers)
       : null
+    const restoredSettings = savedMeetingSettings ?? settings
     return {
       appMode: normalizeAppMode(parsed.appMode),
       progressMode: Boolean(
@@ -1235,7 +1241,7 @@ const readStoredState = (): StoredState => {
         (normalizeAppMode(parsed.appMode) === 'tournament' || cachedMeetingSchedule),
       ),
       players: savedMeetingPlayers ?? players,
-      settings: savedMeetingSettings ?? settings,
+      settings: disableEventMatchOnEntry(restoredSettings),
       // 자동 저장 데이터는 참가자와 설정만 복원한다. 사용자가 명시적으로
       // 브라우저에 저장한 대진표가 있을 때만 마지막 대진과 결과를 복원한다.
       generatedMeetingPlayers: savedMeetingPlayers ?? defaultPlayers,
@@ -1709,6 +1715,116 @@ function NumberStepper({
   )
 }
 
+type EventMatchPlayerPickerProps = {
+  id: string
+  linked: boolean
+  onChange: (name: string) => void
+  onSelect: (option: EventMatchPlayerOption) => void
+  options: EventMatchPlayerOption[]
+  value: string
+}
+
+function EventMatchPlayerPicker({
+  id,
+  linked,
+  onChange,
+  onSelect,
+  options,
+  value,
+}: EventMatchPlayerPickerProps) {
+  const [hasTyped, setHasTyped] = useState(false)
+  const [activeIndex, setActiveIndex] = useState(0)
+  const matches = hasTyped
+    ? filterEventMatchPlayerOptions(options, value)
+    : []
+  const menuOpen = hasTyped && Boolean(value.trim())
+  const menuId = `${id}-matches`
+
+  const selectOption = (option: EventMatchPlayerOption) => {
+    onSelect(option)
+    setHasTyped(false)
+    setActiveIndex(0)
+  }
+
+  return (
+    <div className="event-match-player-field">
+      <input
+        id={id}
+        type="text"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-controls={menuId}
+        aria-expanded={menuOpen}
+        aria-activedescendant={
+          menuOpen && matches[activeIndex]
+            ? `${menuId}-${matches[activeIndex].id}`
+            : undefined
+        }
+        autoComplete="off"
+        placeholder="이름 입력"
+        value={value}
+        onFocus={() => {
+          setHasTyped(false)
+          setActiveIndex(0)
+        }}
+        onChange={(event) => {
+          onChange(event.target.value)
+          setHasTyped(Boolean(event.target.value.trim()))
+          setActiveIndex(0)
+        }}
+        onBlur={() => {
+          setHasTyped(false)
+          setActiveIndex(0)
+        }}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return
+          if (event.key === 'Escape') {
+            setHasTyped(false)
+            return
+          }
+          if (!menuOpen || matches.length === 0) return
+          if (event.key === 'ArrowDown') {
+            event.preventDefault()
+            setActiveIndex((current) => (current + 1) % matches.length)
+          } else if (event.key === 'ArrowUp') {
+            event.preventDefault()
+            setActiveIndex((current) =>
+              (current - 1 + matches.length) % matches.length,
+            )
+          } else if (event.key === 'Enter') {
+            event.preventDefault()
+            selectOption(matches[activeIndex])
+          }
+        }}
+      />
+      {menuOpen ? (
+        <div className="event-match-player-menu" id={menuId} role="listbox">
+          {matches.length > 0 ? matches.map((option, index) => (
+            <button
+              type="button"
+              id={`${menuId}-${option.id}`}
+              role="option"
+              aria-selected={index === activeIndex}
+              className={index === activeIndex ? 'active' : ''}
+              key={option.id}
+              onMouseDown={(event) => event.preventDefault()}
+              onMouseEnter={() => setActiveIndex(index)}
+              onClick={() => selectOption(option)}
+            >
+              {option.name}
+            </button>
+          )) : (
+            <p>일치하는 참가자 없음</p>
+          )}
+        </div>
+      ) : null}
+      <small className={linked ? 'linked' : ''}>
+        {linked ? '선택 완료' : '이름 입력 후 선택'}
+      </small>
+    </div>
+  )
+}
+
 function App() {
   const initialContext = useMemo(() => {
     const sharedState = readSharedState()
@@ -1776,6 +1892,7 @@ function App() {
         : '저장됨',
   )
   const [settingsOpen, setSettingsOpen] = useState(true)
+  const [eventMatchSettingsOpen, setEventMatchSettingsOpen] = useState(false)
   const [customBookingTime, setCustomBookingTime] = useState(false)
   const [playersOpen, setPlayersOpen] = useState(true)
   const [prizeOpen, setPrizeOpen] = useState(true)
@@ -3389,30 +3506,11 @@ function App() {
   }
 
   const updateEventMatchParticipant = (index: number, name: string) => {
-    const normalizedName = name.trim()
     setSettings((current) => {
-      const usedIds = new Set(
-        current.eventMatch.participants.flatMap((participant, participantIndex) =>
-          participantIndex !== index && participant.playerId
-            ? [participant.playerId]
-            : [],
-        ),
-      )
-      const exactMatches = players.filter(
-        (player) =>
-          player.active &&
-          !usedIds.has(player.id) &&
-          playerDisplayName(player, displayNames) === normalizedName,
-      )
       const participants = current.eventMatch.participants.map(
         (participant, participantIndex) =>
           participantIndex === index
-            ? {
-                name,
-                ...(exactMatches.length === 1
-                  ? { playerId: exactMatches[0].id }
-                  : {}),
-              }
+            ? { name }
             : participant,
       ) as MatchSettings['eventMatch']['participants']
       return {
@@ -3421,6 +3519,25 @@ function App() {
       }
     })
     setNotice('이벤트 매치 변경됨 · 생성 필요')
+  }
+
+  const selectEventMatchParticipant = (
+    index: number,
+    option: EventMatchPlayerOption,
+  ) => {
+    setSettings((current) => {
+      const participants = current.eventMatch.participants.map(
+        (participant, participantIndex) =>
+          participantIndex === index
+            ? { name: option.name, playerId: option.id }
+            : participant,
+      ) as MatchSettings['eventMatch']['participants']
+      return {
+        ...current,
+        eventMatch: { ...current.eventMatch, participants },
+      }
+    })
+    setNotice('이벤트 참가자 선택됨 · 생성 필요')
   }
 
   const setAppModeAndNotice = (mode: AppMode) => {
@@ -7259,7 +7376,9 @@ function App() {
                     ) : null}
                   </div>
                   <div className={`event-match-settings ${
-                    settings.eventMatch.enabled ? 'expanded' : ''
+                    settings.eventMatch.enabled && eventMatchSettingsOpen
+                      ? 'expanded'
+                      : ''
                   }`}>
                     <div className="event-match-heading">
                       <label className="settings-checkbox">
@@ -7275,6 +7394,7 @@ function App() {
                                 enabled,
                               },
                             }))
+                            setEventMatchSettingsOpen(enabled)
                             setNotice(
                               enabled
                                 ? '이벤트 매치 사용 · 참가자 입력 필요'
@@ -7284,10 +7404,24 @@ function App() {
                         />
                         이벤트 매치
                       </label>
-                      <span>이벤트 후 다음 1경기 휴식</span>
+                      <div className="event-match-heading-actions">
+                        <span>이벤트 후 다음 1경기 휴식</span>
+                        {settings.eventMatch.enabled ? (
+                          <button
+                            type="button"
+                            aria-expanded={eventMatchSettingsOpen}
+                            aria-controls="event-match-details"
+                            onClick={() =>
+                              setEventMatchSettingsOpen((current) => !current)
+                            }
+                          >
+                            {eventMatchSettingsOpen ? '접기' : '설정 열기'}
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
-                    {settings.eventMatch.enabled ? (
-                      <>
+                    {settings.eventMatch.enabled && eventMatchSettingsOpen ? (
+                      <div id="event-match-details" className="event-match-details">
                         <div className="event-match-controls">
                           <label>
                             시작 시각
@@ -7341,40 +7475,42 @@ function App() {
                                   settings.eventMatch.participants[participantIndex]
                                 return (
                                   <label key={participantIndex}>
-                                    {playerIndex + 1}번
-                                    <input
-                                      type="text"
-                                      list="event-match-player-options"
-                                      placeholder="참가자 이름"
+                                    <span>{playerIndex + 1}번</span>
+                                    <EventMatchPlayerPicker
+                                      id={`event-match-player-${participantIndex}`}
+                                      linked={Boolean(participant.playerId)}
                                       value={participant.name}
-                                      onChange={(event) =>
+                                      options={activePlayers
+                                        .filter((player) =>
+                                          !settings.eventMatch.participants.some(
+                                            (selected, selectedIndex) =>
+                                              selectedIndex !== participantIndex &&
+                                              selected.playerId === player.id,
+                                          ),
+                                        )
+                                        .map((player) => ({
+                                          id: player.id,
+                                          name: playerDisplayName(player, displayNames),
+                                        }))}
+                                      onChange={(name) =>
                                         updateEventMatchParticipant(
                                           participantIndex,
-                                          event.target.value,
+                                          name,
+                                        )
+                                      }
+                                      onSelect={(option) =>
+                                        selectEventMatchParticipant(
+                                          participantIndex,
+                                          option,
                                         )
                                       }
                                     />
-                                    <small className={
-                                      participant.playerId ? 'linked' : ''
-                                    }>
-                                      {participant.playerId
-                                        ? '명단 연결됨'
-                                        : '명단에서 선택'}
-                                    </small>
                                   </label>
                                 )
                               })}
                             </fieldset>
                           ))}
                         </div>
-                        <datalist id="event-match-player-options">
-                          {activePlayers.map((player) => (
-                            <option
-                              value={playerDisplayName(player, displayNames)}
-                              key={player.id}
-                            />
-                          ))}
-                        </datalist>
                         <p className={
                           eventMatchSetupIssue
                             ? 'event-match-note error'
@@ -7383,7 +7519,7 @@ function App() {
                           {eventMatchSetupIssue ??
                             '다른 코트는 계속 진행하며, 4명은 이벤트 시간과 다음 경기에서 제외됩니다.'}
                         </p>
-                      </>
+                      </div>
                     ) : null}
                   </div>
                   {guestPlayers.length > 0 ? (
