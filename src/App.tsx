@@ -217,6 +217,7 @@ const MEETING_GENERATION_MESSAGES = [
   '즐거운 배드민턴, 고성현&신백철의 A.M.A와 함께 하세요!',
 ] as const
 const MEETING_GENERATION_ATTEMPTS = 3
+const MEETING_PRECISION_GENERATION_ATTEMPTS = 9
 
 const MIN_MEETING_PHASE_PERCENT = 15
 const MEETING_PHASE_STEP = 5
@@ -4564,9 +4565,11 @@ function App() {
     nextSettings: MatchSettings,
     completedNotice: string,
     force = false,
+    attemptCount = MEETING_GENERATION_ATTEMPTS,
+    operationLabel = '대진 생성 중',
   ) => {
     if (isMeetingGenerating && !force) return
-    setMeetingOperationLabel('대진 생성 중')
+    setMeetingOperationLabel(operationLabel)
     setMeetingWaitLimitFailure(null)
     setMeetingGenerationFailureIssues([])
     meetingGenerationCompletedNoticeRef.current = completedNotice
@@ -4599,8 +4602,12 @@ function App() {
       setGeneratedMeetingSettings(nextSettings)
       setScheduleOverride(null)
       clearMeetingScheduleState()
-      setMeetingOperationLabel('대진 생성 중')
-      setMeetingGenerationMessage('참가자 조합과 경기 순서를 계산하고 있습니다.')
+      setMeetingOperationLabel(operationLabel)
+      setMeetingGenerationMessage(
+        operationLabel === '24분 정밀 재탐색 중'
+          ? '24분 안쪽 배치를 정밀하게 다시 찾고 있습니다.'
+          : '참가자 조합과 경기 순서를 계산하고 있습니다.',
+      )
       meetingGenerationStartTimerRef.current = null
 
       const worker = new Worker(
@@ -4711,7 +4718,9 @@ function App() {
         requestId,
         players: playerSnapshot,
         settings: nextSettings,
-        attemptCount: MEETING_GENERATION_ATTEMPTS,
+        attemptCount,
+        waitRepairMode:
+          operationLabel === '24분 정밀 재탐색 중' ? 'precise' : 'fast',
       })
     }, 60)
   }
@@ -4736,6 +4745,20 @@ function App() {
       },
       '다른 대진 생성됨',
       true,
+    )
+  }
+
+  const retryMeetingWaitPrecisely = () => {
+    startMeetingGeneration(
+      {
+        ...generatedMeetingSettings,
+        seed:
+          generatedMeetingSettings.seed + MEETING_GENERATION_ATTEMPTS,
+      },
+      '24분 이하 대진 생성됨',
+      true,
+      MEETING_PRECISION_GENERATION_ATTEMPTS,
+      '24분 정밀 재탐색 중',
     )
   }
 
@@ -6751,10 +6774,18 @@ function App() {
                 <button type="button" onClick={returnToMeetingSettings}>
                   다시 설정
                 </button>
-                {hasReviewableMeetingFailureSchedule ? (
+                {meetingWaitLimitFailure ? (
                   <button
                     type="button"
                     className="primary-action"
+                    onClick={retryMeetingWaitPrecisely}
+                  >
+                    24분 정밀 재탐색
+                  </button>
+                ) : null}
+                {hasReviewableMeetingFailureSchedule ? (
+                  <button
+                    type="button"
                     onClick={() => openWaitLimitManualEdit()}
                   >
                     수동 수정

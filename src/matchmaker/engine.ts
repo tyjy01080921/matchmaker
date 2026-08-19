@@ -3127,6 +3127,538 @@ export const generateMeetingScheduleV2 = (
   return schedule
 }
 
+type WaitTargetMetrics = {
+  maximumWaitMinutes: number
+  maximumInitialWaitMinutes: number
+  maximumBetweenWaitMinutes: number
+  maximumFinalIdleMinutes: number
+  participantsOverLimit: number
+  totalExcessMinutes: number
+}
+
+const waitTargetMetrics = (
+  schedule: Schedule,
+  players: Player[],
+  settings: MatchSettings,
+): WaitTargetMetrics => {
+  const matches = schedule.rounds.flatMap((round) => round.matches)
+  const bookingMinutes = meetingSchedulingMinutes(settings)
+  const waits = players
+    .filter((player) => player.active)
+    .map((player) => {
+      const attendance = resolveMeetingAttendanceWindow(player, settings)
+      const windows = matches
+        .filter((match) =>
+          [...match.teamA, ...match.teamB].some(
+            (candidate) => candidate.id === player.id,
+          ),
+        )
+        .map((match) => ({
+          start: match.startOffsetMinutes ?? 0,
+          end:
+            (match.startOffsetMinutes ?? 0) +
+            (match.durationMinutes ?? settings.normalGameMinutes),
+        }))
+        .sort((left, right) => left.start - right.start)
+      const analysisEnd = Math.min(
+        attendance.end,
+        player.isGuest && windows.length > 0
+          ? windows[windows.length - 1].end
+          : bookingMinutes,
+      )
+      if (windows.length === 0) {
+        const wait = Math.max(0, analysisEnd - attendance.start)
+        return { initial: wait, between: 0, final: wait, maximum: wait }
+      }
+      const initial = Math.max(0, windows[0].start - attendance.start)
+      const between = Math.max(
+        0,
+        ...windows.slice(1).map((window, index) =>
+          Math.max(0, window.start - windows[index].end),
+        ),
+      )
+      const final = Math.max(0, analysisEnd - windows[windows.length - 1].end)
+      return {
+        initial,
+        between,
+        final,
+        maximum: Math.max(initial, between, final),
+      }
+    })
+  return {
+    maximumWaitMinutes: Math.max(0, ...waits.map((wait) => wait.maximum)),
+    maximumInitialWaitMinutes: Math.max(0, ...waits.map((wait) => wait.initial)),
+    maximumBetweenWaitMinutes: Math.max(0, ...waits.map((wait) => wait.between)),
+    maximumFinalIdleMinutes: Math.max(0, ...waits.map((wait) => wait.final)),
+    participantsOverLimit: waits.filter(
+      (wait) => wait.maximum > MEETING_MAX_WAIT_MINUTES,
+    ).length,
+    totalExcessMinutes: waits.reduce(
+      (sum, wait) =>
+        sum + Math.max(0, wait.maximum - MEETING_MAX_WAIT_MINUTES),
+      0,
+    ),
+  }
+}
+
+const nonWaitSuccessIssues = (metrics: MeetingV2Metrics) =>
+  metrics.successIssues.filter(
+    (issue) =>
+      !issue.startsWith('최장 대기 ') &&
+      !issue.startsWith('마지막 경기 후 '),
+  )
+
+type WaitRepairSeat = {
+  matchId: string
+  start: number
+  duration: number
+  isSpecial: boolean
+  player: Player
+}
+
+const repairMeetingWaitsByPhasedCadence = (
+  candidate: GenerationCandidate,
+  players: Player[],
+  restartCount = 240,
+): GenerationCandidate => {
+  const activePlayers = players.filter((player) => player.active)
+  const regulars = activePlayers.filter((player) => !player.isGuest)
+  const regularById = new Map(regulars.map((player) => [player.id, player]))
+  const matches = candidate.schedule.rounds.flatMap((round) => round.matches)
+  const mutableMatches = matches.filter((match) => !match.isEventMatch)
+  const eventMatches = matches.filter((match) => match.isEventMatch)
+  const duration = candidate.settings.normalGameMinutes
+  const seats: WaitRepairSeat[] = mutableMatches.flatMap((match) =>
+    [...match.teamA, ...match.teamB]
+      .filter((player) => !player.isGuest)
+      .map((player) => ({
+        matchId: match.id,
+        start: match.startOffsetMinutes ?? 0,
+        duration: match.durationMinutes ?? duration,
+        isSpecial: match.isSpecial,
+        player,
+      })),
+  )
+  const matchSeatIndexes = new Map<string, number[]>()
+  const seatsByStart = new Map<
+    number,
+    { special: number[]; general: number[] }
+  >()
+  for (const [index, seat] of seats.entries()) {
+    matchSeatIndexes.set(seat.matchId, [
+      ...(matchSeatIndexes.get(seat.matchId) ?? []),
+      index,
+    ])
+    const entry = seatsByStart.get(seat.start) ?? {
+      special: [],
+      general: [],
+    }
+    entry[seat.isSpecial ? 'special' : 'general'].push(index)
+    seatsByStart.set(seat.start, entry)
+  }
+  const starts = [...seatsByStart.keys()].sort((left, right) => left - right)
+  if (starts.length === 0 || starts.some((start, index) =>
+    start !== index * duration
+  )) {
+    return candidate
+  }
+  const fixedIdsByStart = new Map<number, string[]>()
+  const fixedStartById = new Map<string, number>()
+  for (const match of eventMatches) {
+    const start = match.startOffsetMinutes ?? 0
+    const ids = [...match.teamA, ...match.teamB]
+      .filter((player) => !player.isGuest && regularById.has(player.id))
+      .map((player) => player.id)
+    fixedIdsByStart.set(start, [...(fixedIdsByStart.get(start) ?? []), ...ids])
+    ids.forEach((id) => fixedStartById.set(id, start))
+  }
+  const totalCountById = new Map(
+    regulars.map((player) => [
+      player.id,
+      seats.filter((seat) => seat.player.id === player.id).length +
+        Number(fixedStartById.has(player.id)),
+    ]),
+  )
+  const specialCountById = new Map(
+    regulars.map((player) => [
+      player.id,
+      seats.filter(
+        (seat) => seat.isSpecial && seat.player.id === player.id,
+      ).length,
+    ]),
+  )
+  const baseGameCount = Math.ceil(starts.length / 3)
+  if (
+    regulars.length % 3 !== 0 ||
+    [...totalCountById.values()].some(
+      (count) => count !== baseGameCount && count !== baseGameCount + 1,
+    )
+  ) {
+    return candidate
+  }
+  const phaseCapacity = regulars.length / 3
+  const totalCapacityByStart = new Map(
+    starts.map((start) => [
+      start,
+      (seatsByStart.get(start)?.special.length ?? 0) +
+        (seatsByStart.get(start)?.general.length ?? 0) +
+        (fixedIdsByStart.get(start)?.length ?? 0),
+    ]),
+  )
+  const extraSlots = starts.flatMap((start) =>
+    Array.from(
+      {
+        length: Math.max(
+          0,
+          (totalCapacityByStart.get(start) ?? 0) - phaseCapacity,
+        ),
+      },
+      () => start,
+    ),
+  )
+  const extraPlayerIds = regulars
+    .filter(
+      (player) => (totalCountById.get(player.id) ?? 0) === baseGameCount + 1,
+    )
+    .map((player) => player.id)
+  if (extraSlots.length !== extraPlayerIds.length) {
+    return candidate
+  }
+  const originalLimits = {
+    skillDangerMatches: candidate.metrics.skillDangerMatches,
+    postWarmupGenderExceptionMatches:
+      candidate.metrics.postWarmupGenderExceptionMatches,
+    maximumGroupMeetings: candidate.metrics.maximumGroupMeetings,
+    nonWaitSuccessIssueCount: nonWaitSuccessIssues(candidate.metrics).length,
+  }
+
+  for (let restart = 0; restart < restartCount; restart += 1) {
+    const phaseById = new Map<string, number>()
+    const phaseCounts = [0, 0, 0]
+    let failed = false
+    for (const [playerId, fixedStart] of fixedStartById) {
+      const phase = Math.floor(fixedStart / duration) % 3
+      phaseById.set(playerId, phase)
+      phaseCounts[phase] += 1
+      if (phaseCounts[phase] > phaseCapacity) failed = true
+    }
+    if (failed) continue
+    const unassigned = regulars
+      .filter((player) => !phaseById.has(player.id))
+      .sort((left, right) =>
+        stableNoise(
+          candidate.settings.seed + restart,
+          `phase:${left.id}`,
+        ) - stableNoise(
+          candidate.settings.seed + restart,
+          `phase:${right.id}`,
+        ),
+      )
+    for (const player of unassigned) {
+      const phase = [0, 1, 2]
+        .filter((value) => phaseCounts[value] < phaseCapacity)
+        .sort(
+          (left, right) =>
+            phaseCounts[left] - phaseCounts[right] ||
+            stableNoise(
+              candidate.settings.seed + restart,
+              `phase-choice:${player.id}:${left}`,
+            ) - stableNoise(
+              candidate.settings.seed + restart,
+              `phase-choice:${player.id}:${right}`,
+            ),
+        )[0]
+      if (phase === undefined) {
+        failed = true
+        break
+      }
+      phaseById.set(player.id, phase)
+      phaseCounts[phase] += 1
+    }
+    if (failed) continue
+
+    const appearances = new Map(
+      regulars.map((player) => [
+        player.id,
+        starts.filter(
+          (start) => Math.floor(start / duration) % 3 === phaseById.get(player.id),
+        ),
+      ]),
+    )
+    const matchedExtraByPlayer = new Map<string, number>()
+    const usedExtraPlayers = new Set<string>()
+    const orderedExtraSlots = [...extraSlots].sort((left, right) =>
+      stableNoise(
+        candidate.settings.seed + restart,
+        `extra-slot:${left}`,
+      ) - stableNoise(
+        candidate.settings.seed + restart,
+        `extra-slot:${right}`,
+      )
+    )
+    const assignExtra = (slotIndex: number): boolean => {
+      if (slotIndex >= orderedExtraSlots.length) return true
+      const start = orderedExtraSlots[slotIndex]
+      const candidates = extraPlayerIds
+        .filter((playerId) => {
+          if (usedExtraPlayers.has(playerId)) return false
+          const player = regularById.get(playerId)
+          return Boolean(player) &&
+            !(appearances.get(playerId) ?? []).includes(start) &&
+            !eventMatchUnavailablePlayerIds(candidate.settings, start).has(
+              playerId,
+            ) &&
+            isPlayerAvailableForMeetingSlot(
+              player!,
+              candidate.settings,
+              start,
+              duration,
+            )
+        })
+        .sort((left, right) =>
+          stableNoise(
+            candidate.settings.seed + restart,
+            `extra:${slotIndex}:${left}`,
+          ) - stableNoise(
+            candidate.settings.seed + restart,
+            `extra:${slotIndex}:${right}`,
+          ),
+        )
+      for (const playerId of candidates) {
+        usedExtraPlayers.add(playerId)
+        matchedExtraByPlayer.set(playerId, start)
+        if (assignExtra(slotIndex + 1)) return true
+        matchedExtraByPlayer.delete(playerId)
+        usedExtraPlayers.delete(playerId)
+      }
+      return false
+    }
+    if (!assignExtra(0)) {
+      continue
+    }
+    for (const [playerId, start] of matchedExtraByPlayer) {
+      appearances.set(playerId, [
+        ...(appearances.get(playerId) ?? []),
+        start,
+      ].sort((left, right) => left - right))
+    }
+    for (const [playerId, fixedStart] of fixedStartById) {
+      appearances.set(
+        playerId,
+        (appearances.get(playerId) ?? []).filter(
+          (start) => start !== fixedStart,
+        ),
+      )
+    }
+    if ([...appearances].some(([playerId, playerStarts]) =>
+      playerStarts.length !==
+        (totalCountById.get(playerId) ?? 0) -
+          Number(fixedStartById.has(playerId))
+    )) {
+      continue
+    }
+
+    const specialDemand = new Map(
+      starts.map((start) => [
+        start,
+        seatsByStart.get(start)?.special.length ?? 0,
+      ]),
+    )
+    const specialStartsById = new Map(
+      regulars.map((player) => [player.id, new Set<number>()]),
+    )
+    const specialMinimum = (playerId: string) =>
+      (specialCountById.get(playerId) ?? 0) > 0 ? 1 : 0
+    const specialMaximum = (playerId: string) => {
+      const original = specialCountById.get(playerId) ?? 0
+      return original > 0 ? original + 1 : 0
+    }
+    const minimumOrder: Player[] = []
+    for (const player of minimumOrder) {
+      const start = (appearances.get(player.id) ?? [])
+        .filter((value) => (specialDemand.get(value) ?? 0) > 0)
+        .sort(
+          (left, right) =>
+            (specialDemand.get(right) ?? 0) -
+              (specialDemand.get(left) ?? 0) ||
+            stableNoise(
+              candidate.settings.seed + restart,
+              `special-min-slot:${player.id}:${left}`,
+            ) - stableNoise(
+              candidate.settings.seed + restart,
+              `special-min-slot:${player.id}:${right}`,
+            ),
+        )[0]
+      if (start === undefined) {
+        failed = true
+        break
+      }
+      specialStartsById.get(player.id)?.add(start)
+      specialDemand.set(start, (specialDemand.get(start) ?? 0) - 1)
+    }
+    if (failed) continue
+    for (const start of starts) {
+      while ((specialDemand.get(start) ?? 0) > 0) {
+        const playerId = [...appearances]
+          .filter(([id, playerStarts]) =>
+            playerStarts.includes(start) &&
+            !specialStartsById.get(id)?.has(start) &&
+            (specialStartsById.get(id)?.size ?? 0) < specialMaximum(id)
+          )
+          .sort(
+            ([leftId], [rightId]) =>
+              (specialStartsById.get(leftId)?.size ?? 0) -
+                (specialStartsById.get(rightId)?.size ?? 0) ||
+              stableNoise(
+                candidate.settings.seed + restart,
+                `special-fill:${start}:${leftId}`,
+              ) - stableNoise(
+                candidate.settings.seed + restart,
+                `special-fill:${start}:${rightId}`,
+              ),
+          )[0]?.[0]
+        if (!playerId) {
+          failed = true
+          break
+        }
+        specialStartsById.get(playerId)?.add(start)
+        specialDemand.set(start, (specialDemand.get(start) ?? 0) - 1)
+      }
+      if (failed) break
+    }
+    if (
+      failed ||
+      regulars.some(
+        (player) =>
+          (specialStartsById.get(player.id)?.size ?? 0) <
+          specialMinimum(player.id),
+      )
+    ) {
+      continue
+    }
+
+    const assignments = Array.from({ length: seats.length }, () => '')
+    for (const start of starts) {
+      const playingIds = [...appearances]
+        .filter(([, playerStarts]) => playerStarts.includes(start))
+        .map(([playerId]) => playerId)
+      const specialIds = playingIds.filter((playerId) =>
+        specialStartsById.get(playerId)?.has(start)
+      )
+      const generalIds = playingIds.filter((playerId) =>
+        !specialStartsById.get(playerId)?.has(start)
+      )
+      const slot = seatsByStart.get(start) ?? { special: [], general: [] }
+      if (
+        specialIds.length !== slot.special.length ||
+        generalIds.length !== slot.general.length
+      ) {
+        failed = true
+        break
+      }
+      const assign = (indexes: number[], playerIds: string[]) => {
+        const ordered = [...playerIds].sort((left, right) =>
+          stableNoise(
+            candidate.settings.seed + restart,
+            `phase-seat:${start}:${left}`,
+          ) - stableNoise(
+            candidate.settings.seed + restart,
+            `phase-seat:${start}:${right}`,
+          ),
+        )
+        indexes.forEach((seatIndex, index) => {
+          assignments[seatIndex] = ordered[index]
+        })
+      }
+      assign(slot.special, specialIds)
+      const generalIndexesByMatch = new Map<string, number[]>()
+      for (const seatIndex of slot.general) {
+        const matchId = seats[seatIndex].matchId
+        generalIndexesByMatch.set(matchId, [
+          ...(generalIndexesByMatch.get(matchId) ?? []),
+          seatIndex,
+        ])
+      }
+      const orderedGeneralIds = [...generalIds].sort((left, right) => {
+        const leftPlayer = regularById.get(left)
+        const rightPlayer = regularById.get(right)
+        if (!leftPlayer || !rightPlayer) return left.localeCompare(right)
+        return playerScore(leftPlayer, candidate.settings) -
+          playerScore(rightPlayer, candidate.settings) ||
+          stableNoise(
+            candidate.settings.seed + restart,
+            `phase-general:${start}:${left}`,
+          ) - stableNoise(
+            candidate.settings.seed + restart,
+            `phase-general:${start}:${right}`,
+          )
+      })
+      let generalPlayerIndex = 0
+      for (const indexes of generalIndexesByMatch.values()) {
+        for (const seatIndex of indexes) {
+          assignments[seatIndex] = orderedGeneralIds[generalPlayerIndex++]
+        }
+      }
+    }
+    if (failed || assignments.some((playerId) => !playerId)) {
+      continue
+    }
+
+    const assignedPlayers = assignments.map((playerId, index) =>
+      regularById.get(playerId) ?? seats[index].player,
+    )
+    let schedule: Schedule = {
+      ...candidate.schedule,
+      rounds: candidate.schedule.rounds.map((round) => ({
+        ...round,
+        matches: round.matches.map((match) => {
+          const indexes = matchSeatIndexes.get(match.id)
+          if (!indexes) return match
+          let regularIndex = 0
+          const group = [...match.teamA, ...match.teamB].map((player) =>
+            player.isGuest
+              ? player
+              : assignedPlayers[indexes[regularIndex++]],
+          ) as [Player, Player, Player, Player]
+          const pairing = rePairGeneralGroup(group, candidate.settings)
+          return { ...match, teamA: pairing.teamA, teamB: pairing.teamB }
+        }),
+      })),
+    }
+    schedule = refreshSpecialMatchMetadata(
+      {
+        ...schedule,
+        rounds: refreshRestingPlayers(schedule.rounds, activePlayers),
+      },
+      activePlayers,
+    )
+    const target = waitTargetMetrics(schedule, activePlayers, candidate.settings)
+    if (target.maximumWaitMinutes > MEETING_MAX_WAIT_MINUTES) continue
+    const metrics = analyzeMeetingScheduleV2(
+      schedule,
+      activePlayers,
+      candidate.settings,
+    )
+    if (
+      metrics.structuralIssues.length === 0 &&
+      nonWaitSuccessIssues(metrics).length <=
+        originalLimits.nonWaitSuccessIssueCount &&
+      metrics.skillDangerMatches <= originalLimits.skillDangerMatches + 2 &&
+      metrics.postWarmupGenderExceptionMatches <=
+        originalLimits.postWarmupGenderExceptionMatches + 2 &&
+      metrics.maximumGroupMeetings <= originalLimits.maximumGroupMeetings
+    ) {
+      return { ...candidate, schedule, metrics }
+    }
+  }
+  return candidate
+}
+
+const repairMeetingWaits = (
+  candidate: GenerationCandidate,
+  players: Player[],
+) => repairMeetingWaitsByPhasedCadence(candidate, players)
+
 const candidateScore = (candidate: GenerationCandidate) => [
   candidate.metrics.structuralIssues.length,
   Number(
@@ -3187,7 +3719,7 @@ const generateMeetingScheduleV2OptimizedAtEventTime = (
   settings: MatchSettings,
   attemptCount = 3,
 ) => {
-  const maximumAttempts = Math.min(3, Math.max(1, Math.floor(attemptCount)))
+  const maximumAttempts = Math.min(9, Math.max(1, Math.floor(attemptCount)))
   const candidates: GenerationCandidate[] = []
   for (let index = 0; index < maximumAttempts; index += 1) {
     const schedule = generateMeetingScheduleV2(players, settings, index)
@@ -3282,22 +3814,30 @@ export const generateMeetingScheduleV2Optimized = (
 ) => {
   const automaticStartTimes = automaticEventStartTimes(settings)
   if (automaticStartTimes.length === 0) {
-    return generateMeetingScheduleV2OptimizedAtEventTime(
+    return repairMeetingWaits(
+      generateMeetingScheduleV2OptimizedAtEventTime(
+        players,
+        settings,
+        attemptCount,
+      ),
       players,
-      settings,
-      attemptCount,
     )
   }
 
   let best: { candidate: GenerationCandidate; score: number[] } | null = null
   for (const [timeIndex, startTime] of automaticStartTimes.entries()) {
-    const candidate = generateMeetingScheduleV2OptimizedAtEventTime(
+    const generatedCandidate = generateMeetingScheduleV2OptimizedAtEventTime(
       players,
       {
         ...settings,
         eventMatch: { ...settings.eventMatch, startTime },
       },
       timeIndex === 0 ? attemptCount : 1,
+    )
+    const candidate = repairMeetingWaitsByPhasedCadence(
+      generatedCandidate,
+      players,
+      60,
     )
     const score = automaticEventCandidateScore(candidate, timeIndex)
     if (best === null || compareNumberTuples(score, best.score) < 0) {
@@ -3306,10 +3846,13 @@ export const generateMeetingScheduleV2Optimized = (
     if (meetsPreferredWaitTarget(candidate)) return candidate
   }
 
-  return best?.candidate ?? generateMeetingScheduleV2OptimizedAtEventTime(
+  return repairMeetingWaits(
+    best?.candidate ?? generateMeetingScheduleV2OptimizedAtEventTime(
+      players,
+      settings,
+      attemptCount,
+    ),
     players,
-    settings,
-    attemptCount,
   )
 }
 
@@ -3438,13 +3981,20 @@ export type MeetingGenerationV2Resolution = {
   failureIssues: string[]
 }
 
+export type MeetingWaitRepairMode = 'fast' | 'precise'
+
 export const generateMeetingScheduleV2WithWaitResolution = (
   players: Player[],
   settings: MatchSettings,
   attemptCount = 3,
   onProgress?: (message: string) => void,
+  waitRepairMode: MeetingWaitRepairMode = 'fast',
 ): MeetingGenerationV2Resolution => {
-  onProgress?.('필수 조건을 확인하고 경기 슬롯을 계획하고 있습니다.')
+  onProgress?.(
+    waitRepairMode === 'precise'
+      ? '24분 안쪽 배치를 정밀하게 다시 찾고 있습니다.'
+      : '필수 조건과 24분 대기를 함께 보정하고 있습니다.',
+  )
   const selected = generateMeetingScheduleV2Optimized(
     players,
     settings,

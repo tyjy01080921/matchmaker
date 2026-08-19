@@ -20,6 +20,7 @@ type MeetingGenerationWorkerRequest = {
   players: Player[]
   settings: MatchSettings
   attemptCount: number
+  waitRepairMode?: 'fast' | 'precise'
 }
 
 type MeetingReplanWorkerRequest = {
@@ -62,7 +63,7 @@ self.onmessage = (
       self.postMessage(response)
       return
     }
-    const { players, settings, attemptCount } = request
+    const { players, settings, attemptCount, waitRepairMode } = request
     const result = generateMeetingScheduleV2WithWaitResolution(
       players,
       settings,
@@ -74,6 +75,7 @@ self.onmessage = (
         }
         self.postMessage(response)
       },
+      waitRepairMode,
     )
     const response = makeMeetingGenerationWorkerResponse(requestId, result)
     self.postMessage(response)

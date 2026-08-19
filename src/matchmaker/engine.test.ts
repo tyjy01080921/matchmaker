@@ -398,18 +398,30 @@ describe('meeting V2 rules', () => {
       ...defaultSettings,
       courtCount: 3,
       courtAssignmentMode: 'available',
-      startTime: '18:00',
-      endTime: '21:00',
+      startTime: '19:00',
+      endTime: '22:00',
       normalGameMinutes: 12,
       seed: 12,
-      targetRoundCount: 15,
-      pacingRoundCount: 15,
+      targetRoundCount: 12,
+      pacingRoundCount: 12,
       roundCountLocked: true,
+      singleGuestPerMatch: true,
+      specialLimitEnabled: true,
+      specialScheduleMode: 'spread',
+      specialGameLimitEnabled: true,
+      specialGameLimit: 10,
+      specialParticipantTarget: 30,
+      specialTimeLimitEnabled: false,
+      specialTimeLimitMinutes: 180,
+      specialLowPriorityEnabled: true,
+      specialLowPriorityPercent: 10,
+      specialHighPriorityEnabled: true,
+      specialHighPriorityPercent: 90,
       eventMatch: {
         enabled: true,
         scheduleMode: 'auto',
-        startTime: '19:00',
-        court: 1,
+        startTime: '20:00',
+        court: 2,
         participants: eventPlayers.map((player) => ({
           name: player.name,
           playerId: player.id,
@@ -427,12 +439,48 @@ describe('meeting V2 rules', () => {
     expect(metrics.maximumBetweenWaitMinutes).toBeLessThanOrEqual(24)
     expect(metrics.maximumFinalIdleMinutes).toBeLessThanOrEqual(24)
     expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(24)
-    expect(optimized.settings.eventMatch.startTime).toBe('19:24')
+    expect(optimized.settings.eventMatch.startTime).toBe('20:36')
+    expect(
+      schedule.rounds
+        .flatMap((round) => round.matches)
+        .filter((match) => match.isSpecial),
+    ).toHaveLength(20)
+    expect(schedule.specialCompletedIds).toHaveLength(30)
+    const specialAppearances = new Map(
+      regulars.map((player) => [player.id, 0]),
+    )
+    for (const match of schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) => match.isSpecial)) {
+      for (const player of [...match.teamA, ...match.teamB]) {
+        if (!player.isGuest) {
+          specialAppearances.set(
+            player.id,
+            (specialAppearances.get(player.id) ?? 0) + 1,
+          )
+        }
+      }
+    }
+    expect(
+      [...specialAppearances.values()].every(
+        (count) => count >= 1 && count <= 3,
+      ),
+    ).toBe(true)
+    expect(
+      [...specialAppearances.values()].reduce(
+        (sum, count) => sum + count,
+        0,
+      ),
+    ).toBe(60)
+    expect(schedule.guestGameCounts).toMatchObject({
+      [guests[0].id]: 11,
+      [guests[1].id]: 11,
+    })
     expect(
       schedule.rounds
         .flatMap((round) => round.matches)
         .find((match) => match.isEventMatch)?.startOffsetMinutes,
-    ).toBe(84)
+    ).toBe(96)
   }, 40000)
 
   it('keeps structural and success rules separate from ordered preferences', () => {
