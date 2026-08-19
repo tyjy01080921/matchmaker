@@ -51,6 +51,7 @@ import {
 } from './matchmaker/engine'
 import {
   allowsFixedCourtGuestOverflow,
+  eventMatchParticipantIds,
   MEETING_FINAL_IDLE_LIMIT_MINUTES,
   plannedGuestGames,
 } from './matchmaker/rules'
@@ -690,8 +691,7 @@ export const getMatchIndividualSkillSpread = (match: Match) => {
 const matchOverallSkillGap = (match: Match) =>
   Math.max(matchTeamSkillGap(match), getMatchIndividualSkillSpread(match))
 
-const isSpecialParticipationMatch = (match: Match) =>
-  match.isSpecial || Boolean(match.isEventMatch)
+const isSpecialParticipationMatch = (match: Match) => match.isSpecial
 
 export type MatchGenderCompositionReview = {
   maleCount: number
@@ -2822,6 +2822,7 @@ type SpecialRegularScore = {
   levelDirection: number
   groupRepeatPenalty: number
   pendingPenalty: number
+  eventRegularPairPenalty: number
   maximumSpecialGames: number
   totalSpecialGames: number
   maximumGames: number
@@ -2839,6 +2840,7 @@ const scoreSpecialRegulars = (
   random: () => number,
   conditions: MatchConditionOptions,
   segment: SpecialAllocationSegment,
+  settings: MatchSettings,
 ): SpecialRegularScore => {
   const pendingCount = regulars.filter((player) => pendingIds.has(player.id)).length
   const specialCounts = regulars.map((player) => specialGameCount(player, history))
@@ -2857,6 +2859,7 @@ const scoreSpecialRegulars = (
           .map((player) => history.partners[pairKey(guest.id, player.id)] ?? 0),
       )
     : 0
+  const eventPlayerIds = eventMatchParticipantIds(settings)
 
   return {
     firstGameCount: regulars.filter(
@@ -2888,6 +2891,10 @@ const scoreSpecialRegulars = (
       conditions,
     ),
     pendingPenalty: 3 - pendingCount,
+    eventRegularPairPenalty: Math.max(
+      0,
+      regulars.filter((player) => eventPlayerIds.has(player.id)).length - 1,
+    ),
     maximumSpecialGames: Math.max(...specialCounts),
     totalSpecialGames: specialCounts.reduce((sum, count) => sum + count, 0),
     maximumGames: conditions.fairGames ? Math.max(...gameCounts) : 0,
@@ -2947,6 +2954,7 @@ const compareSpecialRegularScores = (
     left.ageSpread - right.ageSpread,
     segment === 'random' ? 0 : left.levelDirection - right.levelDirection,
     left.groupRepeatPenalty - right.groupRepeatPenalty,
+    left.eventRegularPairPenalty - right.eventRegularPairPenalty,
     left.maximumSpecialGames - right.maximumSpecialGames,
     left.totalSpecialGames - right.totalSpecialGames,
     left.pendingPenalty - right.pendingPenalty,
@@ -3104,6 +3112,7 @@ const pickSpecialRegulars = (
           random,
           conditions,
           segment,
+          settings,
         )
         if (
           fallbackScore === null ||
@@ -6114,6 +6123,12 @@ export const replanMeetingSchedule = (
   const revision = Math.max(0, previousContinuation.revision) + 1
 
   const history = makeHistory(activePlayers)
+  const eventPlayerIds = eventMatchParticipantIds(input.settings)
+  for (const player of activePlayers.filter((candidate) =>
+    eventPlayerIds.has(candidate.id),
+  )) {
+    history.games[player.id] = (history.games[player.id] ?? 0) + 1
+  }
   const lockedMatchesByStart = new Map<number, Match[]>()
   for (const match of lockedMatches) {
     const start = matchTimeWindow(match).start
@@ -8027,7 +8042,8 @@ export const calculateStats = (
       const teamA: Team = [teamA0, teamA1]
       const teamB: Team = [teamB0, teamB1]
       const specialParticipationMatch =
-        isSpecialParticipationMatch(match) || hasGuest(playersInMatch)
+        !match.isEventMatch &&
+        (isSpecialParticipationMatch(match) || hasGuest(playersInMatch))
 
       for (const player of playersInMatch) {
         const stat = ensureStat(player)

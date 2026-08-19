@@ -150,7 +150,7 @@ describe('meeting V2 rules', () => {
     expect(metrics.structuralIssues).toEqual([])
   })
 
-  it('counts every linked event participant as having played a special match', () => {
+  it('counts an event guest game without completing ordinary special coverage', () => {
     const players = makePlayers(8, 1)
     const eventPlayers = players.slice(0, 4)
     const settings: MatchSettings = {
@@ -194,11 +194,144 @@ describe('meeting V2 rules', () => {
     const reinserted = insertConfiguredEventMatch(inserted, settings, players)
 
     expect(reinserted.guestGameCounts[players[0].id]).toBe(1)
-    expect(reinserted.specialCompletedIds).toEqual(
-      expect.arrayContaining(eventPlayers.slice(1).map((player) => player.id)),
-    )
-    expect(reinserted.specialCompletedIds).not.toContain(players[4].id)
+    expect(reinserted.specialCompletedIds).toEqual([])
   })
+
+  it('balances twenty special matches across thirty eligible regulars', () => {
+    const players = makePlayers(30, 2)
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 3,
+      courtAssignmentMode: 'fixed',
+      startTime: '18:00',
+      endTime: '21:00',
+      normalGameMinutes: 12,
+      singleGuestPerMatch: true,
+      specialLimitEnabled: true,
+      specialScheduleMode: 'continuous',
+      specialGameLimitEnabled: true,
+      specialGameLimit: 10,
+      specialParticipantTarget: 30,
+      specialTimeLimitEnabled: true,
+      specialTimeLimitMinutes: 120,
+      specialLowPriorityEnabled: false,
+      specialHighPriorityEnabled: false,
+    }
+
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const specialMatches = schedule.rounds
+      .flatMap((round) => round.matches)
+      .filter((match) => match.isSpecial)
+    const regularSpecialCounts = new Map(
+      players
+        .filter((player) => !player.isGuest)
+        .map((player) => [player.id, 0]),
+    )
+    for (const match of specialMatches) {
+      for (const player of [...match.teamA, ...match.teamB]) {
+        if (!player.isGuest) {
+          regularSpecialCounts.set(
+            player.id,
+            (regularSpecialCounts.get(player.id) ?? 0) + 1,
+          )
+        }
+      }
+    }
+
+    expect(specialMatches).toHaveLength(20)
+    expect(schedule.guestGameCounts).toMatchObject({
+      [players[0].id]: 10,
+      [players[1].id]: 10,
+    })
+    expect([...regularSpecialCounts.values()]).toEqual(
+      Array.from({ length: 30 }, () => 2),
+    )
+  }, 20000)
+
+  it('keeps a two-guest event separate from twenty balanced ordinary special matches', () => {
+    const players = makePlayers(30, 2)
+    const eventPlayers = players.slice(0, 4)
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 3,
+      courtAssignmentMode: 'fixed',
+      startTime: '18:00',
+      endTime: '21:00',
+      normalGameMinutes: 12,
+      singleGuestPerMatch: true,
+      specialLimitEnabled: true,
+      specialScheduleMode: 'continuous',
+      specialGameLimitEnabled: true,
+      specialGameLimit: 10,
+      specialParticipantTarget: 30,
+      specialTimeLimitEnabled: true,
+      specialTimeLimitMinutes: 120,
+      specialLowPriorityEnabled: false,
+      specialHighPriorityEnabled: false,
+      eventMatch: {
+        enabled: true,
+        startTime: '19:00',
+        court: 2,
+        participants: eventPlayers.map((player) => ({
+          name: player.name,
+          playerId: player.id,
+        })) as MatchSettings['eventMatch']['participants'],
+      },
+    }
+
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const matches = schedule.rounds.flatMap((round) => round.matches)
+    const ordinarySpecialMatches = matches
+      .filter((match) => match.isSpecial)
+    const eventMatch = matches.find((match) => match.isEventMatch)
+    const eventRegularIds = new Set(
+      eventPlayers.filter((player) => !player.isGuest).map((player) => player.id),
+    )
+    const eventStart = eventMatch?.startOffsetMinutes ?? -1
+    const eventEnd = eventStart + (eventMatch?.durationMinutes ?? 0)
+    const eventCourt = eventMatch?.court ?? -1
+    const regularSpecialCounts = new Map(
+      players
+        .filter((player) => !player.isGuest)
+        .map((player) => [player.id, 0]),
+    )
+    for (const match of ordinarySpecialMatches) {
+      for (const player of [...match.teamA, ...match.teamB]) {
+        if (!player.isGuest) {
+          regularSpecialCounts.set(
+            player.id,
+            (regularSpecialCounts.get(player.id) ?? 0) + 1,
+          )
+        }
+      }
+    }
+
+    expect(ordinarySpecialMatches).toHaveLength(20)
+    expect(
+      ordinarySpecialMatches.every(
+        (match) =>
+          [...match.teamA, ...match.teamB].filter((player) =>
+            eventRegularIds.has(player.id),
+          ).length <= 1,
+      ),
+    ).toBe(true)
+    expect(eventMatch).toBeDefined()
+    expect(
+      ordinarySpecialMatches.every((match) =>
+        match.court !== eventCourt ||
+        (match.startOffsetMinutes ?? 0) + (match.durationMinutes ?? 0) <=
+          eventStart ||
+        eventEnd <= (match.startOffsetMinutes ?? 0),
+      ),
+    ).toBe(true)
+    expect(schedule.guestGameCounts).toMatchObject({
+      [players[0].id]: 11,
+      [players[1].id]: 11,
+    })
+    expect([...regularSpecialCounts.values()]).toEqual(
+      Array.from({ length: 30 }, () => 2),
+    )
+  }, 20000)
 
   it('keeps structural and success rules separate from ordered preferences', () => {
     const profile = resolveMeetingRuleProfile({

@@ -63,7 +63,7 @@ import { analyzeMeetingScheduleV2 } from './matchmaker/validation'
 import {
   MEETING_FINAL_IDLE_LIMIT_MINUTES,
   MEETING_MAX_WAIT_MINUTES,
-  plannedGuestGames,
+  plannedOrdinaryGuestGames,
 } from './matchmaker/rules'
 import {
   canConfirmMeetingGenerationFailure,
@@ -2180,7 +2180,7 @@ function App() {
     const matches = schedule.rounds.flatMap((round) => round.matches)
     const specialRegularIds = new Set(
       matches
-        .filter((match) => match.isSpecial || match.isEventMatch)
+        .filter((match) => match.isSpecial)
         .flatMap((match) => [...match.teamA, ...match.teamB])
         .filter((player) => !player.isGuest)
         .map((player) => player.id),
@@ -2596,6 +2596,14 @@ function App() {
   const scheduledActiveGuests = scheduledActivePlayers.filter(
     (player) => player.isGuest,
   )
+  const scheduledOrdinarySpecialGuests = scheduledActiveGuests.filter(
+    (player) =>
+      plannedOrdinaryGuestGames(
+        player,
+        scheduledActivePlayers,
+        generatedMeetingSettings,
+      ) > 0,
+  )
   const hasScheduledActiveGuests = scheduledActiveGuests.length > 0
   const scheduledSpecialEligibleMembers = scheduledActiveMembers.filter(
     (player) => player.specialMatchEligible ?? true,
@@ -2820,7 +2828,7 @@ function App() {
       : scheduledBookingMinutes,
   )
   const actualSpecialEndOffset = allScheduledMatches
-    .filter((match) => match.isSpecial || match.isEventMatch)
+    .filter((match) => match.isSpecial)
     .reduce((latest, match) => Math.max(latest, matchEndOffset(match)), 0)
   const actualSpecialEndTime = actualSpecialEndOffset > 0
     ? clockTimeAtOffset(
@@ -2839,29 +2847,31 @@ function App() {
           !match.isEventMatch,
       ).length
     : 0
-  const automaticSpecialGamesPerGuest = hasScheduledActiveGuests
-    ? plannedGuestGames(
-        scheduledActiveGuests[0],
+  const automaticSpecialGamesPerGuest = Math.max(
+    0,
+    ...scheduledOrdinarySpecialGuests.map((guest) =>
+      plannedOrdinaryGuestGames(
+        guest,
         scheduledActivePlayers,
         generatedMeetingSettings,
-      )
-    : 0
-  const fixedCourtGuestOverflow =
-    generatedMeetingSettings.courtAssignmentMode === 'fixed' &&
-    generatedMeetingSettings.singleGuestPerMatch &&
-    scheduledActiveGuests.length > generatedMeetingSettings.courtCount
-  const automaticSpecialMatchCount =
-    automaticSpecialGamesPerGuest * (
-      fixedCourtGuestOverflow
-        ? generatedMeetingSettings.courtCount
-        : scheduledActiveGuests.length
-    )
-  const specialMatchesPerRound = hasScheduledActiveGuests
+      ),
+    ),
+  )
+  const automaticSpecialMatchCount = scheduledOrdinarySpecialGuests.reduce(
+    (sum, guest) =>
+      sum + plannedOrdinaryGuestGames(
+        guest,
+        scheduledActivePlayers,
+        generatedMeetingSettings,
+      ),
+    0,
+  )
+  const specialMatchesPerRound = scheduledOrdinarySpecialGuests.length > 0
     ? Math.max(
         1,
         Math.min(
           generatedMeetingSettings.courtCount,
-          scheduledActiveGuests.length,
+          scheduledOrdinarySpecialGuests.length,
           Math.floor(scheduledActivePlayers.length / 4),
         ),
       )
@@ -2887,7 +2897,7 @@ function App() {
   const specialCapacityByTime = specialLimitRoundCount * specialMatchesPerRound
   const specialCapacityByGames = generatedMeetingSettings.specialLimitEnabled &&
     generatedMeetingSettings.specialGameLimitEnabled
-    ? generatedMeetingSettings.specialGameLimit * scheduledActiveGuests.length
+    ? automaticSpecialMatchCount
     : Number.POSITIVE_INFINITY
   const specialLimitMatchCapacity = generatedMeetingSettings.specialLimitEnabled
     ? Math.min(specialCapacityByTime, specialCapacityByGames)
@@ -2902,7 +2912,7 @@ function App() {
   const scheduledSpecialParticipantIds = new Set(
     schedule.rounds
       .flatMap((round) => round.matches)
-      .filter((match) => match.isSpecial || match.isEventMatch)
+      .filter((match) => match.isSpecial)
       .flatMap((match) => [...match.teamA, ...match.teamB])
       .filter((player) => !player.isGuest)
       .map((player) => player.id),
@@ -2965,7 +2975,7 @@ function App() {
   }
   const maximumMeetingGroupCount = Math.max(0, ...meetingGroupCounts.values())
   const scheduledSpecialMatchCount = allScheduledMatches.filter(
-    (match) => match.isSpecial || match.isEventMatch,
+    (match) => match.isSpecial,
   ).length
   const activeTournamentTeams = tournamentTeams.filter(
     (team) => team.active && team.name.trim(),
@@ -7474,7 +7484,10 @@ function App() {
                                 const participant =
                                   settings.eventMatch.participants[participantIndex]
                                 return (
-                                  <label key={participantIndex}>
+                                  <div
+                                    className="event-match-participant"
+                                    key={participantIndex}
+                                  >
                                     <span>{playerIndex + 1}번</span>
                                     <EventMatchPlayerPicker
                                       id={`event-match-player-${participantIndex}`}
@@ -7505,7 +7518,7 @@ function App() {
                                         )
                                       }
                                     />
-                                  </label>
+                                  </div>
                                 )
                               })}
                             </fieldset>
@@ -7517,7 +7530,7 @@ function App() {
                             : 'event-match-note'
                         }>
                           {eventMatchSetupIssue ??
-                            '다른 코트는 계속 진행하며, 4명은 이벤트 시간과 다음 경기에서 제외됩니다.'}
+                            '이벤트 경기는 스페셜 목표와 별도로 진행하며, 이벤트 참가자도 일반 스페셜 경기에 배정됩니다.'}
                         </p>
                       </div>
                     ) : null}

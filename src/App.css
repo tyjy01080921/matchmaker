@@ -1387,7 +1387,7 @@ h2 {
   font-weight: 900;
 }
 
-.event-match-teams label {
+.event-match-participant {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   align-items: start;
@@ -1397,7 +1397,7 @@ h2 {
   font-weight: 900;
 }
 
-.event-match-teams label > span {
+.event-match-participant > span {
   padding-top: 10px;
 }
 
@@ -1508,7 +1508,7 @@ h2 {
     grid-template-columns: 1fr;
   }
 
-  .event-match-teams label {
+  .event-match-participant {
     grid-template-columns: 30px minmax(0, 1fr);
   }
 

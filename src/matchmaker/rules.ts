@@ -232,6 +232,30 @@ export const plannedGuestGames = (
   return timeCapacity
 }
 
+export const eventMatchParticipantIds = (settings: MatchSettings) =>
+  new Set(
+    settings.eventMatch.enabled
+      ? settings.eventMatch.participants.flatMap((participant) =>
+          participant.playerId ? [participant.playerId] : [],
+        )
+      : [],
+  )
+
+export const plannedOrdinaryGuestGames = (
+  guest: Player,
+  activePlayers: Player[],
+  settings: MatchSettings,
+) => plannedGuestGames(guest, activePlayers, settings)
+
+export const plannedGuestScheduleGames = (
+  guest: Player,
+  activePlayers: Player[],
+  settings: MatchSettings,
+) => {
+  const target = plannedGuestGames(guest, activePlayers, settings)
+  return eventMatchParticipantIds(settings).has(guest.id) ? target + 1 : target
+}
+
 export const specialParticipantTarget = (
   activePlayers: Player[],
   settings: MatchSettings,
@@ -300,7 +324,7 @@ export const preflightMeetingGeneration = (
     }
   }
   if (
-    specialEnabled &&
+    activeGuests.length > 0 &&
     settings.singleGuestPerMatch &&
     activeRegulars.length < 3
   ) {
@@ -323,7 +347,8 @@ export const preflightMeetingGeneration = (
 
   if (specialEnabled && settings.specialLimitEnabled) {
     const plannedSpecialGames = activeGuests.reduce(
-      (sum, guest) => sum + plannedGuestGames(guest, activePlayers, settings),
+      (sum, guest) =>
+        sum + plannedOrdinaryGuestGames(guest, activePlayers, settings),
       0,
     )
     const maximumSpecialGames =

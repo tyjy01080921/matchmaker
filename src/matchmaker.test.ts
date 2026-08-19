@@ -1949,7 +1949,7 @@ describe('generateSchedule', () => {
     expect(regularStats.some((stat) => stat.guestGames >= 2)).toBe(true)
   })
 
-  it('counts an event match as a special match for guests and regulars', () => {
+  it('counts an event match in total games but keeps special stats separate', () => {
     const guest = makeTestPlayer('event-guest', '스페셜', 'none', false, true)
     const regulars = Array.from({ length: 3 }, (_, index) =>
       makeTestPlayer(`event-regular-${index + 1}`, 'A'),
@@ -1979,13 +1979,17 @@ describe('generateSchedule', () => {
     const stats = calculateStats([guest, ...regulars], schedule, {})
 
     expect(stats.find((stat) => stat.player.id === guest.id)).toMatchObject({
-      specialDone: true,
-      guestGames: 1,
+      games: 1,
+      specialDone: false,
+      guestGames: 0,
     })
     expect(
       stats
         .filter((stat) => regulars.some((player) => player.id === stat.player.id))
-        .every((stat) => stat.specialDone && stat.guestGames === 1),
+        .every(
+          (stat) =>
+            stat.games === 1 && !stat.specialDone && stat.guestGames === 0,
+        ),
     ).toBe(true)
   })
 

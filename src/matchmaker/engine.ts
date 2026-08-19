@@ -19,8 +19,10 @@ import {
   MEETING_SKILL_CAUTION_GAP,
   MEETING_SKILL_DANGER_GAP,
   MEETING_TIGHT_GAME_MINIMUM,
+  eventMatchParticipantIds,
   meetingSchedulingMinutes,
-  plannedGuestGames,
+  plannedGuestScheduleGames,
+  plannedOrdinaryGuestGames,
   preflightMeetingGeneration,
   resolveMeetingRuleProfile,
   specialParticipantTarget,
@@ -150,7 +152,7 @@ const refreshSpecialMatchMetadata = (
   }
   const specialCompletedIds = [...new Set(
     matches
-      .filter((match) => match.isSpecial || match.isEventMatch)
+      .filter((match) => match.isSpecial)
       .flatMap((match) => [...match.teamA, ...match.teamB])
       .filter((player) => !player.isGuest)
       .map((player) => player.id),
@@ -250,6 +252,8 @@ type SpecialReservation = PlannedMeetingSlot & {
 
 type EngineState = {
   clubQualityEnabled: boolean
+  eventGameCredits: Map<string, number>
+  eventRegularIds: Set<string>
   games: Map<string, number>
   tightGames: Map<string, number>
   generalGames: Map<string, number>
@@ -365,12 +369,16 @@ const distributeSpecialChunks = (
   specialWindowMinutes: number,
 ): SpecialReservation[] => {
   const gameMinutes = settings.normalGameMinutes
-  const guests = activePlayers.filter((player) => player.isGuest)
+  const guests = activePlayers.filter(
+    (player) =>
+      player.isGuest &&
+      plannedOrdinaryGuestGames(player, activePlayers, settings) > 0,
+  )
   const requests = guests.flatMap((guest) => {
     const attendance = resolveMeetingAttendanceWindow(guest, settings)
     const guestWindowEnd = Math.min(attendance.end, specialWindowMinutes)
     const target = Math.min(
-      plannedGuestGames(guest, activePlayers, settings),
+      plannedOrdinaryGuestGames(guest, activePlayers, settings),
       Math.max(
         0,
         Math.floor((guestWindowEnd - attendance.start) / gameMinutes),
@@ -486,7 +494,11 @@ const distributeFixedSpecialCourts = (
   specialWindowMinutes: number,
 ): SpecialReservation[] => {
   const gameMinutes = settings.normalGameMinutes
-  const guests = activePlayers.filter((player) => player.isGuest)
+  const guests = activePlayers.filter(
+    (player) =>
+      player.isGuest &&
+      plannedOrdinaryGuestGames(player, activePlayers, settings) > 0,
+  )
   const fixedGuestCount = Math.min(settings.courtCount, guests.length)
   const fixedGuests = guests.slice(0, fixedGuestCount)
   const roamingGuests = guests.slice(fixedGuestCount)
@@ -494,7 +506,7 @@ const distributeFixedSpecialCourts = (
     const attendance = resolveMeetingAttendanceWindow(guest, settings)
     const windowEnd = Math.min(attendance.end, specialWindowMinutes)
     const target = Math.min(
-      plannedGuestGames(guest, activePlayers, settings),
+      plannedOrdinaryGuestGames(guest, activePlayers, settings),
       Math.max(0, Math.floor((windowEnd - attendance.start) / gameMinutes)),
     )
     return Array.from({ length: target }, (_, index): SpecialReservation => {
@@ -520,7 +532,7 @@ const distributeFixedSpecialCourts = (
       return [
         guest.id,
         Math.min(
-          plannedGuestGames(guest, activePlayers, settings),
+          plannedOrdinaryGuestGames(guest, activePlayers, settings),
           Math.max(0, Math.floor((windowEnd - attendance.start) / gameMinutes)),
         ),
       ]
@@ -592,6 +604,118 @@ const distributeFixedSpecialCourts = (
   return reservations
 }
 
+const relocateEventCourtReservations = (
+  reservations: SpecialReservation[],
+  settings: MatchSettings,
+  eventWindow: ReturnType<typeof getConfiguredEventMatchWindow>,
+) => {
+  if (!eventWindow) return reservations
+
+  const conflictsWithEvent = (slot: SpecialReservation) =>
+    slot.court === settings.eventMatch.court && hasOverlap(slot, {
+      start: eventWindow.start,
+      duration: eventWindow.end - eventWindow.start,
+    })
+  const kept = reservations.filter((slot) => !conflictsWithEvent(slot))
+  const displaced = reservations.filter(conflictsWithEvent)
+  const relocated: SpecialReservation[] = []
+
+  for (const slot of displaced) {
+    const occupied = [...kept, ...relocated]
+    const alternateCourt = Array.from(
+      { length: settings.courtCount },
+      (_, index) => index + 1,
+    ).find(
+      (court) =>
+        court !== settings.eventMatch.court &&
+        !occupied.some(
+          (candidate) => candidate.court === court && hasOverlap(slot, candidate),
+        ),
+    )
+    if (!alternateCourt) continue
+    relocated.push({
+      ...slot,
+      id: `${slot.id}-event-relocated-c${alternateCourt}`,
+      court: alternateCourt,
+    })
+  }
+
+  return [...kept, ...relocated]
+}
+
+const restoreEventGuestReservations = (
+  reservations: SpecialReservation[],
+  activePlayers: Player[],
+  settings: MatchSettings,
+  schedulingMinutes: number,
+) => {
+  const eventPlayerIds = eventMatchParticipantIds(settings)
+  const eventWindow = getConfiguredEventMatchWindow(settings)
+  if (!eventWindow) return reservations
+
+  const restored = [...reservations]
+  const gameMinutes = settings.normalGameMinutes
+  const eventGuests = activePlayers.filter(
+    (player) =>
+      player.isGuest &&
+      eventPlayerIds.has(player.id) &&
+      plannedOrdinaryGuestGames(player, activePlayers, settings) > 0,
+  )
+
+  for (const guest of eventGuests) {
+    const target = plannedOrdinaryGuestGames(guest, activePlayers, settings)
+    const guestIsInSlot = (slot: SpecialReservation) =>
+      slot.guestId === guest.id || slot.roamingGuestId === guest.id
+    let assigned = restored.filter(guestIsInSlot).length
+    const attendance = resolveMeetingAttendanceWindow(guest, settings)
+
+    for (
+      let start = attendance.start;
+      assigned < target && start + gameMinutes <=
+        Math.min(attendance.end, schedulingMinutes);
+      start += gameMinutes
+    ) {
+      const candidateWindow = { start, duration: gameMinutes }
+      if (eventMatchUnavailablePlayerIds(settings, start).has(guest.id)) continue
+      if (restored.some((slot) => guestIsInSlot(slot) && hasOverlap(slot, candidateWindow))) {
+        continue
+      }
+
+      const court = Array.from(
+        { length: settings.courtCount },
+        (_, index) => index + 1,
+      ).find((candidateCourt) => {
+        if (
+          candidateCourt === settings.eventMatch.court &&
+          hasOverlap(candidateWindow, {
+            start: eventWindow.start,
+            duration: eventWindow.end - eventWindow.start,
+          })
+        ) {
+          return false
+        }
+        return !restored.some(
+          (slot) =>
+            slot.court === candidateCourt && hasOverlap(slot, candidateWindow),
+        )
+      })
+      if (!court) continue
+
+      restored.push({
+        id: `event-guest-special-c${court}-s${start}-${guest.id}`,
+        court,
+        start,
+        duration: gameMinutes,
+        kind: 'special',
+        guestId: guest.id,
+      })
+      assigned += 1
+    }
+  }
+
+  return restored
+}
+
 export const planMeetingSlotsV2 = (
   players: Player[],
   settings: MatchSettings,
@@ -602,7 +726,8 @@ export const planMeetingSlotsV2 = (
   const specialEnabled = activeGuests.length > 0
   const totalSpecialGames = specialEnabled
     ? activeGuests.reduce(
-        (sum, guest) => sum + plannedGuestGames(guest, activePlayers, settings),
+        (sum, guest) =>
+          sum + plannedOrdinaryGuestGames(guest, activePlayers, settings),
         0,
       )
     : 0
@@ -616,12 +741,8 @@ export const planMeetingSlotsV2 = (
       ? Math.min(schedulingMinutes, settings.specialTimeLimitMinutes)
       : schedulingMinutes
   const eventWindow = getConfiguredEventMatchWindow(settings)
-  const eventPlayerIds = new Set(
-    settings.eventMatch.participants.flatMap((participant) =>
-      participant.playerId ? [participant.playerId] : [],
-    ),
-  )
-  const reservations = (
+  const eventPlayerIds = eventMatchParticipantIds(settings)
+  const reservationsWithoutEventConflicts = relocateEventCourtReservations(
     settings.courtAssignmentMode === 'fixed' && settings.singleGuestPerMatch
       ? distributeFixedSpecialCourts(
           activePlayers,
@@ -633,7 +754,9 @@ export const planMeetingSlotsV2 = (
           settings,
           specialCourtCount,
           specialWindowMinutes,
-        )
+        ),
+    settings,
+    eventWindow,
   ).filter((slot) => {
     if (!eventWindow) return true
     const overlapsEvent =
@@ -649,6 +772,12 @@ export const planMeetingSlotsV2 = (
     )
     return !overlapsEventRest || !usesEventGuest
   })
+  const reservations = restoreEventGuestReservations(
+    reservationsWithoutEventConflicts,
+    activePlayers,
+    settings,
+    schedulingMinutes,
+  )
   const slots: PlannedMeetingSlot[] = [...reservations]
 
   for (let court = 1; court <= settings.courtCount; court += 1) {
@@ -706,6 +835,10 @@ const initializeState = (
   plannedSlots: PlannedMeetingSlot[],
   settings: MatchSettings,
 ): EngineState => {
+  const eventWindow = getConfiguredEventMatchWindow(settings)
+  const eventPlayerIds = eventWindow
+    ? eventMatchParticipantIds(settings)
+    : new Set<string>()
   const plannedSpecialStarts = new Map<string, number[]>()
   for (const slot of plannedSlots.filter(
     (candidate) => candidate.kind === 'special',
@@ -740,6 +873,7 @@ const initializeState = (
     const generalStarts = generalSlots
       .filter(
         (slot) =>
+          !eventMatchUnavailablePlayerIds(settings, slot.start).has(player.id) &&
           isPlayerAvailableForMeetingSlot(
             player,
             settings,
@@ -755,7 +889,13 @@ const initializeState = (
       .map((slot) => slot.start)
     playOpportunityStarts.set(
       player.id,
-      [...new Set([...generalStarts, ...plannedStarts])]
+      [...new Set([
+        ...generalStarts,
+        ...plannedStarts,
+        ...(eventWindow && eventPlayerIds.has(player.id)
+          ? [eventWindow.start]
+          : []),
+      ])]
         .sort((left, right) => left - right),
     )
   }
@@ -772,7 +912,9 @@ const initializeState = (
             : 3
       ),
     0,
-  )
+  ) + activePlayers.filter(
+    (player) => !player.isGuest && eventPlayerIds.has(player.id),
+  ).length
   const firstFollowupSpecial = plannedSlots
     .filter((slot) => slot.kind === 'special' && slot.start > 0)
     .sort((left, right) => left.start - right.start)[0]
@@ -807,7 +949,12 @@ const initializeState = (
   const attendanceTargets = new Map(
     activePlayers.map((player) => {
       const opportunities = player.isGuest
-        ? plannedSpecialStarts.get(player.id) ?? []
+        ? [
+            ...(plannedSpecialStarts.get(player.id) ?? []),
+            ...(eventWindow && eventPlayerIds.has(player.id)
+              ? [eventWindow.start]
+              : []),
+          ]
         : playOpportunityStarts.get(player.id) ?? []
       const target = player.isGuest
         ? opportunities.length
@@ -824,6 +971,17 @@ const initializeState = (
     clubQualityEnabled:
       activePlayers.filter((player) => !player.isGuest).length <= 35 &&
       !activePlayers.some((player) => player.isGuest),
+    eventGameCredits: new Map(
+      activePlayers.map((player) => [
+        player.id,
+        Number(eventPlayerIds.has(player.id)),
+      ]),
+    ),
+    eventRegularIds: new Set(
+      activePlayers
+        .filter((player) => !player.isGuest && eventPlayerIds.has(player.id))
+        .map((player) => player.id),
+    ),
     games: new Map(activePlayers.map((player) => [player.id, 0])),
     tightGames: new Map(activePlayers.map((player) => [player.id, 0])),
     generalGames: new Map(activePlayers.map((player) => [player.id, 0])),
@@ -1076,6 +1234,7 @@ const isInitialSpecialFiller = (
 
 const projectedGameCount = (player: Player, state: EngineState) =>
   (state.games.get(player.id) ?? 0) +
+  (state.eventGameCredits.get(player.id) ?? 0) +
   (!player.isGuest && player.gameCountFlexible ? 1 : 0)
   + (!player.isGuest
     ? state.remainingPlannedSpecials.get(player.id) ?? 0
@@ -1091,7 +1250,8 @@ const attendanceSelectionScore = (
     return [0, 0] as const
   }
   const target = state.attendanceTargets.get(player.id) ?? 0
-  const games = state.games.get(player.id) ?? 0
+  const games = (state.games.get(player.id) ?? 0) +
+    (state.eventGameCredits.get(player.id) ?? 0)
   const opportunities = player.isGuest
     ? state.plannedSpecialStarts.get(player.id) ?? []
     : state.playOpportunityStarts.get(player.id) ?? []
@@ -1354,9 +1514,20 @@ const attachSpecialParticipantPlans = (
   if (!settings.specialLimitEnabled) return slots
 
   const eligibleRegulars = activePlayers.filter(
-    (player) => !player.isGuest && (player.specialMatchEligible ?? true),
+    (player) =>
+      !player.isGuest &&
+      (player.specialMatchEligible ?? true),
   )
   const target = specialParticipantTarget(activePlayers, settings)
+  const eventRegularIds = new Set(
+    activePlayers
+      .filter(
+        (player) =>
+          !player.isGuest &&
+          eventMatchParticipantIds(settings).has(player.id),
+      )
+      .map((player) => player.id),
+  )
   const selectedIds = new Set<string>()
   const plannedCounts = new Map(
     eligibleRegulars.map((player) => [player.id, 0]),
@@ -1374,7 +1545,7 @@ const attachSpecialParticipantPlans = (
     guestSlotIndex.set(guest.id, currentGuestIndex + 1)
     const guestTarget = Math.max(
       1,
-      plannedGuestGames(guest, activePlayers, settings),
+      plannedOrdinaryGuestGames(guest, activePlayers, settings),
     )
     const lowCount = settings.specialLowPriorityEnabled
       ? Math.round(guestTarget * settings.specialLowPriorityPercent / 100)
@@ -1449,6 +1620,10 @@ const attachSpecialParticipantPlans = (
         regularSeatCount,
         Math.max(0, target - selectedIds.size),
       )
+      const eventRegularPairPenalty = Math.max(
+        0,
+        regulars.filter((player) => eventRegularIds.has(player.id)).length - 1,
+      )
       const scores = regulars.map((player) => playerScore(player, settings))
       const ages = regulars
         .filter((player) => player.ageGroup !== '무관')
@@ -1460,6 +1635,7 @@ const attachSpecialParticipantPlans = (
           : 0
       const score = [
         Math.max(0, requiredNewCount - newIds.length),
+        eventRegularPairPenalty,
         Math.max(...regulars.map((player) => plannedCounts.get(player.id) ?? 0)),
         regulars.reduce(
           (sum, player) => sum + (plannedCounts.get(player.id) ?? 0),
@@ -1509,7 +1685,10 @@ const specialAllocationSegment = (
   activePlayers: Player[],
   settings: MatchSettings,
 ) => {
-  const target = Math.max(1, plannedGuestGames(guest, activePlayers, settings))
+  const target = Math.max(
+    1,
+    plannedOrdinaryGuestGames(guest, activePlayers, settings),
+  )
   const lowCount = settings.specialLowPriorityEnabled
     ? Math.round(target * settings.specialLowPriorityPercent / 100)
     : 0
@@ -1614,6 +1793,13 @@ const scoreCandidate = (
           newSpecialParticipants,
       )
     : 0
+  const eventRegularPairPenalty = slot.kind === 'special'
+    ? Math.max(
+        0,
+        specialRegulars.filter((player) => state.eventRegularIds.has(player.id))
+          .length - 1,
+      )
+    : 0
   const imminentFirstSpecialPenalty = slot.kind === 'general'
     ? players.filter((player) =>
         hasImminentFirstSpecial(player, state, slot),
@@ -1703,6 +1889,7 @@ const scoreCandidate = (
   return [
     0,
     coveragePenalty,
+    eventRegularPairPenalty,
     initialSpecialFillerReward,
     imminentFirstSpecialPenalty,
     warmupFillerPenalty,
@@ -2103,7 +2290,7 @@ const specialCandidates = (
   }
   if (guests.some((guest) =>
     (state.guestGames.get(guest.id) ?? 0) >=
-      plannedGuestGames(guest, activePlayers, settings)
+      plannedOrdinaryGuestGames(guest, activePlayers, settings)
   )) {
     return []
   }
@@ -2120,6 +2307,7 @@ const specialCandidates = (
       plannedRegulars.length === regularSeatCount &&
       plannedRegulars.every(
         (player) =>
+          (player.specialMatchEligible ?? true) &&
           !usedIds.has(player.id) &&
           (state.availableAt.get(player.id) ?? 0) <= slot.start &&
           slot.start + slot.duration <=
@@ -2152,7 +2340,7 @@ const specialCandidates = (
                 state.specialParticipantIds.has(player.id))
             : !settings.singleGuestPerMatch &&
               (state.guestGames.get(player.id) ?? 0) <
-                plannedGuestGames(player, activePlayers, settings)
+                plannedOrdinaryGuestGames(player, activePlayers, settings)
         ),
     ),
     state,
@@ -2536,6 +2724,7 @@ const repairStandardGameSpread = (
     for (const incoming of underplayed) {
       for (const outgoing of overplayed) {
         for (const match of repaired.rounds.flatMap((round) => round.matches)) {
+          if (match.isEventMatch) continue
           const assigned = [...match.teamA, ...match.teamB]
           if (!assigned.some((player) => player.id === outgoing.id)) continue
           if (assigned.some((player) => player.id === incoming.id)) continue
@@ -2678,21 +2867,11 @@ const scheduleWarnings = (
         `스페셜 참가 목표 미달: ${completedEligibleCount}/${target}명`,
       )
     }
-    const eventGuestIds = new Set(
-      settings.eventMatch.enabled
-        ? settings.eventMatch.participants.flatMap((participant) =>
-            participant.playerId ? [participant.playerId] : [],
-          )
-        : [],
-    )
     const plannedGames = activePlayers
       .filter((player) => player.isGuest)
       .reduce(
-        (sum, guest) => sum + Math.max(
-          0,
-          plannedGuestGames(guest, activePlayers, settings) -
-            (eventGuestIds.has(guest.id) ? 1 : 0),
-        ),
+        (sum, guest) =>
+          sum + plannedGuestScheduleGames(guest, activePlayers, settings),
         0,
       )
     const achievedGames = Object.values(schedule.guestGameCounts).reduce(
@@ -2820,15 +2999,15 @@ export const generateMeetingScheduleV2 = (
     specialCompletedIds: [...state.specialParticipantIds],
     guestGameCounts: Object.fromEntries(state.guestGames),
   }
-  schedule = repairStandardGameSpread(
-    schedule,
-    activePlayers,
-    effectiveSettings,
-  )
   schedule = insertConfiguredEventMatch(
     schedule,
     effectiveSettings,
     activePlayers,
+  )
+  schedule = repairStandardGameSpread(
+    schedule,
+    activePlayers,
+    effectiveSettings,
   )
   const qualityMetrics = analyzeMeetingScheduleV2(
     schedule,
