@@ -3467,43 +3467,15 @@ const repairMeetingWaitsByPhasedCadence = (
     const specialStartsById = new Map(
       regulars.map((player) => [player.id, new Set<number>()]),
     )
-    const specialMinimum = (playerId: string) =>
-      (specialCountById.get(playerId) ?? 0) > 0 ? 1 : 0
-    const specialMaximum = (playerId: string) => {
-      const original = specialCountById.get(playerId) ?? 0
-      return original > 0 ? original + 1 : 0
-    }
-    const minimumOrder: Player[] = []
-    for (const player of minimumOrder) {
-      const start = (appearances.get(player.id) ?? [])
-        .filter((value) => (specialDemand.get(value) ?? 0) > 0)
-        .sort(
-          (left, right) =>
-            (specialDemand.get(right) ?? 0) -
-              (specialDemand.get(left) ?? 0) ||
-            stableNoise(
-              candidate.settings.seed + restart,
-              `special-min-slot:${player.id}:${left}`,
-            ) - stableNoise(
-              candidate.settings.seed + restart,
-              `special-min-slot:${player.id}:${right}`,
-            ),
-        )[0]
-      if (start === undefined) {
-        failed = true
-        break
-      }
-      specialStartsById.get(player.id)?.add(start)
-      specialDemand.set(start, (specialDemand.get(start) ?? 0) - 1)
-    }
-    if (failed) continue
+    const specialTarget = (playerId: string) =>
+      specialCountById.get(playerId) ?? 0
     for (const start of starts) {
       while ((specialDemand.get(start) ?? 0) > 0) {
         const playerId = [...appearances]
           .filter(([id, playerStarts]) =>
             playerStarts.includes(start) &&
             !specialStartsById.get(id)?.has(start) &&
-            (specialStartsById.get(id)?.size ?? 0) < specialMaximum(id)
+            (specialStartsById.get(id)?.size ?? 0) < specialTarget(id)
           )
           .sort(
             ([leftId], [rightId]) =>
@@ -3530,8 +3502,8 @@ const repairMeetingWaitsByPhasedCadence = (
       failed ||
       regulars.some(
         (player) =>
-          (specialStartsById.get(player.id)?.size ?? 0) <
-          specialMinimum(player.id),
+          (specialStartsById.get(player.id)?.size ?? 0) !==
+          specialTarget(player.id),
       )
     ) {
       continue
