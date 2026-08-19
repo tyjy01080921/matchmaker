@@ -398,6 +398,11 @@
   text-align: right;
 }
 
+.generation-search-count.over-limit {
+  color: #b42318;
+  font-weight: 900;
+}
+
 .generation-spinner {
   width: 34px;
   height: 34px;
@@ -1363,6 +1368,19 @@ h2 {
 .event-match-controls select {
   min-height: 34px;
   margin: 0;
+}
+
+.event-match-auto-note {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid #ddd6fe;
+  border-radius: 6px;
+  background: #faf7ff;
+  color: #6d28d9;
+  font-size: 11px;
+  font-weight: 900;
 }
 
 .event-match-controls .number-control {

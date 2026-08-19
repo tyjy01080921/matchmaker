@@ -13,6 +13,7 @@ import {
   preferredPartnerStrength,
 } from '../preferredPartners'
 import {
+  MEETING_ABSOLUTE_MAX_WAIT_MINUTES,
   MEETING_FINAL_IDLE_LIMIT_MINUTES,
   MEETING_MAX_GROUP_MEETINGS,
   MEETING_MAX_WAIT_MINUTES,
@@ -312,6 +313,7 @@ type BatchBeam = {
 type GenerationCandidate = {
   schedule: Schedule
   metrics: MeetingV2Metrics
+  settings: MatchSettings
   index: number
 }
 
@@ -1209,6 +1211,26 @@ const playerWait = (player: Player, state: EngineState, start: number) => {
   return Math.max(0, start - (lastEnd ?? 0))
 }
 
+const eventCadencePriority = (
+  player: Player,
+  state: EngineState,
+  slot: PlannedMeetingSlot,
+  settings: MatchSettings,
+) => {
+  const eventWindow = getConfiguredEventMatchWindow(settings)
+  if (
+    !eventWindow ||
+    !state.eventRegularIds.has(player.id) ||
+    slot.start >= eventWindow.start
+  ) {
+    return 0
+  }
+  const rotationSlots =
+    Math.floor(MEETING_MAX_WAIT_MINUTES / settings.normalGameMinutes) + 1
+  const rotationMinutes = rotationSlots * settings.normalGameMinutes
+  return (eventWindow.start - slot.start) % rotationMinutes === 0 ? -1 : 0
+}
+
 const hasImminentFirstSpecial = (
   player: Player,
   state: EngineState,
@@ -1374,6 +1396,7 @@ const individualPriority = (
   return [
     -Number(requiredIds.has(player.id)),
     ...attendanceSelectionScore(player, state, slot),
+    eventCadencePriority(player, state, slot, settings),
     Number((state.games.get(player.id) ?? 0) > 0),
     -Number(isInitialSpecialFiller(player, state, slot)),
     Number(hasImminentFirstSpecial(player, state, slot)),
@@ -1800,6 +1823,11 @@ const scoreCandidate = (
           .length - 1,
       )
     : 0
+  const eventCadenceSelectionPriority = players.reduce(
+    (sum, player) =>
+      sum + eventCadencePriority(player, state, slot, settings),
+    0,
+  )
   const imminentFirstSpecialPenalty = slot.kind === 'general'
     ? players.filter((player) =>
         hasImminentFirstSpecial(player, state, slot),
@@ -1858,7 +1886,7 @@ const scoreCandidate = (
   const skillCautionTier = skillSafetyTier === 1 ? 1 : 0
   const criticalWaitStart = Math.max(
     0,
-    MEETING_MAX_WAIT_MINUTES - slot.duration,
+    MEETING_MAX_WAIT_MINUTES - slot.duration + 1,
   )
   const criticalWaits = players
     .map((player) => {
@@ -1890,6 +1918,7 @@ const scoreCandidate = (
     0,
     coveragePenalty,
     eventRegularPairPenalty,
+    eventCadenceSelectionPriority,
     initialSpecialFillerReward,
     imminentFirstSpecialPenalty,
     warmupFillerPenalty,
@@ -2082,7 +2111,10 @@ const limitCandidateFrontier = (
   requiredIds: Set<string>,
 ) => {
   const sorted = [...candidates].sort(
-    (left, right) => compareNumberTuples(left.score, right.score),
+    (left, right) =>
+      requiredCoverageCount(right, requiredIds) -
+        requiredCoverageCount(left, requiredIds) ||
+      compareNumberTuples(left.score, right.score),
   )
   const representatives = new Map<string, GroupCandidate>()
   for (const candidate of sorted) {
@@ -2242,13 +2274,18 @@ const generalCandidates = (
       (playerId) => !safelyCoveredRequiredIds.has(playerId),
     ),
   )
+  const prioritizeEveryRequiredWait =
+    getConfiguredEventMatchWindow(settings) !== null
   const requiredCandidates = [
     ...safeCandidates.filter(
       (candidate) => requiredCoverageCount(candidate, requiredIds) > 0,
     ),
     ...fallbackCandidates.filter(
-      (candidate) =>
-        candidate.players.some((player) => uncoveredRequiredIds.has(player.id)),
+      (candidate) => prioritizeEveryRequiredWait
+        ? requiredCoverageCount(candidate, requiredIds) > 0
+        : candidate.players.some((player) =>
+            uncoveredRequiredIds.has(player.id),
+          ),
     ),
   ]
   return limitCandidateFrontier(
@@ -2454,7 +2491,7 @@ const chooseBatch = (
     settings,
   )
   for (const playerId of unavailableEventPlayerIds) requiredIds.delete(playerId)
-  const scoreLength = profile.priorityOrder.length + 16
+  const scoreLength = profile.priorityOrder.length + 17
   let beams: BatchBeam[] = [{
     selections: [],
     usedIds: unavailableEventPlayerIds,
@@ -2590,6 +2627,28 @@ const updateState = (
   }
   if (!match.isSpecial && candidate.skillGap >= MEETING_SKILL_CAUTION_GAP) {
     state.strictCautionMatches += 1
+  }
+}
+
+const applyConfiguredEventTimingToState = (
+  state: EngineState,
+  settings: MatchSettings,
+) => {
+  const eventWindow = getConfiguredEventMatchWindow(settings)
+  if (!eventWindow) return
+
+  for (const playerId of eventMatchParticipantIds(settings)) {
+    if (!state.availableAt.has(playerId)) continue
+    const previousLastEnd = state.lastEnd.get(playerId)
+    const consecutive = previousLastEnd === eventWindow.start
+      ? (state.consecutiveGames.get(playerId) ?? 0) + 1
+      : 1
+    state.lastEnd.set(playerId, eventWindow.end)
+    state.availableAt.set(
+      playerId,
+      eventWindow.end + settings.normalGameMinutes,
+    )
+    state.consecutiveGames.set(playerId, consecutive)
   }
 }
 
@@ -2956,8 +3015,18 @@ export const generateMeetingScheduleV2 = (
   }
   const rounds: Round[] = []
   const starts = [...slotsByStart.keys()].sort((left, right) => left - right)
+  const eventWindow = getConfiguredEventMatchWindow(effectiveSettings)
+  let eventTimingApplied = false
   for (let startIndex = 0; startIndex < starts.length; startIndex += 1) {
     const start = starts[startIndex]
+    if (
+      !eventTimingApplied &&
+      eventWindow &&
+      start >= eventWindow.start
+    ) {
+      applyConfiguredEventTimingToState(state, effectiveSettings)
+      eventTimingApplied = true
+    }
     const roundNumber = startIndex + 1
     const selections = chooseBatch(
       slotsByStart.get(start) ?? [],
@@ -3060,6 +3129,12 @@ export const generateMeetingScheduleV2 = (
 
 const candidateScore = (candidate: GenerationCandidate) => [
   candidate.metrics.structuralIssues.length,
+  Number(
+    Math.max(
+      candidate.metrics.maximumWaitMinutes,
+      candidate.metrics.maximumFinalIdleMinutes,
+    ) > MEETING_ABSOLUTE_MAX_WAIT_MINUTES,
+  ),
   candidate.metrics.successIssues.length,
   candidate.metrics.participantsOverWaitLimit,
   candidate.metrics.zeroGameStandardParticipants,
@@ -3107,7 +3182,7 @@ const meetsClubQualityTarget = (
       Math.ceil(standardPlayerCount * 0.8)
 }
 
-export const generateMeetingScheduleV2Optimized = (
+const generateMeetingScheduleV2OptimizedAtEventTime = (
   players: Player[],
   settings: MatchSettings,
   attemptCount = 3,
@@ -3119,6 +3194,7 @@ export const generateMeetingScheduleV2Optimized = (
     const candidate = {
       schedule,
       metrics: analyzeMeetingScheduleV2(schedule, players, settings),
+      settings,
       index,
     }
     candidates.push(candidate)
@@ -3132,6 +3208,109 @@ export const generateMeetingScheduleV2Optimized = (
   return [...candidates].sort((left, right) =>
     compareNumberTuples(candidateScore(left), candidateScore(right)),
   )[0]
+}
+
+const automaticEventStartTimes = (settings: MatchSettings) => {
+  if (
+    !settings.eventMatch.enabled ||
+    settings.eventMatch.scheduleMode !== 'auto'
+  ) {
+    return []
+  }
+  const slotCount = Math.floor(
+    meetingSchedulingMinutes(settings) / settings.normalGameMinutes,
+  )
+  const middleSlot = slotCount / 2
+  const firstMiddleSlot = Math.max(1, Math.floor(slotCount / 3))
+  const lastMiddleSlot = Math.min(
+    slotCount - 2,
+    Math.ceil(slotCount * 2 / 3),
+  )
+  return Array.from(
+    { length: Math.max(0, lastMiddleSlot - firstMiddleSlot + 1) },
+    (_, index) => firstMiddleSlot + index,
+  )
+    .sort(
+      (left, right) =>
+        Math.abs(left - middleSlot) - Math.abs(right - middleSlot) ||
+        left - right,
+    )
+    .map((slotIndex) =>
+      clockTimeAtOffset(
+        settings.startTime,
+        slotIndex * settings.normalGameMinutes,
+      ),
+    )
+}
+
+const meetsPreferredWaitTarget = (candidate: GenerationCandidate) =>
+  isSuccessfulCandidate(candidate) &&
+  candidate.metrics.maximumInitialWaitMinutes <= MEETING_MAX_WAIT_MINUTES &&
+  candidate.metrics.maximumBetweenWaitMinutes <= MEETING_MAX_WAIT_MINUTES &&
+  candidate.metrics.maximumFinalIdleMinutes <= MEETING_MAX_WAIT_MINUTES
+
+const automaticEventCandidateScore = (
+  candidate: GenerationCandidate,
+  centerDistance: number,
+) => [
+  candidate.metrics.structuralIssues.length,
+  Number(
+    Math.max(
+      candidate.metrics.maximumWaitMinutes,
+      candidate.metrics.maximumFinalIdleMinutes,
+    ) > MEETING_ABSOLUTE_MAX_WAIT_MINUTES,
+  ),
+  candidate.metrics.successIssues.filter(
+    (issue) =>
+      !issue.startsWith('최장 대기 ') &&
+      !issue.startsWith('마지막 경기 후 '),
+  ).length,
+  Math.max(
+    candidate.metrics.maximumWaitMinutes,
+    candidate.metrics.maximumFinalIdleMinutes,
+  ),
+  candidate.metrics.participantsOverWaitLimit,
+  candidate.metrics.successIssues.length,
+  centerDistance,
+  ...candidateScore(candidate),
+]
+
+export const generateMeetingScheduleV2Optimized = (
+  players: Player[],
+  settings: MatchSettings,
+  attemptCount = 3,
+) => {
+  const automaticStartTimes = automaticEventStartTimes(settings)
+  if (automaticStartTimes.length === 0) {
+    return generateMeetingScheduleV2OptimizedAtEventTime(
+      players,
+      settings,
+      attemptCount,
+    )
+  }
+
+  let best: { candidate: GenerationCandidate; score: number[] } | null = null
+  for (const [timeIndex, startTime] of automaticStartTimes.entries()) {
+    const candidate = generateMeetingScheduleV2OptimizedAtEventTime(
+      players,
+      {
+        ...settings,
+        eventMatch: { ...settings.eventMatch, startTime },
+      },
+      timeIndex === 0 ? attemptCount : 1,
+    )
+    const score = automaticEventCandidateScore(candidate, timeIndex)
+    if (best === null || compareNumberTuples(score, best.score) < 0) {
+      best = { candidate, score }
+    }
+    if (meetsPreferredWaitTarget(candidate)) return candidate
+  }
+
+  return best?.candidate ?? generateMeetingScheduleV2OptimizedAtEventTime(
+    players,
+    settings,
+    attemptCount,
+  )
 }
 
 const recommendedParticipantCount = (
@@ -3254,6 +3433,7 @@ const verifiedRecommendations = (
 
 export type MeetingGenerationV2Resolution = {
   schedule: Schedule
+  resolvedSettings: MatchSettings
   waitLimitFailure: MeetingWaitLimitFailure | null
   failureIssues: string[]
 }
@@ -3273,6 +3453,7 @@ export const generateMeetingScheduleV2WithWaitResolution = (
   if (isSuccessfulCandidate(selected)) {
     return {
       schedule: selected.schedule,
+      resolvedSettings: selected.settings,
       waitLimitFailure: null,
       failureIssues: [],
     }
@@ -3297,6 +3478,7 @@ export const generateMeetingScheduleV2WithWaitResolution = (
   ) {
     return {
       schedule: selected.schedule,
+      resolvedSettings: selected.settings,
       waitLimitFailure: null,
       failureIssues: [...new Set(scheduleFailureIssues)],
     }
@@ -3310,6 +3492,7 @@ export const generateMeetingScheduleV2WithWaitResolution = (
   )
   return {
     schedule: selected.schedule,
+    resolvedSettings: selected.settings,
     waitLimitFailure: {
       maximumWaitMinutes: selected.metrics.maximumWaitMinutes,
       maximumInitialWaitMinutes: selected.metrics.maximumInitialWaitMinutes,

@@ -3,6 +3,7 @@ import {
   canConfirmMeetingGenerationFailure,
   makeMeetingGenerationWorkerResponse,
 } from './meetingGenerationResult'
+import { defaultSettings } from './defaultData'
 import type { MeetingGenerationV2Resolution } from './matchmaker/engine'
 import type { Schedule } from './types'
 
@@ -24,6 +25,7 @@ describe('meeting generation failure result', () => {
   it('preserves a special target shortfall schedule for review', () => {
     const result: MeetingGenerationV2Resolution = {
       schedule: failedSchedule,
+      resolvedSettings: defaultSettings,
       waitLimitFailure: null,
       failureIssues: ['스페셜 참가 목표 미달: 23/24명'],
     }
@@ -31,6 +33,7 @@ describe('meeting generation failure result', () => {
     expect(makeMeetingGenerationWorkerResponse(7, result)).toEqual({
       requestId: 7,
       schedule: failedSchedule,
+      resolvedSettings: defaultSettings,
       failureIssues: ['스페셜 참가 목표 미달: 23/24명'],
       error: '스페셜 참가 목표 미달: 23/24명',
     })
@@ -50,6 +53,8 @@ describe('meeting generation failure result', () => {
       false,
     )).toBe(false)
     expect(canConfirmMeetingGenerationFailure([], true)).toBe(true)
+    expect(canConfirmMeetingGenerationFailure([], true, 36)).toBe(true)
+    expect(canConfirmMeetingGenerationFailure([], true, 48)).toBe(false)
     expect(canConfirmMeetingGenerationFailure(
       ['경기 인원 구성 오류'],
       true,

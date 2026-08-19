@@ -7,6 +7,7 @@ import {
 import type { MatchSettings, Player, Schedule } from '../types'
 import {
   generateMeetingScheduleV2,
+  generateMeetingScheduleV2Optimized,
   generateMeetingScheduleV2WithWaitResolution,
   insertConfiguredEventMatch,
   planMeetingSlotsV2,
@@ -99,6 +100,7 @@ describe('meeting V2 rules', () => {
       pacingRoundCount: 10,
       eventMatch: {
         enabled: true,
+        scheduleMode: 'fixed',
         startTime: '19:00',
         court: 1,
         participants: players.slice(0, 4).map((player) => ({
@@ -161,6 +163,7 @@ describe('meeting V2 rules', () => {
       normalGameMinutes: 12,
       eventMatch: {
         enabled: true,
+        scheduleMode: 'fixed',
         startTime: '19:00',
         court: 1,
         participants: eventPlayers.map((player) => ({
@@ -270,6 +273,7 @@ describe('meeting V2 rules', () => {
       specialHighPriorityEnabled: false,
       eventMatch: {
         enabled: true,
+        scheduleMode: 'fixed',
         startTime: '19:00',
         court: 2,
         participants: eventPlayers.map((player) => ({
@@ -333,6 +337,104 @@ describe('meeting V2 rules', () => {
     )
   }, 20000)
 
+  it('keeps the reported two-guest event roster within a 24-minute wait', () => {
+    const roster: Array<[string, Player['gender'], Player['level']]> = [
+      ['김학관', 'male', 'A'],
+      ['김시현', 'male', 'D'],
+      ['윤남기', 'male', 'D'],
+      ['차승호', 'male', 'D'],
+      ['윤현우', 'male', 'D'],
+      ['김성민', 'male', 'A'],
+      ['박병은', 'male', 'A'],
+      ['이근수', 'male', 'A'],
+      ['조건희', 'male', 'A'],
+      ['서영완', 'male', 'A'],
+      ['김형미', 'female', 'A'],
+      ['곽영진', 'female', 'A'],
+      ['김연진', 'female', 'B'],
+      ['전미애', 'female', 'A'],
+      ['김미진', 'female', 'A'],
+      ['백미나', 'female', 'A'],
+      ['김혜경', 'female', 'A'],
+      ['정미경', 'female', 'D'],
+      ['장순자', 'female', 'A'],
+      ['조유재', 'female', 'D'],
+      ['김경복', 'female', 'A'],
+      ['최윤수', 'male', 'A'],
+      ['박준성', 'male', 'D'],
+      ['이상태', 'male', 'D'],
+      ['서영석', 'male', 'A'],
+      ['박지훈', 'male', 'B'],
+      ['김태은', 'female', 'D'],
+      ['더쎈1', 'male', 'A'],
+      ['더쎈2', 'male', 'A'],
+      ['이희태', 'male', 'B'],
+    ]
+    const regulars = roster.map(([name, gender, level], index): Player => ({
+      id: `reported-regular-${index + 1}`,
+      name,
+      level,
+      ageGroup: '무관',
+      gender,
+      active: true,
+      specialRequired: false,
+      isGuest: false,
+      guestGameLimit: 0,
+    }))
+    const guests = Array.from({ length: 2 }, (_, index): Player => ({
+      id: `reported-guest-${index + 1}`,
+      name: `스페셜 ${index + 1}`,
+      level: '스페셜',
+      ageGroup: '무관',
+      gender: 'none',
+      active: true,
+      specialRequired: false,
+      isGuest: true,
+      guestGameLimit: 0,
+    }))
+    const players = [...guests, ...regulars]
+    const eventPlayers = [guests[0], guests[1], regulars[27], regulars[28]]
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 3,
+      courtAssignmentMode: 'available',
+      startTime: '18:00',
+      endTime: '21:00',
+      normalGameMinutes: 12,
+      seed: 12,
+      targetRoundCount: 15,
+      pacingRoundCount: 15,
+      roundCountLocked: true,
+      eventMatch: {
+        enabled: true,
+        scheduleMode: 'auto',
+        startTime: '19:00',
+        court: 1,
+        participants: eventPlayers.map((player) => ({
+          name: player.name,
+          playerId: player.id,
+        })) as MatchSettings['eventMatch']['participants'],
+      },
+    }
+
+    const optimized = generateMeetingScheduleV2Optimized(players, settings, 3)
+    const schedule = optimized.schedule
+    const metrics = optimized.metrics
+
+    expect(metrics.structuralIssues).toEqual([])
+    expect(metrics.successIssues).toEqual([])
+    expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(24)
+    expect(metrics.maximumBetweenWaitMinutes).toBeLessThanOrEqual(24)
+    expect(metrics.maximumFinalIdleMinutes).toBeLessThanOrEqual(24)
+    expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(24)
+    expect(optimized.settings.eventMatch.startTime).toBe('19:24')
+    expect(
+      schedule.rounds
+        .flatMap((round) => round.matches)
+        .find((match) => match.isEventMatch)?.startOffsetMinutes,
+    ).toBe(84)
+  }, 40000)
+
   it('keeps structural and success rules separate from ordered preferences', () => {
     const profile = resolveMeetingRuleProfile({
       ...defaultSettings,
@@ -355,7 +457,7 @@ describe('meeting V2 rules', () => {
     expect(profile.success).toMatchObject({
       requireEveryStandardPlayer: true,
       maxStandardGameSpread: 1,
-      maxWaitMinutes: 25,
+      maxWaitMinutes: 24,
       finalIdleLimitMinutes: 30,
     })
     expect(profile.priorityOrder.slice(0, 3)).toEqual([
@@ -763,7 +865,9 @@ describe('meeting V2 generation', () => {
     expect(metrics.structuralIssues).toEqual([])
     expect(metrics.zeroGameStandardParticipants).toBe(0)
     expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
-    expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(25)
+    expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(
+      MEETING_MAX_WAIT_MINUTES,
+    )
   })
 
   it('never schedules regular participants before arrival or after departure', () => {
@@ -1055,7 +1159,9 @@ describe('meeting V2 generation', () => {
     expect(schedule.specialCompletedIds).toHaveLength(24)
     expect(metrics.zeroGameStandardParticipants).toBe(0)
     expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
-    expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(25)
+    expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(
+      MEETING_MAX_WAIT_MINUTES,
+    )
   }, 20000)
 
   it('returns the same schedule for the same input and seed', () => {
@@ -1104,7 +1210,7 @@ describe('meeting V2 generation', () => {
           recommendation.outcome.participantsOverLimit === 0,
       ),
     ).toBe(true)
-  }, 20000)
+  }, 40000)
 
   it('keeps a large legacy meeting within fairness and wait limits', () => {
     const players = makePlayers(40)
@@ -1128,7 +1234,9 @@ describe('meeting V2 generation', () => {
 
     expect(metrics.structuralIssues).toEqual([])
     expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
-    expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(25)
+    expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(
+      MEETING_MAX_WAIT_MINUTES,
+    )
   }, 20000)
 
   it('uses each configured-duration special match for available unplayed participants', () => {
@@ -1217,7 +1325,9 @@ describe('meeting V2 generation', () => {
     expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(
       settings.normalGameMinutes,
     )
-    expect(metrics.maximumBetweenWaitMinutes).toBeLessThanOrEqual(25)
+    expect(metrics.maximumBetweenWaitMinutes).toBeLessThanOrEqual(
+      MEETING_MAX_WAIT_MINUTES,
+    )
     expect(metrics.participantsOverWaitLimit).toBe(0)
     expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
     expect(metrics.maximumGroupMeetings).toBeLessThanOrEqual(2)
@@ -1291,7 +1401,9 @@ describe('meeting V2 generation', () => {
     expect(metrics.maximumInitialWaitMinutes).toBeLessThanOrEqual(
       settings.normalGameMinutes,
     )
-    expect(metrics.maximumBetweenWaitMinutes).toBeLessThanOrEqual(25)
+    expect(metrics.maximumBetweenWaitMinutes).toBeLessThanOrEqual(
+      MEETING_MAX_WAIT_MINUTES,
+    )
     expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
     expect(metrics.maximumGroupMeetings).toBeLessThanOrEqual(2)
     expect(metrics.structuralIssues).toEqual([])

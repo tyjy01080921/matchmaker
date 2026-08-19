@@ -78,6 +78,7 @@ export const defaultSettings: MatchSettings = {
   roundCountLocked: true,
   eventMatch: {
     enabled: false,
+    scheduleMode: 'auto',
     startTime: '19:00',
     court: 1,
     participants: Array.from(

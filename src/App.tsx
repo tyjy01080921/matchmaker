@@ -61,6 +61,7 @@ import {
 } from './ProgressModeView'
 import { analyzeMeetingScheduleV2 } from './matchmaker/validation'
 import {
+  MEETING_ABSOLUTE_MAX_WAIT_MINUTES,
   MEETING_FINAL_IDLE_LIMIT_MINUTES,
   MEETING_MAX_WAIT_MINUTES,
   plannedOrdinaryGuestGames,
@@ -595,6 +596,7 @@ const normalizeEventMatchSettings = (
 ): MatchSettings['eventMatch'] => {
   const slotCount = Math.floor(booking.durationMinutes / normalGameMinutes)
   const fallbackSlotIndex = Math.max(1, Math.floor(slotCount / 2))
+  const scheduleMode = value?.scheduleMode === 'fixed' ? 'fixed' : 'auto'
   const requestedOffset = rawBookingDurationMinutes(
     booking.startTime,
     normalizeClockTime(
@@ -625,6 +627,7 @@ const normalizeEventMatchSettings = (
 
   return {
     enabled: Boolean(value?.enabled),
+    scheduleMode,
     startTime: clockTimeAtOffset(
       booking.startTime,
       slotIndex * normalGameMinutes,
@@ -2668,11 +2671,24 @@ function App() {
   const isMeetingGenerationReviewState =
     meetingOperationLabel === '대진 완료' ||
     isMeetingGenerationFailureState
+  const exceedsMeetingAbsoluteWaitLimit = Boolean(
+    meetingWaitLimitFailure &&
+    Math.max(
+      meetingWaitLimitFailure.maximumWaitMinutes,
+      meetingWaitLimitFailure.maximumFinalIdleMinutes,
+    ) > MEETING_ABSOLUTE_MAX_WAIT_MINUTES,
+  )
   const canConfirmCurrentMeetingFailure =
     hasReviewableMeetingFailureSchedule &&
     canConfirmMeetingGenerationFailure(
       meetingGenerationFailureIssues,
       Boolean(meetingWaitLimitFailure),
+      meetingWaitLimitFailure
+        ? Math.max(
+            meetingWaitLimitFailure.maximumWaitMinutes,
+            meetingWaitLimitFailure.maximumFinalIdleMinutes,
+          )
+        : 0,
     )
   const canReplanMeeting =
     hasPlayerDraftChanges &&
@@ -4620,6 +4636,10 @@ function App() {
           setMeetingGenerationMessage(response.progress)
           return
         }
+        if (response.resolvedSettings) {
+          setSettings(response.resolvedSettings)
+          setGeneratedMeetingSettings(response.resolvedSettings)
+        }
         if (response.waitLimitFailure) {
           if (!response.schedule) {
             failGeneration('검토할 대진을 생성하지 못했습니다.')
@@ -4681,7 +4701,7 @@ function App() {
         setScheduleOverride(response.schedule)
         setMeetingOperationLabel('대진 검증 중')
         setMeetingGenerationMessage(
-          '참가자 중복, 코트, 전체 대기 25분을 확인하고 있습니다.',
+          '참가자 중복, 코트, 전체 대기 24분을 확인하고 있습니다.',
         )
       }
       worker.onerror = () => {
@@ -6601,8 +6621,13 @@ function App() {
                     </div>
                   )}
                 </div>
+                {exceedsMeetingAbsoluteWaitLimit ? (
+                  <small className="generation-search-count over-limit">
+                    36분을 초과한 대진은 확정할 수 없습니다.
+                  </small>
+                ) : null}
                 <small className="generation-search-count">
-                  첫 경기 전·경기 간 25분 이하, 마지막 경기 후 30분 미만으로
+                  첫 경기 전·경기 간 24분 이하, 마지막 경기 후 30분 미만으로
                   다시 검증했습니다.
                 </small>
               </div>
@@ -7434,33 +7459,66 @@ function App() {
                       <div id="event-match-details" className="event-match-details">
                         <div className="event-match-controls">
                           <label>
-                            시작 시각
+                            배치 방식
                             <select
-                              aria-label="이벤트 매치 시작 시각"
-                              value={settings.eventMatch.startTime}
+                              aria-label="이벤트 매치 배치 방식"
+                              value={settings.eventMatch.scheduleMode ?? 'auto'}
                               onChange={(event) => {
                                 setSettings((current) => ({
                                   ...current,
                                   eventMatch: {
                                     ...current.eventMatch,
-                                    startTime: event.target.value,
+                                    scheduleMode:
+                                      event.target.value === 'fixed'
+                                        ? 'fixed'
+                                        : 'auto',
                                   },
                                 }))
-                                setNotice('이벤트 시간 변경됨 · 생성 필요')
+                                setNotice(
+                                  event.target.value === 'fixed'
+                                    ? '이벤트 시간 직접 지정 · 생성 필요'
+                                    : '이벤트 중간 자동 배치 · 생성 필요',
+                                )
                               }}
                             >
-                              {!eventMatchStartOptions.includes(
-                                settings.eventMatch.startTime,
-                              ) ? (
-                                <option value={settings.eventMatch.startTime}>
-                                  {settings.eventMatch.startTime}
-                                </option>
-                              ) : null}
-                              {eventMatchStartOptions.map((time) => (
-                                <option value={time} key={time}>{time}</option>
-                              ))}
+                              <option value="auto">중간 자동 배치</option>
+                              <option value="fixed">시간 직접 지정</option>
                             </select>
                           </label>
+                          {(settings.eventMatch.scheduleMode ?? 'auto') === 'fixed' ? (
+                            <label>
+                              시작 시각
+                              <select
+                                aria-label="이벤트 매치 시작 시각"
+                                value={settings.eventMatch.startTime}
+                                onChange={(event) => {
+                                  setSettings((current) => ({
+                                    ...current,
+                                    eventMatch: {
+                                      ...current.eventMatch,
+                                      startTime: event.target.value,
+                                    },
+                                  }))
+                                  setNotice('이벤트 시간 변경됨 · 생성 필요')
+                                }}
+                              >
+                                {!eventMatchStartOptions.includes(
+                                  settings.eventMatch.startTime,
+                                ) ? (
+                                  <option value={settings.eventMatch.startTime}>
+                                    {settings.eventMatch.startTime}
+                                  </option>
+                                ) : null}
+                                {eventMatchStartOptions.map((time) => (
+                                  <option value={time} key={time}>{time}</option>
+                                ))}
+                              </select>
+                            </label>
+                          ) : (
+                            <span className="event-match-auto-note">
+                              24분 대기 우선 · 행사 중간부터 탐색
+                            </span>
+                          )}
                           <NumberStepper
                             label="이벤트 코트"
                             min={1}
@@ -8334,7 +8392,7 @@ function App() {
                             </label>
                             <label
                               className="checkbox-label"
-                              title="25분을 넘지 않는 범위에서 긴 대기를 우선 부담합니다."
+                              title="24분을 넘지 않는 범위에서 긴 대기를 우선 부담합니다."
                             >
                               <input
                                 type="checkbox"
@@ -8345,7 +8403,7 @@ function App() {
                                   })
                                 }
                               />
-                              25분 내 긴 대기 가능
+                              24분 내 긴 대기 가능
                             </label>
                           </div>
                         ) : null}
@@ -8771,7 +8829,7 @@ function App() {
                   <span className="eyebrow">운영자 확인</span>
                   <h2>대기 기준 초과 참가자 {participantWaitLimitViolations.length}명</h2>
                 </div>
-                <span>첫·경기 간 25분 이하 · 마지막 경기 후 30분 미만</span>
+                <span>첫·경기 간 24분 이하 · 마지막 경기 후 30분 미만</span>
               </div>
               <div className="wait-limit-participant-list">
                 {participantWaitLimitViolations.map((violation) => {

@@ -106,7 +106,7 @@ export const parseBulkPlayerDrafts = (
       const waitTimeFlexible =
         !isGuest &&
         attributeTokens.some((token) =>
-          ['대기양보', '긴대기', '25분대기'].includes(token),
+          ['대기양보', '긴대기', '24분대기', '25분대기'].includes(token),
         )
 
       return {

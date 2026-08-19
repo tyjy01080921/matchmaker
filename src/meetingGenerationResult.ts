@@ -1,5 +1,7 @@
 import type { MeetingGenerationV2Resolution } from './matchmaker/engine'
+import { MEETING_ABSOLUTE_MAX_WAIT_MINUTES } from './matchmaker/rules'
 import type {
+  MatchSettings,
   MeetingReplanResolution,
   MeetingWaitLimitFailure,
   Schedule,
@@ -8,6 +10,7 @@ import type {
 export type MeetingGenerationWorkerResponse = {
   requestId: number
   schedule?: Schedule
+  resolvedSettings?: MatchSettings
   failureIssues?: string[]
   waitLimitFailure?: MeetingWaitLimitFailure
   replan?: MeetingReplanResolution
@@ -28,8 +31,10 @@ export const isSpecialTargetFailureIssue = (issue: string) =>
 export const canConfirmMeetingGenerationFailure = (
   failureIssues: string[],
   hasWaitLimitFailure: boolean,
+  maximumObservedWaitMinutes = 0,
 ) => hasWaitLimitFailure
-  ? failureIssues.length === 0
+  ? failureIssues.length === 0 &&
+    maximumObservedWaitMinutes <= MEETING_ABSOLUTE_MAX_WAIT_MINUTES
   : failureIssues.length > 0 && failureIssues.every(isSpecialTargetFailureIssue)
 
 export const makeMeetingGenerationWorkerResponse = (
@@ -40,6 +45,7 @@ export const makeMeetingGenerationWorkerResponse = (
     return {
       requestId,
       schedule: result.schedule,
+      resolvedSettings: result.resolvedSettings,
       failureIssues: result.failureIssues,
       waitLimitFailure: result.waitLimitFailure,
     }
@@ -48,9 +54,15 @@ export const makeMeetingGenerationWorkerResponse = (
     return {
       requestId,
       schedule: result.schedule,
+      resolvedSettings: result.resolvedSettings,
       failureIssues: result.failureIssues,
       error: result.failureIssues.join(' · '),
     }
   }
-  return { requestId, schedule: result.schedule, failureIssues: [] }
+  return {
+    requestId,
+    schedule: result.schedule,
+    resolvedSettings: result.resolvedSettings,
+    failureIssues: [],
+  }
 }

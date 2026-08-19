@@ -10,7 +10,8 @@ import {
   resolveMeetingAttendanceWindow,
 } from '../meetingAvailability'
 
-export const MEETING_MAX_WAIT_MINUTES = 25
+export const MEETING_MAX_WAIT_MINUTES = 24
+export const MEETING_ABSOLUTE_MAX_WAIT_MINUTES = 36
 export const MEETING_FINAL_IDLE_LIMIT_MINUTES = 30
 export const MEETING_MAX_STANDARD_GAME_SPREAD = 1
 export const MEETING_MAX_GROUP_MEETINGS = 2

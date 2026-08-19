@@ -36,8 +36,11 @@ export type EventMatchParticipant = {
   playerId?: string
 }
 
+export type EventMatchScheduleMode = 'auto' | 'fixed'
+
 export type EventMatchSettings = {
   enabled: boolean
+  scheduleMode: EventMatchScheduleMode
   startTime: string
   court: number
   participants: [
