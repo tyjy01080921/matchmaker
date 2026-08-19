@@ -17,6 +17,7 @@ import {
   cycleMeetingMatchPartners,
   deferSkillWarningMatches,
   generateBalancedTournamentTeams,
+  generateMeetingScheduleV2WithWaitResolution,
   generateSchedule,
   generateScheduleWithWaitResolution,
   generateScheduleWithWaitOptimization,
@@ -1311,7 +1312,7 @@ describe('generateSchedule', () => {
     expect(wait.maximumFinalIdleMinutes).toBeLessThanOrEqual(25)
   })
 
-  it('blocks an over-limit plan and returns only verified resolution options', () => {
+  it('verifies resolution options only during a precise wait search', () => {
     const players = Array.from({ length: 16 }, (_, index) =>
       makeTestPlayer(`wait-resolution-fail-${index + 1}`, 'B'),
     )
@@ -1325,7 +1326,13 @@ describe('generateSchedule', () => {
       roundCountLocked: true,
     }
 
-    const result = generateScheduleWithWaitResolution(players, settings, 1)
+    const result = generateMeetingScheduleV2WithWaitResolution(
+      players,
+      settings,
+      1,
+      undefined,
+      'precise',
+    )
 
     expect(result.waitLimitFailure).toMatchObject({
       maximumWaitMinutes: 30,

@@ -218,6 +218,7 @@ const MEETING_GENERATION_MESSAGES = [
 ] as const
 const MEETING_GENERATION_ATTEMPTS = 3
 const MEETING_PRECISION_GENERATION_ATTEMPTS = 9
+const MEETING_GENERATION_TIMEOUT_MS = 30_000
 
 const MIN_MEETING_PHASE_PERCENT = 15
 const MEETING_PHASE_STEP = 5
@@ -1965,6 +1966,7 @@ function App() {
   const rouletteTimerRef = useRef<number | null>(null)
   const meetingGenerationStartTimerRef = useRef<number | null>(null)
   const meetingGenerationEndTimerRef = useRef<number | null>(null)
+  const meetingGenerationWatchdogTimerRef = useRef<number | null>(null)
   const meetingGenerationWorkerRef = useRef<Worker | null>(null)
   const meetingGenerationRequestRef = useRef(0)
   const meetingStatusRefreshTimerRef = useRef<number | null>(null)
@@ -3328,6 +3330,9 @@ function App() {
       if (meetingGenerationEndTimerRef.current !== null) {
         window.clearTimeout(meetingGenerationEndTimerRef.current)
       }
+      if (meetingGenerationWatchdogTimerRef.current !== null) {
+        window.clearTimeout(meetingGenerationWatchdogTimerRef.current)
+      }
       meetingGenerationWorkerRef.current?.terminate()
       meetingGenerationWorkerRef.current = null
       meetingGenerationRequestRef.current += 1
@@ -4580,6 +4585,10 @@ function App() {
     if (meetingGenerationEndTimerRef.current !== null) {
       window.clearTimeout(meetingGenerationEndTimerRef.current)
     }
+    if (meetingGenerationWatchdogTimerRef.current !== null) {
+      window.clearTimeout(meetingGenerationWatchdogTimerRef.current)
+      meetingGenerationWatchdogTimerRef.current = null
+    }
     meetingGenerationWorkerRef.current?.terminate()
     meetingGenerationWorkerRef.current = null
     const requestId = meetingGenerationRequestRef.current + 1
@@ -4617,6 +4626,10 @@ function App() {
       meetingGenerationWorkerRef.current = worker
 
       const finishWorker = () => {
+        if (meetingGenerationWatchdogTimerRef.current !== null) {
+          window.clearTimeout(meetingGenerationWatchdogTimerRef.current)
+          meetingGenerationWatchdogTimerRef.current = null
+        }
         worker.terminate()
         if (meetingGenerationWorkerRef.current === worker) {
           meetingGenerationWorkerRef.current = null
@@ -4722,6 +4735,11 @@ function App() {
         waitRepairMode:
           operationLabel === '24분 정밀 재탐색 중' ? 'precise' : 'fast',
       })
+      meetingGenerationWatchdogTimerRef.current = window.setTimeout(() => {
+        failGeneration(
+          '대진 계산이 30초를 초과해 중단되었습니다. 조건을 확인하거나 다시 생성해 주세요.',
+        )
+      }, MEETING_GENERATION_TIMEOUT_MS)
     }, 60)
   }
 
@@ -4763,9 +4781,17 @@ function App() {
   }
 
   const returnToMeetingSettings = () => {
+    if (meetingGenerationStartTimerRef.current !== null) {
+      window.clearTimeout(meetingGenerationStartTimerRef.current)
+      meetingGenerationStartTimerRef.current = null
+    }
     if (meetingGenerationEndTimerRef.current !== null) {
       window.clearTimeout(meetingGenerationEndTimerRef.current)
       meetingGenerationEndTimerRef.current = null
+    }
+    if (meetingGenerationWatchdogTimerRef.current !== null) {
+      window.clearTimeout(meetingGenerationWatchdogTimerRef.current)
+      meetingGenerationWatchdogTimerRef.current = null
     }
     meetingGenerationWorkerRef.current?.terminate()
     meetingGenerationWorkerRef.current = null
@@ -6615,7 +6641,13 @@ function App() {
                   </div>
                 </div>
                 <div className="generation-wait-recommendations">
-                  <strong>재계산 통과 변경안</strong>
+                  <strong>
+                    {meetingWaitLimitFailure.recommendations.some(
+                      (recommendation) => recommendation.verified,
+                    )
+                      ? '재계산 통과 변경안'
+                      : '예상 개선 변경안'}
+                  </strong>
                   {meetingWaitLimitFailure.recommendations.length > 0 ? (
                     meetingWaitLimitFailure.recommendations.map(
                       (recommendation) => (
@@ -6624,7 +6656,13 @@ function App() {
                             <b>{recommendation.title}</b>
                             <span>{recommendation.detail}</span>
                           </div>
-                          <em className="verified">재계산 통과</em>
+                          <em className={
+                            recommendation.verified ? 'verified' : undefined
+                          }>
+                            {recommendation.verified
+                              ? '재계산 통과'
+                              : '재생성 필요'}
+                          </em>
                           <button
                             type="button"
                             onClick={() => applyWaitLimitRecommendation(recommendation)}
@@ -6650,10 +6688,21 @@ function App() {
                   </small>
                 ) : null}
                 <small className="generation-search-count">
-                  첫 경기 전·경기 간 24분 이하, 마지막 경기 후 30분 미만으로
-                  다시 검증했습니다.
+                  {meetingWaitLimitFailure.recommendations.some(
+                    (recommendation) => recommendation.verified,
+                  )
+                    ? '첫 경기 전·경기 간 24분 이하, 마지막 경기 후 30분 미만으로 다시 검증했습니다.'
+                    : '현재 대진의 대기 기준을 확인했습니다. 변경안은 적용 후 다시 검증합니다.'}
                 </small>
               </div>
+            ) : !isMeetingGenerationReviewState ? (
+              <button
+                type="button"
+                className="generation-cancel-action"
+                onClick={returnToMeetingSettings}
+              >
+                생성 취소
+              </button>
             ) : null}
             {meetingOperationLabel === '대진 완료' ? (
               <div className="generation-review-summary">

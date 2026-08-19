@@ -77,6 +77,11 @@
   word-break: keep-all;
 }
 
+.generation-cancel-action {
+  min-width: 120px;
+  min-height: 40px;
+}
+
 .generation-card.review {
   width: min(560px, 100%);
   max-height: calc(100svh - 32px);

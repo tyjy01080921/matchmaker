@@ -7,7 +7,6 @@ import {
 import type { MatchSettings, Player, Schedule } from '../types'
 import {
   generateMeetingScheduleV2,
-  generateMeetingScheduleV2Optimized,
   generateMeetingScheduleV2WithWaitResolution,
   insertConfiguredEventMatch,
   planMeetingSlotsV2,
@@ -381,6 +380,12 @@ describe('meeting V2 rules', () => {
       isGuest: false,
       guestGameLimit: 0,
     }))
+    const kimSiHyeon = regulars[1]
+    const kimSeongMin = regulars[5]
+    const choiYunSu = regulars[21]
+    kimSiHyeon.preferredPartnerIds = [kimSeongMin.id, choiYunSu.id]
+    kimSeongMin.preferredPartnerIds = [kimSiHyeon.id, choiYunSu.id]
+    choiYunSu.preferredPartnerIds = [kimSiHyeon.id, kimSeongMin.id]
     const guests = Array.from({ length: 2 }, (_, index): Player => ({
       id: `reported-guest-${index + 1}`,
       name: `스페셜 ${index + 1}`,
@@ -429,14 +434,30 @@ describe('meeting V2 rules', () => {
       },
     }
 
-    const optimized = generateMeetingScheduleV2Optimized(players, settings, 3)
-    const schedule = optimized.schedule
-    const metrics = optimized.metrics
+    const progress: string[] = []
+    const resolution = generateMeetingScheduleV2WithWaitResolution(
+      players,
+      settings,
+      3,
+      (message) => progress.push(message),
+      'fast',
+    )
+    const schedule = resolution.schedule
+    const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
 
     expect(metrics.structuralIssues).toEqual([])
     expect(metrics.maximumWaitMinutes).toBe(36)
     expect(metrics.maximumFinalIdleMinutes).toBe(36)
     expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(36)
+    expect(resolution.waitLimitFailure).not.toBeNull()
+    expect(
+      resolution.waitLimitFailure?.recommendations.every(
+        (recommendation) => !recommendation.verified,
+      ),
+    ).toBe(true)
+    expect(progress).not.toContain(
+      '설정 변경안을 다시 계산해 통과 여부를 확인하고 있습니다.',
+    )
     expect(
       schedule.rounds
         .flatMap((round) => round.matches)
@@ -1226,7 +1247,7 @@ describe('meeting V2 generation', () => {
     expect(second).toEqual(first)
   })
 
-  it('reports an operational failure with recalculated alternatives only', () => {
+  it('returns an operational failure without recalculating alternatives in fast mode', () => {
     const players = makePlayers(47)
     const settings: MatchSettings = {
       ...defaultSettings,
@@ -1239,10 +1260,12 @@ describe('meeting V2 generation', () => {
         specialMatchCreation: false,
       },
     }
+    const progress: string[] = []
     const result = generateMeetingScheduleV2WithWaitResolution(
       players,
       settings,
       3,
+      (message) => progress.push(message),
     )
 
     expect(result.waitLimitFailure).not.toBeNull()
@@ -1250,11 +1273,12 @@ describe('meeting V2 generation', () => {
     expect(result.waitLimitFailure?.recommendations.length).toBeGreaterThan(0)
     expect(
       result.waitLimitFailure?.recommendations.every(
-        (recommendation) =>
-          recommendation.verified &&
-          recommendation.outcome.participantsOverLimit === 0,
+        (recommendation) => !recommendation.verified,
       ),
     ).toBe(true)
+    expect(progress).not.toContain(
+      '설정 변경안을 다시 계산해 통과 여부를 확인하고 있습니다.',
+    )
   }, 40000)
 
   it('keeps a large legacy meeting within fairness and wait limits', () => {

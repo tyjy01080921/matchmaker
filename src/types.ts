@@ -191,14 +191,23 @@ export type WaitLimitRecommendationOutcome = {
   participantsOverLimit: number
 }
 
-export type WaitLimitRecommendation = {
+type WaitLimitRecommendationBase = {
   kind: WaitLimitRecommendationKind
   title: string
   detail: string
-  verified: boolean
   settings: MatchSettings
-  outcome: WaitLimitRecommendationOutcome
 }
+
+export type WaitLimitRecommendation = WaitLimitRecommendationBase & (
+  | {
+      verified: true
+      outcome: WaitLimitRecommendationOutcome
+    }
+  | {
+      verified: false
+      outcome?: never
+    }
+)
 
 export type WaitLimitViolationPhase =
   | 'initial'

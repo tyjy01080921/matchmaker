@@ -3946,6 +3946,62 @@ const verifiedRecommendations = (
   return recommendations
 }
 
+const suggestedRecommendations = (
+  settings: MatchSettings,
+): MeetingWaitLimitFailure['recommendations'] => {
+  const recommendations: MeetingWaitLimitFailure['recommendations'] = []
+  const shorterDuration = ([12, 10] as const).find(
+    (duration) => duration < settings.normalGameMinutes,
+  )
+  if (shorterDuration) {
+    recommendations.push({
+      kind: 'shorter-game',
+      title: `일반 경기를 ${shorterDuration}분으로 운영`,
+      detail: '경기 시간을 줄일 수 있을 때 적용 · 적용 후 새 대진 검증',
+      verified: false,
+      settings: { ...settings, normalGameMinutes: shorterDuration },
+    })
+  }
+
+  const bookingMinutes = getBookingDurationMinutes(
+    settings.startTime,
+    settings.endTime,
+  )
+  const extensionMinutes = [10, 20, 30].find(
+    (minutes) => bookingMinutes + minutes <= MAX_BOOKING_MINUTES,
+  )
+  if (extensionMinutes) {
+    const endTime = clockTimeAtOffset(settings.endTime, extensionMinutes)
+    const targetRoundCount = getBookingRoundCount(settings.startTime, endTime)
+    recommendations.push({
+      kind: 'extend-time',
+      title: `운영 종료를 ${extensionMinutes}분 연장`,
+      detail: `${endTime} 종료가 가능할 때 적용 · 적용 후 새 대진 검증`,
+      verified: false,
+      settings: {
+        ...settings,
+        endTime,
+        targetRoundCount,
+        pacingRoundCount: targetRoundCount,
+        roundCountLocked: true,
+      },
+    })
+  }
+
+  if (settings.courtCount < 12) {
+    const courtCount = settings.courtCount + 1
+    recommendations.push({
+      kind: 'more-courts',
+      title: `코트를 ${courtCount}개로 운영`,
+      detail: '추가 코트를 확보할 수 있을 때 적용 · 적용 후 새 대진 검증',
+      verified: false,
+      settings: { ...settings, courtCount },
+    })
+  }
+
+  return recommendations
+}
+
 export type MeetingGenerationV2Resolution = {
   schedule: Schedule
   resolvedSettings: MatchSettings
@@ -4006,7 +4062,9 @@ export const generateMeetingScheduleV2WithWaitResolution = (
     }
   }
 
-  onProgress?.('설정 변경안을 다시 계산해 통과 여부를 확인하고 있습니다.')
+  if (waitRepairMode === 'precise') {
+    onProgress?.('설정 변경안을 다시 계산해 통과 여부를 확인하고 있습니다.')
+  }
   const recommendedCount = recommendedParticipantCount(
     players,
     settings,
@@ -4023,7 +4081,9 @@ export const generateMeetingScheduleV2WithWaitResolution = (
       participantsOverLimit: selected.metrics.participantsOverWaitLimit,
       recommendedParticipantCount: recommendedCount,
       searchedScheduleCount: selected.index + 1,
-      recommendations: verifiedRecommendations(players, settings),
+      recommendations: waitRepairMode === 'precise'
+        ? verifiedRecommendations(players, settings)
+        : suggestedRecommendations(settings),
       participantViolations: selected.metrics.participantViolations,
     },
     failureIssues: [...new Set(scheduleFailureIssues)],
