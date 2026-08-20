@@ -68,6 +68,79 @@ const makeClubPlayers = (regularCount: number): Player[] =>
     guestGameLimit: 0,
   }))
 
+const expectDistinctTwoGuestCoverage = (
+  schedule: Schedule,
+  players: Player[],
+) => {
+  const guestIds = players
+    .filter((player) => player.isGuest)
+    .map((player) => player.id)
+    .sort()
+  const specialMatches = schedule.rounds
+    .flatMap((round) => round.matches)
+    .filter((match) => match.isSpecial && !match.isEventMatch)
+  const selectedRegulars = players.filter(
+    (player) =>
+      !player.isGuest &&
+      specialMatches.some((match) =>
+        [...match.teamA, ...match.teamB].some(
+          (candidate) => candidate.id === player.id,
+        ),
+      ),
+  )
+
+  for (const regular of selectedRegulars) {
+    const matchedGuestIds = specialMatches
+      .filter((match) =>
+        [...match.teamA, ...match.teamB].some(
+          (candidate) => candidate.id === regular.id,
+        ),
+      )
+      .flatMap((match) =>
+        [...match.teamA, ...match.teamB]
+          .filter((candidate) => candidate.isGuest)
+          .map((candidate) => candidate.id),
+      )
+      .sort()
+    expect(matchedGuestIds).toEqual(guestIds)
+  }
+}
+
+const expectAtLeastOneMatchWithEachGuest = (
+  schedule: Schedule,
+  players: Player[],
+) => {
+  const guestIds = players
+    .filter((player) => player.isGuest)
+    .map((player) => player.id)
+  const specialMatches = schedule.rounds
+    .flatMap((round) => round.matches)
+    .filter((match) => match.isSpecial && !match.isEventMatch)
+
+  for (const regular of players.filter((player) => !player.isGuest)) {
+    const matchedGuestIds = new Set(
+      specialMatches
+        .filter((match) =>
+          [...match.teamA, ...match.teamB].some(
+            (candidate) => candidate.id === regular.id,
+          ),
+        )
+        .flatMap((match) =>
+          [...match.teamA, ...match.teamB]
+            .filter((candidate) => candidate.isGuest)
+            .map((candidate) => candidate.id),
+        ),
+    )
+    expect({
+      playerId: regular.id,
+      matchedGuestIds: [...matchedGuestIds].sort(),
+    }).toEqual({
+      playerId: regular.id,
+      matchedGuestIds: [...guestIds].sort(),
+    })
+  }
+}
+
 const largeSettings: MatchSettings = {
   ...defaultSettings,
   courtCount: 6,
@@ -248,7 +321,132 @@ describe('meeting V2 rules', () => {
     expect([...regularSpecialCounts.values()]).toEqual(
       Array.from({ length: 30 }, () => 2),
     )
+    expectDistinctTwoGuestCoverage(schedule, players)
   }, 20000)
+
+  it.each(['fixed', 'available'] as const)(
+    'pairs every selected regular once with each guest in %s-court mode across seeds',
+    (courtAssignmentMode) => {
+      for (const seed of [1, 7, 11, 19]) {
+        const players = makePlayers(24, 2)
+        const schedule = generateMeetingScheduleV2(players, {
+          ...largeSettings,
+          courtAssignmentMode,
+          seed,
+        })
+
+        expect(schedule.guestGameCounts).toMatchObject({
+          'guest-1': 8,
+          'guest-2': 8,
+        })
+        expect(schedule.specialCompletedIds).toHaveLength(24)
+        expectDistinctTwoGuestCoverage(schedule, players)
+        expect(
+          analyzeMeetingScheduleV2(schedule, players, {
+            ...largeSettings,
+            courtAssignmentMode,
+            seed,
+          }).twoGuestCoverageDeficitCount,
+        ).toBe(0)
+      }
+    },
+    30000,
+  )
+
+  it('keeps participants excluded from special matches outside distinct coverage', () => {
+    const players = makePlayers(27, 2)
+    for (const player of players.slice(-3)) {
+      player.specialMatchEligible = false
+    }
+    const settings: MatchSettings = {
+      ...largeSettings,
+      specialParticipantTarget: 24,
+    }
+    const schedule = generateMeetingScheduleV2(players, settings)
+
+    expectDistinctTwoGuestCoverage(schedule, players)
+    expect(
+      players.slice(-3).every((player) =>
+        schedule.rounds
+          .flatMap((round) => round.matches)
+          .filter((match) => match.isSpecial)
+          .every((match) =>
+            ![...match.teamA, ...match.teamB].some(
+              (candidate) => candidate.id === player.id,
+            ),
+          ),
+      ),
+    ).toBe(true)
+  }, 20000)
+
+  it.each([22, 23, 25])(
+    'fills extra seats with repeats after all %i regulars meet both guests',
+    (regularCount) => {
+      const players = makePlayers(regularCount, 2)
+      const specialGameLimit = Math.ceil(regularCount / 3)
+      const settings: MatchSettings = {
+        ...largeSettings,
+        specialGameLimit,
+        specialParticipantTarget: specialGameLimit * 3,
+      }
+      const schedule = generateMeetingScheduleV2(players, settings)
+      const specialMatches = schedule.rounds
+        .flatMap((round) => round.matches)
+        .filter((match) => match.isSpecial)
+
+      expect(specialMatches).toHaveLength(specialGameLimit * 2)
+      expect(schedule.guestGameCounts).toMatchObject({
+        'guest-1': specialGameLimit,
+        'guest-2': specialGameLimit,
+      })
+      expectAtLeastOneMatchWithEachGuest(schedule, players)
+      expect(
+        analyzeMeetingScheduleV2(schedule, players, settings)
+          .twoGuestCoverageDeficitCount,
+      ).toBe(0)
+    },
+    30000,
+  )
+
+  it('reports when attendance makes one match with each guest impossible', () => {
+    const players = makePlayers(24, 2)
+    players[2].departureOffsetMinutes = 12
+    const schedule = generateMeetingScheduleV2(players, largeSettings)
+
+    expect(
+      schedule.warnings.some((warning) =>
+        warning.startsWith('스페셜별 1회 배정 미달:'),
+      ),
+    ).toBe(true)
+    expect(
+      analyzeMeetingScheduleV2(schedule, players, largeSettings)
+        .twoGuestCoverageDeficitCount,
+    ).toBeGreaterThan(0)
+  }, 20000)
+
+  it('reports when there are not enough guest games for distinct coverage', () => {
+    const players = makePlayers(6, 2)
+    const settings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 2,
+      specialLimitEnabled: true,
+      specialGameLimit: 1,
+      specialParticipantTarget: 6,
+      specialTimeLimitEnabled: false,
+    }
+    const schedule = generateMeetingScheduleV2(players, settings)
+    const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+
+    expect(metrics.twoGuestCoverageDeficitCount).toBeGreaterThan(0)
+    expect(metrics.successIssues).toContain(
+      `스페셜별 1회 배정 미달 ${metrics.twoGuestCoverageDeficitCount}명`,
+    )
+    expect(
+      schedule.warnings.some((warning) =>
+        warning.startsWith('스페셜별 1회 배정 미달:'),
+      ),
+    ).toBe(true)
+  })
 
   it('keeps a two-guest event separate from twenty balanced ordinary special matches', () => {
     const players = makePlayers(30, 2)
@@ -490,6 +688,7 @@ describe('meeting V2 rules', () => {
         0,
       ),
     ).toBe(60)
+    expectDistinctTwoGuestCoverage(schedule, players)
     expect(schedule.guestGameCounts).toMatchObject({
       [guests[0].id]: 11,
       [guests[1].id]: 11,

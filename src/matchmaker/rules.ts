@@ -277,6 +277,35 @@ export const allowsFixedCourtGuestOverflow = (
   activePlayers.filter((player) => player.active && player.isGuest).length >
     settings.courtCount
 
+export type TwoGuestDistinctCoverageRule = {
+  guestIds: [string, string]
+  participantTarget: number
+}
+
+export const twoGuestDistinctCoverageRule = (
+  activePlayers: Player[],
+  settings: MatchSettings,
+): TwoGuestDistinctCoverageRule | null => {
+  const players = activePlayers.filter((player) => player.active)
+  const guests = players.filter((player) => player.isGuest)
+  if (
+    !settings.specialLimitEnabled ||
+    !settings.singleGuestPerMatch ||
+    guests.length !== 2 ||
+    allowsFixedCourtGuestOverflow(players, settings)
+  ) {
+    return null
+  }
+
+  const participantTarget = specialParticipantTarget(players, settings)
+  if (participantTarget <= 0) return null
+
+  return {
+    guestIds: [guests[0].id, guests[1].id],
+    participantTarget,
+  }
+}
+
 export const preflightMeetingGeneration = (
   players: Player[],
   settings: MatchSettings,

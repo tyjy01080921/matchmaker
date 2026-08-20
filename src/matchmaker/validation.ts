@@ -17,6 +17,7 @@ import {
   MEETING_SKILL_DANGER_GAP,
   MEETING_TIGHT_GAME_MINIMUM,
   MEETING_TIGHT_GAME_TARGET,
+  twoGuestDistinctCoverageRule,
 } from './rules'
 import {
   attendanceTargetGameCount,
@@ -62,9 +63,89 @@ export type MeetingV2Metrics = {
   averageWaitMinutes: number
   attendanceTargetDeficitCount: number
   priorityAttendanceTargetDeficitCount: number
+  twoGuestCoverageDeficitCount: number
 }
 
 const matchPlayers = (match: Match) => [...match.teamA, ...match.teamB]
+
+export type TwoGuestCoverageSummary = {
+  required: boolean
+  deficitCount: number
+  deficientPlayerNames: string[]
+}
+
+export const analyzeTwoGuestCoverage = (
+  schedule: Schedule,
+  players: Player[],
+  settings: MatchSettings,
+): TwoGuestCoverageSummary => {
+  const activePlayers = players.filter((player) => player.active)
+  const rule = twoGuestDistinctCoverageRule(activePlayers, settings)
+  if (!rule) {
+    return { required: false, deficitCount: 0, deficientPlayerNames: [] }
+  }
+
+  const eligibleById = new Map(
+    activePlayers
+      .filter(
+        (player) =>
+          !player.isGuest && (player.specialMatchEligible ?? true),
+      )
+      .map((player) => [player.id, player]),
+  )
+  const guestPairCounts = new Map<string, number>()
+  const selectedRegularIds = new Set<string>()
+  for (const match of schedule.rounds
+    .flatMap((round) => round.matches)
+    .filter((candidate) => candidate.isSpecial && !candidate.isEventMatch)) {
+    const assigned = matchPlayers(match)
+    const guestIds = assigned
+      .filter((player) => player.isGuest && rule.guestIds.includes(player.id))
+      .map((player) => player.id)
+    const regularIds = assigned
+      .filter((player) => !player.isGuest && eligibleById.has(player.id))
+      .map((player) => player.id)
+    for (const regularId of regularIds) {
+      selectedRegularIds.add(regularId)
+      for (const guestId of guestIds) {
+        const key = pairKey(guestId, regularId)
+        guestPairCounts.set(key, (guestPairCounts.get(key) ?? 0) + 1)
+      }
+    }
+  }
+
+  const deficientSelectedIds = [...selectedRegularIds]
+    .filter((regularId) =>
+      rule.guestIds.some(
+        (guestId) => (guestPairCounts.get(pairKey(guestId, regularId)) ?? 0) < 1,
+      ),
+    )
+  const missingRequiredIds =
+    eligibleById.size === rule.participantTarget
+      ? [...eligibleById.keys()].filter(
+          (regularId) => !selectedRegularIds.has(regularId),
+        )
+      : []
+  const deficientPlayerNames = [
+    ...new Set([...deficientSelectedIds, ...missingRequiredIds]),
+  ]
+    .map((regularId) => {
+      const player = eligibleById.get(regularId)
+      return player?.name.trim() || player?.id || regularId
+    })
+  const unnamedParticipantCountDeficit = Math.max(
+    0,
+    Math.abs(rule.participantTarget - selectedRegularIds.size) -
+      missingRequiredIds.length,
+  )
+
+  return {
+    required: true,
+    deficitCount:
+      deficientPlayerNames.length + unnamedParticipantCountDeficit,
+    deficientPlayerNames,
+  }
+}
 
 const matchWindow = (match: Match): TimeWindow => {
   const start = match.startOffsetMinutes ?? (match.round - 1) * 15
@@ -545,6 +626,11 @@ export const analyzeMeetingScheduleV2 = (
   const groupMetrics = repeatMetrics(groupCounts)
   const partnerMetrics = repeatMetrics(partnerCounts)
   const opponentMetrics = repeatMetrics(opponentCounts)
+  const twoGuestCoverage = analyzeTwoGuestCoverage(
+    schedule,
+    activePlayers,
+    settings,
+  )
   const successIssues: string[] = []
   const qualityIssues: string[] = []
   if (zeroGameStandardParticipants > 0) {
@@ -565,6 +651,11 @@ export const analyzeMeetingScheduleV2 = (
   }
   if (groupMetrics.maximum > MEETING_MAX_GROUP_MEETINGS) {
     successIssues.push(`동일 4인 최대 ${groupMetrics.maximum}경기`)
+  }
+  if (twoGuestCoverage.deficitCount > 0) {
+    successIssues.push(
+      `스페셜별 1회 배정 미달 ${twoGuestCoverage.deficitCount}명`,
+    )
   }
   if (participantsBelowTightMinimum > 0) {
     qualityIssues.push(
@@ -626,6 +717,7 @@ export const analyzeMeetingScheduleV2 = (
         : 0,
     attendanceTargetDeficitCount,
     priorityAttendanceTargetDeficitCount,
+    twoGuestCoverageDeficitCount: twoGuestCoverage.deficitCount,
   }
 }
 

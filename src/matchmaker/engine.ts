@@ -27,10 +27,12 @@ import {
   preflightMeetingGeneration,
   resolveMeetingRuleProfile,
   specialParticipantTarget,
+  twoGuestDistinctCoverageRule,
   type MeetingPreferenceKey,
   type MeetingRuleProfile,
 } from './rules'
 import {
+  analyzeTwoGuestCoverage,
   analyzeMeetingScheduleV2,
   type MeetingV2Metrics,
 } from './validation'
@@ -267,6 +269,7 @@ type EngineState = {
   partners: Map<string, number>
   opponents: Map<string, number>
   specialParticipantIds: Set<string>
+  specialGuestMeetings: Map<string, number>
   plannedSpecialStarts: Map<string, number[]>
   remainingPlannedSpecials: Map<string, number>
   initialSpecialReservedIds: Set<string>
@@ -1014,6 +1017,7 @@ const initializeState = (
     partners: new Map(),
     opponents: new Map(),
     specialParticipantIds: new Set(),
+    specialGuestMeetings: new Map(),
     plannedSpecialStarts,
     remainingPlannedSpecials: new Map(
       [...plannedSpecialStarts].map(([playerId, starts]) => [
@@ -1542,6 +1546,10 @@ const attachSpecialParticipantPlans = (
       (player.specialMatchEligible ?? true),
   )
   const target = specialParticipantTarget(activePlayers, settings)
+  const distinctCoverageRule = twoGuestDistinctCoverageRule(
+    activePlayers,
+    settings,
+  )
   const eventRegularIds = new Set(
     activePlayers
       .filter(
@@ -1555,6 +1563,7 @@ const attachSpecialParticipantPlans = (
   const plannedCounts = new Map(
     eligibleRegulars.map((player) => [player.id, 0]),
   )
+  const plannedGuestMeetings = new Map<string, number>()
   const plannedWindows = new Map<string, Array<{ start: number; end: number }>>()
   const plannedGroupCounts = new Map<string, number>()
   const guestSlotIndex = new Map<string, number>()
@@ -1566,6 +1575,17 @@ const attachSpecialParticipantPlans = (
     if (!guest) return slot
     const currentGuestIndex = guestSlotIndex.get(guest.id) ?? 0
     guestSlotIndex.set(guest.id, currentGuestIndex + 1)
+    const competingGuestIds = slots
+      .filter(
+        (candidate) =>
+          candidate.kind === 'special' &&
+          candidate.start === slot.start &&
+          candidate.guestId !== guest.id,
+      )
+      .flatMap((candidate) => [
+        ...(candidate.guestId ? [candidate.guestId] : []),
+        ...(candidate.roamingGuestId ? [candidate.roamingGuestId] : []),
+      ])
     const guestTarget = Math.max(
       1,
       plannedOrdinaryGuestGames(guest, activePlayers, settings),
@@ -1595,6 +1615,12 @@ const attachSpecialParticipantPlans = (
       ),
     )
     const ranked = [...available].sort((left, right) => {
+      if (distinctCoverageRule) {
+        const distinctDifference =
+          (plannedGuestMeetings.get(pairKey(guest.id, left.id)) ?? 0) -
+          (plannedGuestMeetings.get(pairKey(guest.id, right.id)) ?? 0)
+        if (distinctDifference !== 0) return distinctDifference
+      }
       const coverageDifference =
         Number(selectedIds.has(left.id)) - Number(selectedIds.has(right.id))
       if (coverageDifference !== 0) return coverageDifference
@@ -1643,6 +1669,27 @@ const attachSpecialParticipantPlans = (
         regularSeatCount,
         Math.max(0, target - selectedIds.size),
       )
+      const repeatedGuestPairCount = distinctCoverageRule
+        ? regulars.filter(
+            (player) =>
+              (plannedGuestMeetings.get(pairKey(guest.id, player.id)) ?? 0) > 0,
+          ).length
+        : 0
+      const competingGuestUnmetCount = distinctCoverageRule
+        ? regulars.reduce(
+            (sum, player) =>
+              sum + competingGuestIds.reduce(
+                (guestSum, guestId) =>
+                  guestSum + Number(
+                    (plannedGuestMeetings.get(
+                      pairKey(guestId, player.id),
+                    ) ?? 0) === 0,
+                  ),
+                0,
+              ),
+            0,
+          )
+        : 0
       const eventRegularPairPenalty = Math.max(
         0,
         regulars.filter((player) => eventRegularIds.has(player.id)).length - 1,
@@ -1658,6 +1705,8 @@ const attachSpecialParticipantPlans = (
           : 0
       const score = [
         Math.max(0, requiredNewCount - newIds.length),
+        repeatedGuestPairCount,
+        competingGuestUnmetCount,
         eventRegularPairPenalty,
         Math.max(...regulars.map((player) => plannedCounts.get(player.id) ?? 0)),
         regulars.reduce(
@@ -1690,6 +1739,7 @@ const attachSpecialParticipantPlans = (
     for (const player of best.players) {
       selectedIds.add(player.id)
       plannedCounts.set(player.id, (plannedCounts.get(player.id) ?? 0) + 1)
+      increment(plannedGuestMeetings, pairKey(guest.id, player.id))
       plannedWindows.set(player.id, [
         ...(plannedWindows.get(player.id) ?? []),
         { start: slot.start, end: slot.start + slot.duration },
@@ -1816,6 +1866,27 @@ const scoreCandidate = (
           newSpecialParticipants,
       )
     : 0
+  const distinctCoverageRule = twoGuestDistinctCoverageRule(
+    activePlayers,
+    settings,
+  )
+  const repeatedGuestPairPenalty =
+    slot.kind === 'special' && distinctCoverageRule
+      ? specialRegulars.reduce(
+          (sum, regular) =>
+            sum + distinctCoverageRule.guestIds.reduce(
+              (guestSum, guestId) =>
+                guestSum + Number(
+                  players.some((player) => player.id === guestId) &&
+                    (state.specialGuestMeetings.get(
+                      pairKey(guestId, regular.id),
+                    ) ?? 0) > 0,
+                ),
+              0,
+            ),
+          0,
+        )
+      : 0
   const eventRegularPairPenalty = slot.kind === 'special'
     ? Math.max(
         0,
@@ -1917,6 +1988,7 @@ const scoreCandidate = (
   return [
     0,
     coveragePenalty,
+    repeatedGuestPairPenalty,
     eventRegularPairPenalty,
     eventCadenceSelectionPriority,
     initialSpecialFillerReward,
@@ -2491,7 +2563,7 @@ const chooseBatch = (
     settings,
   )
   for (const playerId of unavailableEventPlayerIds) requiredIds.delete(playerId)
-  const scoreLength = profile.priorityOrder.length + 17
+  const scoreLength = profile.priorityOrder.length + 18
   let beams: BatchBeam[] = [{
     selections: [],
     usedIds: unavailableEventPlayerIds,
@@ -2598,6 +2670,18 @@ const updateState = (
   for (const left of match.teamA) {
     for (const right of match.teamB) {
       increment(state.opponents, pairKey(left.id, right.id))
+    }
+  }
+  if (match.isSpecial) {
+    const guests = players.filter((player) => player.isGuest)
+    const regulars = players.filter((player) => !player.isGuest)
+    for (const guest of guests) {
+      for (const regular of regulars) {
+        increment(
+          state.specialGuestMeetings,
+          pairKey(guest.id, regular.id),
+        )
+      }
     }
   }
   for (const player of players) {
@@ -2833,6 +2917,12 @@ const repairStandardGameSpread = (
           )
           if (metrics.structuralIssues.length > 0) continue
           if (
+            base.twoGuestCoverageDeficitCount === 0 &&
+            metrics.twoGuestCoverageDeficitCount > 0
+          ) {
+            continue
+          }
+          if (
             compareNumberTuples(balanceScore(metrics), balanceScore(base)) >= 0
           ) {
             continue
@@ -2947,6 +3037,18 @@ const scheduleWarnings = (
     if (unplayedGuests.length > 0) {
       warnings.push(
         `스페셜 경기 미배정: ${unplayedGuests.map((player) => player.name).join(', ')}`,
+      )
+    }
+    const twoGuestCoverage = analyzeTwoGuestCoverage(
+      schedule,
+      activePlayers,
+      settings,
+    )
+    if (twoGuestCoverage.deficitCount > 0) {
+      const names = twoGuestCoverage.deficientPlayerNames.slice(0, 6)
+      warnings.push(
+        `스페셜별 1회 배정 미달: ${twoGuestCoverage.deficitCount}명` +
+          (names.length > 0 ? ` · ${names.join(', ')}` : ''),
       )
     }
   }
@@ -3330,6 +3432,8 @@ const repairMeetingWaitsByPhasedCadence = (
       candidate.metrics.postWarmupGenderExceptionMatches,
     maximumGroupMeetings: candidate.metrics.maximumGroupMeetings,
     nonWaitSuccessIssueCount: nonWaitSuccessIssues(candidate.metrics).length,
+    twoGuestCoverageDeficitCount:
+      candidate.metrics.twoGuestCoverageDeficitCount,
   }
 
   for (let restart = 0; restart < restartCount; restart += 1) {
@@ -3613,6 +3717,8 @@ const repairMeetingWaitsByPhasedCadence = (
     )
     if (
       metrics.structuralIssues.length === 0 &&
+      metrics.twoGuestCoverageDeficitCount <=
+        originalLimits.twoGuestCoverageDeficitCount &&
       nonWaitSuccessIssues(metrics).length <=
         originalLimits.nonWaitSuccessIssueCount &&
       metrics.skillDangerMatches <= originalLimits.skillDangerMatches + 2 &&
@@ -3633,6 +3739,7 @@ const repairMeetingWaits = (
 
 const candidateScore = (candidate: GenerationCandidate) => [
   candidate.metrics.structuralIssues.length,
+  candidate.metrics.twoGuestCoverageDeficitCount,
   Number(
     Math.max(
       candidate.metrics.maximumWaitMinutes,
