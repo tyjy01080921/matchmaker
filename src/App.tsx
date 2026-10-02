@@ -103,6 +103,7 @@ import {
   type PlayerNameLookup,
 } from './playerNames'
 import { parseBulkPlayerDrafts } from './playerInput'
+import { analyzeParticipants } from './participantAnalysis'
 import {
   preferredPartnerNames,
   resolvePreferredPartnerNames,
@@ -318,6 +319,33 @@ const genderLabels: Record<Gender, string> = {
   none: '무관',
 }
 
+type MeetingAnalysisStyle = Extract<
+  MatchSettings['shuffleDirection'],
+  'skill' | 'mixed' | 'wait'
+>
+
+const meetingAnalysisStyleOptions: Array<{
+  value: MeetingAnalysisStyle
+  title: string
+  description: string
+}> = [
+  {
+    value: 'skill',
+    title: '유사 레벨 대진',
+    description: '실력이 가까운 참가자끼리 우선 조합합니다.',
+  },
+  {
+    value: 'mixed',
+    title: '레벨 믹스 · 팀 균형',
+    description: '레벨을 섞고 양 팀의 합산 실력을 맞춥니다.',
+  },
+  {
+    value: 'wait',
+    title: '대기 시간 최소',
+    description: '통과 대진 중 최대·평균 대기가 짧은 조합을 고릅니다.',
+  },
+]
+
 const matchConditionKeys: MatchConditionKey[] = [
   'fairGames',
   'restBalance',
@@ -507,8 +535,14 @@ const normalizeAppMode = (value: unknown): AppMode =>
   value === 'tournament' ? 'tournament' : 'meeting'
 
 const normalizeMeetingShuffleDirection = (
-  _value: unknown,
-): MatchSettings['shuffleDirection'] => 'balanced'
+  value: unknown,
+): MatchSettings['shuffleDirection'] =>
+  value === 'mixed' ||
+  value === 'variety' ||
+  value === 'skill' ||
+  value === 'wait'
+    ? value
+    : 'balanced'
 
 const normalizeTournamentFormat = (value: unknown): TournamentFormat => {
   if (
@@ -1905,6 +1939,9 @@ function App() {
   const [tournamentTeamsOpen, setTournamentTeamsOpen] = useState(true)
   const [conditionsOpen, setConditionsOpen] = useState(false)
   const [levelHelpOpen, setLevelHelpOpen] = useState(false)
+  const [meetingAnalysisOpen, setMeetingAnalysisOpen] = useState(false)
+  const [meetingAnalysisStyle, setMeetingAnalysisStyle] =
+    useState<MeetingAnalysisStyle>('skill')
   const [participantReplanHelpOpen, setParticipantReplanHelpOpen] = useState<
     'add' | 'input' | null
   >(null)
@@ -2532,6 +2569,10 @@ function App() {
   }, [players])
 
   const activePlayers = players.filter((player) => player.active)
+  const participantAnalysis = useMemo(
+    () => analyzeParticipants(players),
+    [players],
+  )
   const prizeCandidates = activePlayers.map((player) => ({
     id: player.id,
     name: playerDisplayName(player, displayNames),
@@ -4805,7 +4846,9 @@ function App() {
     window.setTimeout(() => scrollToSection('meeting-settings'), 0)
   }
 
-  const generateBookingSchedule = () => {
+  const generateBookingSchedule = (
+    shuffleDirection: MatchSettings['shuffleDirection'],
+  ) => {
     if (eventMatchSetupIssue) {
       setSettingsOpen(true)
       setNotice(eventMatchSetupIssue)
@@ -4820,13 +4863,33 @@ function App() {
       {
         ...settings,
         seed: settings.seed + 1,
-        shuffleDirection: 'balanced',
+        shuffleDirection,
         targetRoundCount: bookingRoundTarget,
         pacingRoundCount: bookingRoundTarget,
         roundCountLocked: true,
       },
       '예약 시간 대진 생성됨',
     )
+  }
+
+  const handleMakeMeeting = () => {
+    if (!participantAnalysis.hasStructuredInput) {
+      generateBookingSchedule('balanced')
+      return
+    }
+    setMeetingAnalysisStyle(
+      settings.shuffleDirection === 'skill' ||
+      settings.shuffleDirection === 'mixed' ||
+      settings.shuffleDirection === 'wait'
+        ? settings.shuffleDirection
+        : 'skill',
+    )
+    setMeetingAnalysisOpen(true)
+  }
+
+  const makeAnalyzedMeeting = () => {
+    setMeetingAnalysisOpen(false)
+    generateBookingSchedule(meetingAnalysisStyle)
   }
 
   const startMeetingReplan = () => {
@@ -6526,289 +6589,291 @@ function App() {
               <span className="generation-spinner" aria-hidden="true" />
             )}
             <strong>{meetingOperationLabel}</strong>
-            <p>{meetingGenerationMessage}</p>
-            {isMeetingGenerationFailureState && meetingWaitLimitFailure ? (
-              <div className="generation-wait-failure">
-                <div className="generation-wait-metrics">
-                  <span className={
-                    meetingWaitLimitFailure.maximumInitialWaitMinutes >
-                      MEETING_MAX_WAIT_MINUTES
-                      ? 'over-limit'
-                      : ''
-                  }>
-                    첫 경기 전
-                    <strong>
-                      {meetingWaitLimitFailure.maximumInitialWaitMinutes}분
-                    </strong>
-                  </span>
-                  <span className={
-                    meetingWaitLimitFailure.maximumBetweenWaitMinutes >
-                      MEETING_MAX_WAIT_MINUTES
-                      ? 'over-limit'
-                      : ''
-                  }>
-                    경기 간
-                    <strong>
-                      {meetingWaitLimitFailure.maximumBetweenWaitMinutes}분
-                    </strong>
-                  </span>
-                  <span className={
-                    meetingWaitLimitFailure.maximumFinalIdleMinutes >=
-                      MEETING_FINAL_IDLE_LIMIT_MINUTES
-                      ? 'over-limit'
-                      : ''
-                  }>
-                    마지막 경기 후
-                    <strong>
-                      {meetingWaitLimitFailure.maximumFinalIdleMinutes}분
-                    </strong>
-                  </span>
-                </div>
-                <div className="generation-wait-reasons">
-                  <strong>실패 원인</strong>
-                  <div>
-                    {meetingWaitLimitFailure.participantViolations.some(
-                      (violation) => violation.phase === 'unassigned',
-                    ) ? (
-                      <span>
-                        <b>0경기</b>{' '}
-                        {meetingWaitLimitFailure.participantViolations.filter(
-                          (violation) => violation.phase === 'unassigned',
-                        ).length}명
-                      </span>
-                    ) : null}
-                    {meetingWaitLimitFailure.participantViolations.some(
-                      (violation) => violation.phase === 'initial',
-                    ) ? (
-                      <span>
-                        <b>첫 경기 지연</b>{' '}
-                        {meetingWaitLimitFailure.participantViolations.filter(
-                          (violation) => violation.phase === 'initial',
-                        ).length}명
-                      </span>
-                    ) : null}
-                    {meetingWaitLimitFailure.participantViolations.some(
-                      (violation) => violation.phase === 'between',
-                    ) ? (
-                      <span>
-                        <b>경기 간 대기</b>{' '}
-                        {meetingWaitLimitFailure.participantViolations.filter(
-                          (violation) => violation.phase === 'between',
-                        ).length}명
-                      </span>
-                    ) : null}
-                    {meetingWaitLimitFailure.participantViolations.some(
-                      (violation) => violation.phase === 'final',
-                    ) ? (
-                      <span>
-                        <b>마지막 경기 후</b>{' '}
-                        {meetingWaitLimitFailure.participantViolations.filter(
-                          (violation) => violation.phase === 'final',
-                        ).length}명
-                      </span>
-                    ) : null}
+            <div className="generation-content">
+              <p>{meetingGenerationMessage}</p>
+              {isMeetingGenerationFailureState && meetingWaitLimitFailure ? (
+                <div className="generation-wait-failure">
+                  <div className="generation-wait-metrics">
+                    <span className={
+                      meetingWaitLimitFailure.maximumInitialWaitMinutes >
+                        MEETING_MAX_WAIT_MINUTES
+                        ? 'over-limit'
+                        : ''
+                    }>
+                      첫 경기 전
+                      <strong>
+                        {meetingWaitLimitFailure.maximumInitialWaitMinutes}분
+                      </strong>
+                    </span>
+                    <span className={
+                      meetingWaitLimitFailure.maximumBetweenWaitMinutes >
+                        MEETING_MAX_WAIT_MINUTES
+                        ? 'over-limit'
+                        : ''
+                    }>
+                      경기 간
+                      <strong>
+                        {meetingWaitLimitFailure.maximumBetweenWaitMinutes}분
+                      </strong>
+                    </span>
+                    <span className={
+                      meetingWaitLimitFailure.maximumFinalIdleMinutes >=
+                        MEETING_FINAL_IDLE_LIMIT_MINUTES
+                        ? 'over-limit'
+                        : ''
+                    }>
+                      마지막 경기 후
+                      <strong>
+                        {meetingWaitLimitFailure.maximumFinalIdleMinutes}분
+                      </strong>
+                    </span>
                   </div>
-                </div>
-                <div className="generation-wait-participants">
-                  <strong>
-                    조정 필요 참가자 {meetingWaitLimitFailure.participantViolations.length}명
-                  </strong>
-                  <div>
-                    {meetingWaitLimitFailure.participantViolations.map(
-                      (violation) => {
-                        const player = generatedMeetingPlayers.find(
-                          (candidate) => candidate.id === violation.playerId,
-                        )
-                        return (
-                          <button
-                            type="button"
-                            key={violation.playerId}
-                            onClick={() => openWaitLimitManualEdit(violation)}
-                          >
-                            <span>
-                              <b>
-                                {player
-                                  ? playerDisplayName(player, scheduleDisplayNames)
-                                  : '참가자'}
-                              </b>
-                              <small>{waitViolationDetail(violation)}</small>
-                            </span>
-                            <em>{waitViolationEditLabel(violation)}</em>
-                          </button>
-                        )
-                      },
+                  <div className="generation-wait-reasons">
+                    <strong>실패 원인</strong>
+                    <div>
+                      {meetingWaitLimitFailure.participantViolations.some(
+                        (violation) => violation.phase === 'unassigned',
+                      ) ? (
+                        <span>
+                          <b>0경기</b>{' '}
+                          {meetingWaitLimitFailure.participantViolations.filter(
+                            (violation) => violation.phase === 'unassigned',
+                          ).length}명
+                        </span>
+                      ) : null}
+                      {meetingWaitLimitFailure.participantViolations.some(
+                        (violation) => violation.phase === 'initial',
+                      ) ? (
+                        <span>
+                          <b>첫 경기 지연</b>{' '}
+                          {meetingWaitLimitFailure.participantViolations.filter(
+                            (violation) => violation.phase === 'initial',
+                          ).length}명
+                        </span>
+                      ) : null}
+                      {meetingWaitLimitFailure.participantViolations.some(
+                        (violation) => violation.phase === 'between',
+                      ) ? (
+                        <span>
+                          <b>경기 간 대기</b>{' '}
+                          {meetingWaitLimitFailure.participantViolations.filter(
+                            (violation) => violation.phase === 'between',
+                          ).length}명
+                        </span>
+                      ) : null}
+                      {meetingWaitLimitFailure.participantViolations.some(
+                        (violation) => violation.phase === 'final',
+                      ) ? (
+                        <span>
+                          <b>마지막 경기 후</b>{' '}
+                          {meetingWaitLimitFailure.participantViolations.filter(
+                            (violation) => violation.phase === 'final',
+                          ).length}명
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="generation-wait-participants">
+                    <strong>
+                      조정 필요 참가자 {meetingWaitLimitFailure.participantViolations.length}명
+                    </strong>
+                    <div>
+                      {meetingWaitLimitFailure.participantViolations.map(
+                        (violation) => {
+                          const player = generatedMeetingPlayers.find(
+                            (candidate) => candidate.id === violation.playerId,
+                          )
+                          return (
+                            <button
+                              type="button"
+                              key={violation.playerId}
+                              onClick={() => openWaitLimitManualEdit(violation)}
+                            >
+                              <span>
+                                <b>
+                                  {player
+                                    ? playerDisplayName(player, scheduleDisplayNames)
+                                    : '참가자'}
+                                </b>
+                                <small>{waitViolationDetail(violation)}</small>
+                              </span>
+                              <em>{waitViolationEditLabel(violation)}</em>
+                            </button>
+                          )
+                        },
+                      )}
+                    </div>
+                  </div>
+                  <div className="generation-wait-recommendations">
+                    <strong>
+                      {meetingWaitLimitFailure.recommendations.some(
+                        (recommendation) => recommendation.verified,
+                      )
+                        ? '재계산 통과 변경안'
+                        : '예상 개선 변경안'}
+                    </strong>
+                    {meetingWaitLimitFailure.recommendations.length > 0 ? (
+                      meetingWaitLimitFailure.recommendations.map(
+                        (recommendation) => (
+                          <article key={recommendation.kind}>
+                            <div>
+                              <b>{recommendation.title}</b>
+                              <span>{recommendation.detail}</span>
+                            </div>
+                            <em className={
+                              recommendation.verified ? 'verified' : undefined
+                            }>
+                              {recommendation.verified
+                                ? '재계산 통과'
+                                : '재생성 필요'}
+                            </em>
+                            <button
+                              type="button"
+                              onClick={() => applyWaitLimitRecommendation(recommendation)}
+                            >
+                              적용 후 생성
+                            </button>
+                          </article>
+                        ),
+                      )
+                    ) : (
+                      <div className="generation-wait-no-resolution">
+                        <b>자동으로 통과하는 변경안을 찾지 못했습니다.</b>
+                        <small>
+                          참가 인원 조정은 마지막 수단으로 검토하고, 먼저 수동 수정이나
+                          직접 설정을 이용해 주세요.
+                        </small>
+                      </div>
                     )}
                   </div>
-                </div>
-                <div className="generation-wait-recommendations">
-                  <strong>
+                  {exceedsMeetingAbsoluteWaitLimit ? (
+                    <small className="generation-search-count over-limit">
+                      36분을 초과한 대진은 확정할 수 없습니다.
+                    </small>
+                  ) : null}
+                  <small className="generation-search-count">
                     {meetingWaitLimitFailure.recommendations.some(
                       (recommendation) => recommendation.verified,
                     )
-                      ? '재계산 통과 변경안'
-                      : '예상 개선 변경안'}
-                  </strong>
-                  {meetingWaitLimitFailure.recommendations.length > 0 ? (
-                    meetingWaitLimitFailure.recommendations.map(
-                      (recommendation) => (
-                        <article key={recommendation.kind}>
-                          <div>
-                            <b>{recommendation.title}</b>
-                            <span>{recommendation.detail}</span>
-                          </div>
-                          <em className={
-                            recommendation.verified ? 'verified' : undefined
-                          }>
-                            {recommendation.verified
-                              ? '재계산 통과'
-                              : '재생성 필요'}
-                          </em>
-                          <button
-                            type="button"
-                            onClick={() => applyWaitLimitRecommendation(recommendation)}
-                          >
-                            적용 후 생성
-                          </button>
-                        </article>
-                      ),
-                    )
-                  ) : (
-                    <div className="generation-wait-no-resolution">
-                      <b>자동으로 통과하는 변경안을 찾지 못했습니다.</b>
-                      <small>
-                        참가 인원 조정은 마지막 수단으로 검토하고, 먼저 수동 수정이나
-                        직접 설정을 이용해 주세요.
-                      </small>
-                    </div>
-                  )}
-                </div>
-                {exceedsMeetingAbsoluteWaitLimit ? (
-                  <small className="generation-search-count over-limit">
-                    36분을 초과한 대진은 확정할 수 없습니다.
+                      ? '첫 경기 전·경기 간 24분 이하, 마지막 경기 후 30분 미만으로 다시 검증했습니다.'
+                      : '현재 대진의 대기 기준을 확인했습니다. 변경안은 적용 후 다시 검증합니다.'}
                   </small>
-                ) : null}
-                <small className="generation-search-count">
-                  {meetingWaitLimitFailure.recommendations.some(
-                    (recommendation) => recommendation.verified,
-                  )
-                    ? '첫 경기 전·경기 간 24분 이하, 마지막 경기 후 30분 미만으로 다시 검증했습니다.'
-                    : '현재 대진의 대기 기준을 확인했습니다. 변경안은 적용 후 다시 검증합니다.'}
-                </small>
-              </div>
-            ) : !isMeetingGenerationReviewState ? (
-              <button
-                type="button"
-                className="generation-cancel-action"
-                onClick={returnToMeetingSettings}
-              >
-                생성 취소
-              </button>
-            ) : null}
-            {meetingOperationLabel === '대진 완료' ? (
-              <div className="generation-review-summary">
-                <span>중복 <strong>0건</strong></span>
-                <span className={scheduleQualityAnalysis.standardGameSpread > 1 ? 'wait-warning' : ''}>
-                  경기 <strong>{minimumParticipantGames}~{maximumParticipantGames}경기</strong>
-                </span>
-                <span>동일 4인 최대 <strong>{maximumMeetingGroupCount}경기</strong></span>
-                <span className={scheduleQualityAnalysis.maximumOpponentMeetings > 6 ? 'wait-warning' : ''}>
-                  상대 반복 최대 <strong>{scheduleQualityAnalysis.maximumOpponentMeetings}회</strong>
-                </span>
-                <span className={reviewedSkillWarningMatches > 0 ? 'wait-warning' : ''}>
-                  실력 차{' '}
-                  <strong>{reviewedSkillWarningMatches}경기</strong>
-                </span>
-                <span className={
-                  (
-                    meetingUsesClubQuality
-                      ? meetingV2Metrics.postWarmupGenderExceptionMatches
-                      : scheduleQualityAnalysis.genderCompositionReviewMatches
-                  ) > 0
-                    ? 'gender-review-summary'
-                    : ''
-                }>
-                  성별 조합 확인{' '}
-                  <strong>
-                    {meetingUsesClubQuality
-                      ? meetingV2Metrics.postWarmupGenderExceptionMatches
-                      : scheduleQualityAnalysis.genderCompositionReviewMatches}
-                    경기
-                  </strong>
-                </span>
-                <span>
-                  스페셜 <strong>
-                    {hasScheduledActiveGuests
-                      ? `${scheduledSpecialMatchCount}${
-                          generatedMeetingSettings.specialLimitEnabled
-                            ? `/${specialLimitMatchCapacity}`
-                            : ''
-                        }경기`
-                      : '없음'}
-                  </strong>
-                </span>
-                <span>평균 대기 <strong>{meetingAverageWaitMinutes}분</strong></span>
-                <span className={
-                  scheduleWaitAnalysis.maximumWaitMinutes >
-                    MEETING_MAX_WAIT_MINUTES
-                    ? 'wait-warning'
-                    : ''
-                }>
-                  최장 대기 <strong>{meetingMaximumWaitMinutes}분</strong>
-                </span>
-                <span className={
-                  scheduleWaitAnalysis.maximumInitialWaitMinutes >
-                    MEETING_MAX_WAIT_MINUTES
-                    ? 'wait-warning'
-                    : ''
-                }>
-                  첫 경기 대기 <strong>{scheduleWaitAnalysis.maximumInitialWaitMinutes}분</strong>
-                </span>
-                <span className={
-                  scheduleWaitAnalysis.maximumBetweenWaitMinutes >
-                    MEETING_MAX_WAIT_MINUTES
-                    ? 'wait-warning'
-                    : ''
-                }>
-                  경기 간 대기 <strong>{scheduleWaitAnalysis.maximumBetweenWaitMinutes}분</strong>
-                </span>
-                <span className={
-                  scheduleWaitAnalysis.maximumFinalIdleMinutes >=
-                    MEETING_FINAL_IDLE_LIMIT_MINUTES
-                    ? 'wait-warning'
-                    : ''
-                }>
-                  마지막 경기 후 <strong>{scheduleWaitAnalysis.maximumFinalIdleMinutes}분</strong>
-                </span>
-                <span className={scheduleQualityAnalysis.participantsOverWaitLimit > 0 ? 'wait-warning' : ''}>
-                  대기 기준 초과 <strong>{scheduleQualityAnalysis.participantsOverWaitLimit}명</strong>
-                </span>
-                <span>
-                  양보 설정 <strong>
-                    경기 {gameCountFlexibleParticipantCount} · 대기 {waitTimeFlexibleParticipantCount}
-                  </strong>
-                </span>
-                {meetingUsesClubQuality ? (
-                  <>
-                    <span className={
-                      meetingV2Metrics.participantsBelowTightMinimum > 0
-                        ? 'wait-warning'
-                        : ''
-                    }>
-                      타이트 2회 미달 <strong>
-                        {meetingV2Metrics.participantsBelowTightMinimum}명
-                      </strong>
-                    </span>
-                    <span>
-                      타이트 3회 <strong>
-                        {meetingV2Metrics.participantsAtTightTarget}/
-                        {scheduledActiveMembers.length}명
-                      </strong>
-                    </span>
-                  </>
-                ) : null}
-                <span>총 <strong>{totalMatches}경기</strong></span>
-              </div>
-            ) : null}
+                </div>
+              ) : !isMeetingGenerationReviewState ? (
+                <button
+                  type="button"
+                  className="generation-cancel-action"
+                  onClick={returnToMeetingSettings}
+                >
+                  생성 취소
+                </button>
+              ) : null}
+              {meetingOperationLabel === '대진 완료' ? (
+                <div className="generation-review-summary">
+                  <span>중복 <strong>0건</strong></span>
+                  <span className={scheduleQualityAnalysis.standardGameSpread > 1 ? 'wait-warning' : ''}>
+                    경기 <strong>{minimumParticipantGames}~{maximumParticipantGames}경기</strong>
+                  </span>
+                  <span>동일 4인 최대 <strong>{maximumMeetingGroupCount}경기</strong></span>
+                  <span className={scheduleQualityAnalysis.maximumOpponentMeetings > 6 ? 'wait-warning' : ''}>
+                    상대 반복 최대 <strong>{scheduleQualityAnalysis.maximumOpponentMeetings}회</strong>
+                  </span>
+                  <span className={reviewedSkillWarningMatches > 0 ? 'wait-warning' : ''}>
+                    실력 차{' '}
+                    <strong>{reviewedSkillWarningMatches}경기</strong>
+                  </span>
+                  <span className={
+                    (
+                      meetingUsesClubQuality
+                        ? meetingV2Metrics.postWarmupGenderExceptionMatches
+                        : scheduleQualityAnalysis.genderCompositionReviewMatches
+                    ) > 0
+                      ? 'gender-review-summary'
+                      : ''
+                  }>
+                    성별 조합 확인{' '}
+                    <strong>
+                      {meetingUsesClubQuality
+                        ? meetingV2Metrics.postWarmupGenderExceptionMatches
+                        : scheduleQualityAnalysis.genderCompositionReviewMatches}
+                      경기
+                    </strong>
+                  </span>
+                  <span>
+                    스페셜 <strong>
+                      {hasScheduledActiveGuests
+                        ? `${scheduledSpecialMatchCount}${
+                            generatedMeetingSettings.specialLimitEnabled
+                              ? `/${specialLimitMatchCapacity}`
+                              : ''
+                          }경기`
+                        : '없음'}
+                    </strong>
+                  </span>
+                  <span>평균 대기 <strong>{meetingAverageWaitMinutes}분</strong></span>
+                  <span className={
+                    scheduleWaitAnalysis.maximumWaitMinutes >
+                      MEETING_MAX_WAIT_MINUTES
+                      ? 'wait-warning'
+                      : ''
+                  }>
+                    최장 대기 <strong>{meetingMaximumWaitMinutes}분</strong>
+                  </span>
+                  <span className={
+                    scheduleWaitAnalysis.maximumInitialWaitMinutes >
+                      MEETING_MAX_WAIT_MINUTES
+                      ? 'wait-warning'
+                      : ''
+                  }>
+                    첫 경기 대기 <strong>{scheduleWaitAnalysis.maximumInitialWaitMinutes}분</strong>
+                  </span>
+                  <span className={
+                    scheduleWaitAnalysis.maximumBetweenWaitMinutes >
+                      MEETING_MAX_WAIT_MINUTES
+                      ? 'wait-warning'
+                      : ''
+                  }>
+                    경기 간 대기 <strong>{scheduleWaitAnalysis.maximumBetweenWaitMinutes}분</strong>
+                  </span>
+                  <span className={
+                    scheduleWaitAnalysis.maximumFinalIdleMinutes >=
+                      MEETING_FINAL_IDLE_LIMIT_MINUTES
+                      ? 'wait-warning'
+                      : ''
+                  }>
+                    마지막 경기 후 <strong>{scheduleWaitAnalysis.maximumFinalIdleMinutes}분</strong>
+                  </span>
+                  <span className={scheduleQualityAnalysis.participantsOverWaitLimit > 0 ? 'wait-warning' : ''}>
+                    대기 기준 초과 <strong>{scheduleQualityAnalysis.participantsOverWaitLimit}명</strong>
+                  </span>
+                  <span>
+                    양보 설정 <strong>
+                      경기 {gameCountFlexibleParticipantCount} · 대기 {waitTimeFlexibleParticipantCount}
+                    </strong>
+                  </span>
+                  {meetingUsesClubQuality ? (
+                    <>
+                      <span className={
+                        meetingV2Metrics.participantsBelowTightMinimum > 0
+                          ? 'wait-warning'
+                          : ''
+                      }>
+                        타이트 2회 미달 <strong>
+                          {meetingV2Metrics.participantsBelowTightMinimum}명
+                        </strong>
+                      </span>
+                      <span>
+                        타이트 3회 <strong>
+                          {meetingV2Metrics.participantsAtTightTarget}/
+                          {scheduledActiveMembers.length}명
+                        </strong>
+                      </span>
+                    </>
+                  ) : null}
+                  <span>총 <strong>{totalMatches}경기</strong></span>
+                </div>
+              ) : null}
+            </div>
             {meetingOperationLabel === '대진 완료' ? (
               <div className="generation-review-actions">
                 <button type="button" className="primary-action" onClick={acceptGeneratedMeeting}>
@@ -6850,6 +6915,142 @@ function App() {
               </div>
             ) : null}
           </div>
+        </div>
+      ) : null}
+
+      {meetingAnalysisOpen ? (
+        <div
+          className="dialog-backdrop participant-analysis-backdrop"
+          onClick={() => setMeetingAnalysisOpen(false)}
+        >
+          <section
+            className="info-dialog participant-analysis-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="participant-analysis-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="dialog-heading">
+              <div>
+                <strong id="participant-analysis-title">참가자 분석</strong>
+                <span>입력 정보를 확인하고 만들기 방식을 선택하세요.</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMeetingAnalysisOpen(false)}
+              >
+                닫기
+              </button>
+            </div>
+
+            <div className="participant-analysis-body">
+              <div className="participant-analysis-summary">
+                <span>전체 <strong>{participantAnalysis.activeCount}</strong></span>
+                <span>일반 <strong>{participantAnalysis.regularCount}</strong></span>
+                <span>스페셜 <strong>{participantAnalysis.guestCount}</strong></span>
+              </div>
+
+              <div className="participant-analysis-groups">
+                <section>
+                  <h3>성별</h3>
+                  <div className="participant-analysis-chips">
+                    {(['male', 'female', 'none'] as Gender[]).map((gender) => (
+                      <span key={gender}>
+                        {genderLabels[gender]}{' '}
+                        <strong>{participantAnalysis.genderCounts[gender]}</strong>
+                      </span>
+                    ))}
+                  </div>
+                </section>
+                <section>
+                  <h3>연령</h3>
+                  <div className="participant-analysis-chips">
+                    {ageGroups
+                      .filter((ageGroup) => participantAnalysis.ageCounts[ageGroup] > 0)
+                      .map((ageGroup) => (
+                        <span key={ageGroup}>
+                          {ageGroup}{' '}
+                          <strong>{participantAnalysis.ageCounts[ageGroup]}</strong>
+                        </span>
+                      ))}
+                  </div>
+                </section>
+                <section>
+                  <h3>레벨</h3>
+                  <div className="participant-analysis-chips">
+                    {levelOptions
+                      .filter((level) => participantAnalysis.levelCounts[level] > 0)
+                      .map((level) => (
+                        <span key={level}>
+                          {levelLabels[level]}{' '}
+                          <strong>{participantAnalysis.levelCounts[level]}</strong>
+                        </span>
+                      ))}
+                  </div>
+                </section>
+              </div>
+
+              {participantAnalysis.incompleteRegulars.length > 0 ? (
+                <div className="participant-analysis-warning" role="status">
+                  <strong>
+                    분류 정보 미입력 {participantAnalysis.incompleteRegulars.length}명
+                  </strong>
+                  <span>
+                    {participantAnalysis.incompleteRegulars
+                      .slice(0, 6)
+                      .map((player) =>
+                        player.name.trim() ||
+                        playerNamePlaceholders[player.id] ||
+                        '이름 없음'
+                      )
+                      .join(', ')}
+                    {participantAnalysis.incompleteRegulars.length > 6 ? ' 외' : ''}
+                  </span>
+                </div>
+              ) : null}
+
+              <fieldset className="participant-analysis-styles">
+                <legend>만들기 방식</legend>
+                {meetingAnalysisStyleOptions.map((option) => (
+                  <label
+                    className={meetingAnalysisStyle === option.value ? 'selected' : ''}
+                    key={option.value}
+                  >
+                    <input
+                      type="radio"
+                      name="meeting-analysis-style"
+                      value={option.value}
+                      checked={meetingAnalysisStyle === option.value}
+                      onChange={() => setMeetingAnalysisStyle(option.value)}
+                    />
+                    <span>
+                      <strong>{option.title}</strong>
+                      <small>{option.description}</small>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+
+              <p className="participant-analysis-rule-note">
+                경기 수·대기 기준·코트·참석 시간·반복 제한은 모든 방식에 동일하게 적용됩니다.
+              </p>
+            </div>
+            <div className="participant-analysis-actions">
+              <button
+                type="button"
+                onClick={() => setMeetingAnalysisOpen(false)}
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                className="primary-action"
+                onClick={makeAnalyzedMeeting}
+              >
+                만들기
+              </button>
+            </div>
+          </section>
         </div>
       ) : null}
 
@@ -7115,9 +7316,9 @@ function App() {
                   type="button"
                   className="primary-action"
                   disabled={isMeetingGenerating || isMeetingReplanning}
-                  onClick={generateBookingSchedule}
+                  onClick={handleMakeMeeting}
                 >
-                  {isMeetingGenerating ? '생성 중' : '생성'}
+                  {isMeetingGenerating ? '만드는 중' : '만들기'}
                 </button>
                 <button
                   type="button"
