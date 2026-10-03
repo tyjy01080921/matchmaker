@@ -20,6 +20,7 @@ import {
 } from './defaultData'
 import {
   analyzeParticipantWaitLimitViolations,
+  twoGuestShortageReasons,
   analyzeScheduleQuality,
   analyzeScheduleWait,
   appendGeneralCourtGames,
@@ -859,7 +860,10 @@ const normalizeMatchSettings = (
     shuffleDirection: normalizeMeetingShuffleDirection(
       settings?.shuffleDirection,
     ),
-    singleGuestPerMatch: settings?.singleGuestPerMatch ?? true,
+    specialComposition: settings?.specialComposition === 'two-plus-two' ? 'two-plus-two' : undefined,
+    specialShortagePolicy: settings?.specialShortagePolicy === 'flexible' ? 'flexible' : 'strict',
+    specialShortageAccepted: settings?.specialShortageAccepted === true,
+    singleGuestPerMatch: settings?.specialComposition === 'two-plus-two' ? false : settings?.singleGuestPerMatch ?? true,
     specialLimitEnabled: settings?.specialLimitEnabled ?? false,
     specialScheduleMode: settings?.specialScheduleMode === 'spread' ||
       (!settings?.specialScheduleMode && settings?.specialTimeLimitEnabled === false)
@@ -1939,6 +1943,11 @@ function App() {
   const [tournamentTeamsOpen, setTournamentTeamsOpen] = useState(true)
   const [conditionsOpen, setConditionsOpen] = useState(false)
   const [levelHelpOpen, setLevelHelpOpen] = useState(false)
+  const [specialShortage, setSpecialShortage] = useState<{
+    reasons: string[]
+    direction: MatchSettings['shuffleDirection']
+    replan?: boolean
+  } | null>(null)
   const [meetingAnalysisOpen, setMeetingAnalysisOpen] = useState(false)
   const [meetingAnalysisStyle, setMeetingAnalysisStyle] =
     useState<MeetingAnalysisStyle>('skill')
@@ -4701,6 +4710,15 @@ function App() {
           setSettings(response.resolvedSettings)
           setGeneratedMeetingSettings(response.resolvedSettings)
         }
+        if (!nextSettings.specialShortageAccepted && nextSettings.specialComposition === 'two-plus-two' &&
+          nextSettings.specialShortagePolicy !== 'flexible' &&
+          response.schedule?.warnings.some((warning) => warning.startsWith('스페셜 경기 목표 미달:') || warning.startsWith('스페셜 경기 미배정:'))) {
+          setSpecialShortage({
+            reasons: ['참석 시간·휴식·중복 배정 제한으로 일부 2+2 경기를 배정하지 못했습니다.',
+              ...response.schedule.warnings.filter((warning) => warning.startsWith('스페셜 경기 목표 미달:') || warning.startsWith('스페셜 경기 미배정:'))],
+            direction: nextSettings.shuffleDirection,
+          })
+        }
         if (response.waitLimitFailure) {
           if (!response.schedule) {
             failGeneration('검토할 대진을 생성하지 못했습니다.')
@@ -4848,11 +4866,17 @@ function App() {
 
   const generateBookingSchedule = (
     shuffleDirection: MatchSettings['shuffleDirection'],
+    shortagePolicy?: 'strict' | 'flexible',
   ) => {
     if (eventMatchSetupIssue) {
       setSettingsOpen(true)
       setNotice(eventMatchSetupIssue)
       window.setTimeout(() => scrollToSection('meeting-settings'), 0)
+      return
+    }
+    const shortageReasons = twoGuestShortageReasons(players, settings)
+    if (!shortagePolicy && shortageReasons.length) {
+      setSpecialShortage({ reasons: shortageReasons, direction: shuffleDirection })
       return
     }
     const bookingRoundTarget = getBookingRoundCount(
@@ -4863,6 +4887,8 @@ function App() {
       {
         ...settings,
         seed: settings.seed + 1,
+        specialShortagePolicy: shortagePolicy ?? 'strict',
+        specialShortageAccepted: Boolean(shortagePolicy),
         shuffleDirection,
         targetRoundCount: bookingRoundTarget,
         pacingRoundCount: bookingRoundTarget,
@@ -4892,7 +4918,7 @@ function App() {
     generateBookingSchedule(meetingAnalysisStyle)
   }
 
-  const startMeetingReplan = () => {
+  const startMeetingReplan = (shortagePolicy?: 'strict' | 'flexible') => {
     if (!canReplanMeeting) {
       if (hasMeetingSettingsDraftChanges) {
         setNotice('설정 변경은 전체 대진을 다시 생성해 주세요.')
@@ -4906,6 +4932,14 @@ function App() {
       return
     }
 
+    const shortageReasons = twoGuestShortageReasons(players, generatedMeetingSettings)
+    if (!shortagePolicy && shortageReasons.length) {
+      setSpecialShortage({ reasons: shortageReasons, direction: settings.shuffleDirection, replan: true })
+      return
+    }
+    const replanSettings = { ...generatedMeetingSettings,
+      specialShortagePolicy: shortagePolicy ?? generatedMeetingSettings.specialShortagePolicy,
+      specialShortageAccepted: Boolean(shortagePolicy) || generatedMeetingSettings.specialShortageAccepted }
     const lockedCount = meetingReplanLockedMatchIds.length
     const currentCount = Math.max(0, lockedCount - completedMatches)
     const replacementCount = Math.max(0, totalMatches - lockedCount)
@@ -5012,7 +5046,7 @@ function App() {
         version: 2,
         savedAt: new Date().toISOString(),
         players,
-        settings: generatedMeetingSettings,
+        settings: replanSettings,
         schedule: replan.schedule,
         results: nextResults,
         meetingCourtAssignments: nextAssignments,
@@ -5023,6 +5057,8 @@ function App() {
         prizeDraw: nextPrizeDraw,
       }
 
+      setSettings(replanSettings)
+      setGeneratedMeetingSettings(replanSettings)
       setGeneratedMeetingPlayers(players)
       setScheduleOverride(replan.schedule)
       setResults(nextResults)
@@ -5062,7 +5098,7 @@ function App() {
       schedule,
       players,
       previousPlayers: generatedMeetingPlayers,
-      settings: generatedMeetingSettings,
+      settings: replanSettings,
       results,
       assignments: meetingCourtAssignments,
       lockedMatchIds: meetingReplanLockedMatchIds,
@@ -6918,6 +6954,38 @@ function App() {
         </div>
       ) : null}
 
+      {specialShortage ? (
+        <div className="dialog-backdrop">
+          <section className="info-dialog special-shortage-dialog" role="dialog" aria-modal="true" aria-labelledby="special-shortage-title">
+            <div className="dialog-heading"><strong id="special-shortage-title">2+2 구성 확인</strong></div>
+            {specialShortage.reasons.map((reason) => <p key={reason}>{reason}</p>)}
+            <p>가능한 구성으로 진행하면 부족한 경기는 스페셜 1 + 참가자 3으로 대체합니다. 대체도 어려운 경기는 배정하지 않습니다.</p>
+            <div className="dialog-actions">
+              <button type="button" onClick={() => {
+                const choice = specialShortage
+                setSpecialShortage(null)
+                if (choice.replan) startMeetingReplan('flexible')
+                else generateBookingSchedule(choice.direction, 'flexible')
+              }}>가능한 구성으로 진행</button>
+              <button type="button" onClick={() => {
+                const choice = specialShortage
+                setSpecialShortage(null)
+                if (choice.replan) startMeetingReplan('strict')
+                else generateBookingSchedule(choice.direction, 'strict')
+              }}>2+2 유지하고 진행</button>
+              <button type="button" onClick={() => {
+                const isReplan = specialShortage.replan
+                setSpecialShortage(null)
+                if (isReplan) {
+                  setSettingsOpen(true)
+                  window.setTimeout(() => scrollToSection('meeting-settings'), 0)
+                } else returnToMeetingSettings()
+              }}>설정으로 돌아가기</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       {meetingAnalysisOpen ? (
         <div
           className="dialog-backdrop participant-analysis-backdrop"
@@ -7877,27 +7945,25 @@ function App() {
                   {guestPlayers.length > 0 ? (
                     <div className="special-settings-card expanded">
                       <div className="special-settings-toggles">
-                        <label className="settings-checkbox">
-                          <input
-                            type="checkbox"
-                            checked={settings.singleGuestPerMatch}
-                            onChange={(event) => {
-                              setSettings((current) => ({
-                                ...current,
-                                singleGuestPerMatch: event.target.checked,
-                                targetRoundCount: getBookingRoundCount(
-                                  current.startTime,
-                                  current.endTime,
-                                ),
-                                pacingRoundCount: getBookingRoundCount(
-                                  current.startTime,
-                                  current.endTime,
-                                ),
-                                roundCountLocked: true,
-                              }))
-                            }}
-                          />
-                          스페셜 1 + 참가자 3
+                        <label className="special-composition-select">
+                          스페셜 경기 구성
+                          <select
+                            value={settings.specialComposition === 'two-plus-two' ? 'two-plus-two' : settings.singleGuestPerMatch ? 'one-plus-three' : 'mixed'}
+                            onChange={(event) => setSettings((current) => ({
+                              ...current,
+                              specialComposition: event.target.value === 'two-plus-two' ? 'two-plus-two' : undefined,
+                              singleGuestPerMatch: event.target.value === 'one-plus-three',
+                              specialShortagePolicy: 'strict',
+                              specialShortageAccepted: false,
+                              targetRoundCount: getBookingRoundCount(current.startTime, current.endTime),
+                              pacingRoundCount: getBookingRoundCount(current.startTime, current.endTime),
+                              roundCountLocked: true,
+                            }))}
+                          >
+                            <option value="one-plus-three">스페셜 1 + 참가자 3</option>
+                            <option value="two-plus-two">스페셜 2 + 참가자 2</option>
+                            <option value="mixed">자동 혼합</option>
+                          </select>
                         </label>
                         <label className="settings-checkbox">
                           <input
@@ -8326,7 +8392,7 @@ function App() {
                             ? '다시 생성할 예정 경기가 없습니다.'
                             : '완료와 현재 경기를 유지하고 남은 대진만 다시 생성합니다.'
                   }
-                  onClick={startMeetingReplan}
+                  onClick={() => startMeetingReplan()}
                 >
                   {isMeetingReplanning ? '재생성 중' : '남은 대진 재생성'}
                 </button>
@@ -9713,7 +9779,11 @@ function App() {
                                       : '실력 차 주의'}
                                   </strong>
                                 ) : null}
-                                {match.isSpecial ? <strong>스페셜</strong> : null}
+                                {match.isSpecial ? <strong>{
+                                  !match.isEventMatch && generatedMeetingSettings.specialComposition === 'two-plus-two' &&
+                                  [...match.teamA, ...match.teamB].filter((player) => player.isGuest).length === 1
+                                    ? '스페셜 1+3 · 대체' : '스페셜'
+                                }</strong> : null}
                                 {match.isEventMatch ? <strong>이벤트</strong> : null}
                               </div>
                             </header>

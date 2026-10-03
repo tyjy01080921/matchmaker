@@ -7,6 +7,7 @@ import {
 import type { MatchSettings, Player, Schedule } from '../types'
 import {
   generateMeetingScheduleV2,
+  generateMeetingScheduleV2Optimized,
   generateMeetingScheduleV2WithWaitResolution,
   insertConfiguredEventMatch,
   planMeetingSlotsV2,
@@ -726,11 +727,67 @@ describe('meeting V2 rules', () => {
       finalIdleLimitMinutes: 30,
     })
     expect(profile.priorityOrder.slice(0, 3)).toEqual([
-      'games',
       'wait',
+      'games',
       'skill',
     ])
   })
+
+  it('keeps each creation style behind the same success rules', () => {
+    const players = Array.from({ length: 16 }, (_, index): Player => ({
+      id: `style-${index + 1}`,
+      name: `${index + 1}번`,
+      level: index < 8 ? 'B' : 'C',
+      ageGroup: '30대',
+      gender: 'none',
+      active: true,
+      specialRequired: false,
+      isGuest: false,
+      guestGameLimit: 0,
+    }))
+    const baseSettings: MatchSettings = {
+      ...defaultSettings,
+      courtCount: 2,
+      startTime: '18:00',
+      endTime: '19:00',
+      normalGameMinutes: 12,
+      targetRoundCount: 5,
+      pacingRoundCount: 5,
+      roundCountLocked: true,
+      eventMatch: { ...defaultSettings.eventMatch, enabled: false },
+    }
+    const candidates = (['skill', 'mixed', 'wait'] as const).map(
+      (shuffleDirection) => generateMeetingScheduleV2Optimized(
+        players,
+        { ...baseSettings, shuffleDirection },
+        3,
+      ),
+    )
+
+    for (const candidate of candidates) {
+      const metrics = analyzeMeetingScheduleV2(
+        candidate.schedule,
+        players,
+        candidate.settings,
+      )
+      expect(metrics.structuralIssues).toEqual([])
+      expect(metrics.successIssues).toEqual([])
+    }
+
+    const mixedLevelMatches = (schedule: Schedule) =>
+      schedule.rounds
+        .flatMap((round) => round.matches)
+        .filter((match) => {
+          const levels = new Set(
+            [...match.teamA, ...match.teamB].map((player) => player.level),
+          )
+          return levels.has('B') && levels.has('C')
+        }).length
+
+    expect(mixedLevelMatches(candidates[1].schedule)).toBeGreaterThan(
+      mixedLevelMatches(candidates[0].schedule),
+    )
+  }, 20000)
 })
 
 describe('meeting V2 slot planning', () => {

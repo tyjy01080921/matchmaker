@@ -23,6 +23,7 @@ export type AppMode = 'meeting' | 'tournament'
 
 export type MeetingShuffleDirection =
   | 'balanced'
+  | 'mixed'
   | 'variety'
   | 'skill'
   | 'wait'
@@ -104,6 +105,9 @@ export type MatchSettings = {
   normalGameMinutes: 10 | 12 | 15
   seed: number
   shuffleDirection: MeetingShuffleDirection
+  specialComposition?: 'two-plus-two'
+  specialShortagePolicy?: 'strict' | 'flexible'
+  specialShortageAccepted?: boolean
   singleGuestPerMatch: boolean
   specialLimitEnabled: boolean
   specialScheduleMode: SpecialScheduleMode

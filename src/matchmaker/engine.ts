@@ -1,3 +1,4 @@
+import { planTwoGuestReservations } from '../matchmaker'
 import type {
   Match,
   MatchSettings,
@@ -21,6 +22,9 @@ import {
   MEETING_SKILL_DANGER_GAP,
   MEETING_TIGHT_GAME_MINIMUM,
   eventMatchParticipantIds,
+  isTwoGuestComposition,
+  allowsSpecialComposition,
+  acceptsUnassignedSpecial,
   meetingSchedulingMinutes,
   plannedGuestScheduleGames,
   plannedOrdinaryGuestGames,
@@ -748,7 +752,9 @@ export const planMeetingSlotsV2 = (
   const eventWindow = getConfiguredEventMatchWindow(settings)
   const eventPlayerIds = eventMatchParticipantIds(settings)
   const reservationsWithoutEventConflicts = relocateEventCourtReservations(
-    settings.courtAssignmentMode === 'fixed' && settings.singleGuestPerMatch
+    isTwoGuestComposition(settings)
+      ? planTwoGuestReservations(activePlayers, settings)
+      : settings.courtAssignmentMode === 'fixed' && settings.singleGuestPerMatch
       ? distributeFixedSpecialCourts(
           activePlayers,
           settings,
@@ -777,7 +783,7 @@ export const planMeetingSlotsV2 = (
     )
     return !overlapsEventRest || !usesEventGuest
   })
-  const reservations = restoreEventGuestReservations(
+  const reservations = isTwoGuestComposition(settings) ? reservationsWithoutEventConflicts : restoreEventGuestReservations(
     reservationsWithoutEventConflicts,
     activePlayers,
     settings,
@@ -974,6 +980,7 @@ const initializeState = (
   )
   return {
     clubQualityEnabled:
+      settings.shuffleDirection !== 'mixed' &&
       activePlayers.filter((player) => !player.isGuest).length <= 35 &&
       !activePlayers.some((player) => player.isGuest),
     eventGameCredits: new Map(
@@ -1147,7 +1154,10 @@ const pickPairing = (
   profile: MeetingRuleProfile,
   isSpecial: boolean,
 ): PairingChoice => {
-  const options = teamOptions(players).map(([teamA, teamB]) => {
+  const options = teamOptions(players).filter(([teamA]) =>
+    !isTwoGuestComposition(settings) || players.filter((player) => player.isGuest).length !== 2 ||
+      teamA.filter((player) => player.isGuest).length === 1,
+  ).map(([teamA, teamB]) => {
     const partnerRepeats =
       (isPreferredPartnerPair(teamA[0], teamA[1])
         ? 0
@@ -1814,6 +1824,10 @@ const categoryValues = (
     : segment === 'high'
       ? -regularScores.reduce((sum, score) => sum + score, 0)
       : 0
+  const generalSkillPriority = settings.shuffleDirection === 'mixed'
+    ? pairing.teamSkillGap * 100 -
+      Math.min(pairing.fixedSkillSpread, MEETING_SKILL_CAUTION_GAP - 1)
+    : Math.max(pairing.teamSkillGap, pairing.fixedSkillSpread)
   const categories: Record<MeetingPreferenceKey, number> = {
     games: Math.max(...gameCounts) * 100 +
       gameCounts.reduce((sum, count) => sum + count, 0),
@@ -1823,7 +1837,7 @@ const categoryValues = (
     ),
     skill: slot.kind === 'special'
       ? directionalSpecialSkill + fixedSkillSpread(players, settings)
-      : Math.max(pairing.teamSkillGap, pairing.fixedSkillSpread),
+      : generalSkillPriority,
     groupRepeat: state.groups.get(groupKey(players)) ?? 0,
     partnerRepeat: pairing.partnerRepeats,
     opponentRepeat: pairing.opponentRepeats,
@@ -2113,6 +2127,7 @@ const makeCandidate = (
   activePlayers: Player[],
   allowDanger = false,
 ) => {
+  if (isTwoGuestComposition(settings) && !allowsSpecialComposition(players, settings)) return null
   if (players.some((player) => exceedsConsecutiveGameLimit(player, state, slot))) {
     return null
   }
@@ -2447,7 +2462,7 @@ const specialCandidates = (
               (!targetReached ||
                 !settings.specialLimitEnabled ||
                 state.specialParticipantIds.has(player.id))
-            : !settings.singleGuestPerMatch &&
+            : !isTwoGuestComposition(settings) && !settings.singleGuestPerMatch &&
               (state.guestGames.get(player.id) ?? 0) <
                 plannedOrdinaryGuestGames(player, activePlayers, settings)
         ),
@@ -2524,25 +2539,17 @@ const candidatesForSlot = (
   profile: MeetingRuleProfile,
   settings: MatchSettings,
   requiredIds: Set<string>,
-) => slot.kind === 'special'
-  ? specialCandidates(
-      activePlayers,
-      state,
-      slot,
-      usedIds,
-      profile,
-      settings,
-      requiredIds,
-    )
-  : generalCandidates(
-      activePlayers,
-      state,
-      slot,
-      usedIds,
-      profile,
-      settings,
-      requiredIds,
-    )
+) => {
+  if (slot.kind !== 'special') return generalCandidates(
+    activePlayers, state, slot, usedIds, profile, settings, requiredIds,
+  )
+  const exact = specialCandidates(activePlayers, state, slot, usedIds, profile, settings, requiredIds)
+  if (exact.length || !isTwoGuestComposition(settings) || settings.specialShortagePolicy !== 'flexible' || !slot.roamingGuestId) return exact
+  return [slot.guestId, slot.roamingGuestId].flatMap((guestId) => specialCandidates(
+    activePlayers, state, { ...slot, guestId, roamingGuestId: undefined, plannedPlayerIds: undefined },
+    usedIds, profile, settings, requiredIds,
+  ))
+}
 
 const chooseBatch = (
   slots: PlannedMeetingSlot[],
@@ -2982,6 +2989,12 @@ const scheduleWarnings = (
   plannedSlots: PlannedMeetingSlot[],
 ) => {
   const warnings: string[] = []
+  if (isTwoGuestComposition(settings)) {
+    const replacements = schedule.rounds.flatMap((round) => round.matches).filter((match) =>
+      !match.isEventMatch && match.isSpecial && [...match.teamA, ...match.teamB].filter((player) => player.isGuest).length === 1,
+    ).length
+    if (replacements) warnings.push(`2+2 대체 구성: 스페셜 1 + 참가자 3 · ${replacements}경기`)
+  }
   const regularCount = activePlayers.filter((player) => !player.isGuest).length
   if (regularCount > 35) {
     warnings.push('35명 초과 · 대규모 모임은 최선 배치로 생성했습니다.')
@@ -3036,7 +3049,7 @@ const scheduleWarnings = (
     )
     if (unplayedGuests.length > 0) {
       warnings.push(
-        `스페셜 경기 미배정: ${unplayedGuests.map((player) => player.name).join(', ')}`,
+        `스페셜 경기 미배정: ${unplayedGuests.map((player) => player.name.trim() || '스페셜').join(', ')}`,
       )
     }
     const twoGuestCoverage = analyzeTwoGuestCoverage(
@@ -3269,7 +3282,8 @@ const waitTargetMetrics = (
           : bookingMinutes,
       )
       if (windows.length === 0) {
-        const wait = Math.max(0, analysisEnd - attendance.start)
+        const wait = acceptsUnassignedSpecial(player, settings)
+          ? 0 : Math.max(0, analysisEnd - attendance.start)
         return { initial: wait, between: 0, final: wait, maximum: wait }
       }
       const initial = Math.max(0, windows[0].start - attendance.start)
@@ -3737,6 +3751,75 @@ const repairMeetingWaits = (
   players: Player[],
 ) => repairMeetingWaitsByPhasedCadence(candidate, players)
 
+const mixedCandidateScore = (candidate: GenerationCandidate) => {
+  const matches = candidate.schedule.rounds
+    .flatMap((round) => round.matches)
+    .filter((match) => !match.isSpecial && !match.isEventMatch)
+  const teamGaps = matches.map((match) =>
+    adaptiveTeamGap(match.teamA, match.teamB, candidate.settings),
+  )
+  const spreads = matches.map((match) =>
+    fixedSkillSpread(
+      [...match.teamA, ...match.teamB],
+      candidate.settings,
+    ),
+  )
+  return [
+    teamGaps.filter((gap) => gap >= MEETING_SKILL_CAUTION_GAP).length,
+    Math.max(0, ...teamGaps),
+    teamGaps.reduce((sum, gap) => sum + gap, 0),
+    -spreads.filter((spread) => spread >= 10).length,
+    -spreads.reduce(
+      (sum, spread) =>
+        sum + Math.min(spread, MEETING_SKILL_CAUTION_GAP - 1),
+      0,
+    ),
+  ]
+}
+
+const candidateStyleScore = (candidate: GenerationCandidate) => {
+  const { metrics } = candidate
+  if (candidate.settings.shuffleDirection === 'skill') {
+    return [
+      metrics.skillDangerMatches,
+      metrics.skillCautionMatches,
+      metrics.postWarmupGenderExceptionMatches,
+      metrics.maximumWaitMinutes,
+      metrics.maximumFinalIdleMinutes,
+      metrics.averageWaitMinutes,
+    ]
+  }
+  if (candidate.settings.shuffleDirection === 'mixed') {
+    return [
+      ...mixedCandidateScore(candidate),
+      metrics.postWarmupGenderExceptionMatches,
+      metrics.maximumWaitMinutes,
+      metrics.maximumFinalIdleMinutes,
+      metrics.averageWaitMinutes,
+    ]
+  }
+  if (candidate.settings.shuffleDirection === 'wait') {
+    return [
+      metrics.maximumWaitMinutes,
+      metrics.maximumFinalIdleMinutes,
+      metrics.averageWaitMinutes,
+      metrics.postWarmupGenderExceptionMatches,
+      metrics.skillDangerMatches,
+      metrics.skillCautionMatches,
+    ]
+  }
+  return [
+    metrics.maximumWaitMinutes,
+    metrics.maximumFinalIdleMinutes,
+    metrics.participantsBelowTightMinimum,
+    -metrics.participantsAtTightTarget,
+    metrics.postWarmupGenderExceptionMatches,
+    metrics.skillDangerMatches,
+    metrics.skillCautionMatches,
+    metrics.averageWaitMinutes,
+  ]
+}
+
 const candidateScore = (candidate: GenerationCandidate) => [
   candidate.metrics.structuralIssues.length,
   candidate.metrics.twoGuestCoverageDeficitCount,
@@ -3747,20 +3830,26 @@ const candidateScore = (candidate: GenerationCandidate) => [
     ) > MEETING_ABSOLUTE_MAX_WAIT_MINUTES,
   ),
   candidate.metrics.successIssues.length,
-  candidate.metrics.participantsOverWaitLimit,
   candidate.metrics.zeroGameStandardParticipants,
-  candidate.metrics.standardGameSpread,
-  candidate.metrics.maximumWaitMinutes,
-  candidate.metrics.maximumFinalIdleMinutes,
-  candidate.metrics.participantsBelowTightMinimum,
-  -candidate.metrics.participantsAtTightTarget,
-  candidate.metrics.postWarmupGenderExceptionMatches,
-  candidate.metrics.skillDangerMatches,
-  candidate.metrics.skillCautionMatches,
+  Math.max(0, candidate.metrics.standardGameSpread - 1),
+  candidate.metrics.participantsOverWaitLimit,
+  Math.max(
+    0,
+    candidate.metrics.maximumWaitMinutes - MEETING_MAX_WAIT_MINUTES,
+  ),
+  Math.max(
+    0,
+    candidate.metrics.maximumFinalIdleMinutes -
+      (MEETING_FINAL_IDLE_LIMIT_MINUTES - 1),
+  ),
+  Math.max(
+    0,
+    candidate.metrics.maximumGroupMeetings - MEETING_MAX_GROUP_MEETINGS,
+  ),
+  ...candidateStyleScore(candidate),
   candidate.metrics.repeatedGroupAssignments,
   candidate.metrics.repeatedPartnerAssignments,
   candidate.metrics.repeatedOpponentAssignments,
-  candidate.metrics.averageWaitMinutes,
   candidate.index,
 ]
 
@@ -3810,6 +3899,7 @@ const generateMeetingScheduleV2OptimizedAtEventTime = (
     }
     candidates.push(candidate)
     if (
+      settings.shuffleDirection === 'balanced' &&
       isSuccessfulCandidate(candidate) &&
       meetsClubQualityTarget(candidate, players)
     ) {

@@ -1,3 +1,4 @@
+import { acceptsUnassignedSpecial, allowsSpecialComposition, isTwoGuestComposition } from './rules'
 import { getBookingDurationMinutes } from '../scheduleTime'
 import { isPreferredPartnerPair } from '../preferredPartners'
 import type {
@@ -282,7 +283,8 @@ const waitDetails = (
     ),
   )
   if (windows.length === 0) {
-    const unattendedMinutes = Math.max(0, analysisEnd - attendance.start)
+    const unattendedMinutes = acceptsUnassignedSpecial(player, settings)
+      ? 0 : Math.max(0, analysisEnd - attendance.start)
     return {
       initial: unattendedMinutes,
       between: 0,
@@ -430,6 +432,12 @@ export const analyzeMeetingScheduleV2 = (
       )
     ) {
       structuralIssues.add('스페셜 인원 제한 위반')
+    }
+    if (!match.isEventMatch && isTwoGuestComposition(settings) &&
+      (!allowsSpecialComposition(assignedPlayers, settings) ||
+        (assignedPlayers.filter((player) => player.isGuest).length === 2 &&
+          match.teamA.filter((player) => player.isGuest).length !== 1))) {
+      structuralIssues.add('스페셜 2+2 구성 위반')
     }
     if (
       !match.isEventMatch &&

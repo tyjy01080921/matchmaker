@@ -100,6 +100,17 @@ const priorityOrder = (
       ...tail,
     ]
   }
+  if (direction === 'mixed') {
+    return [
+      'games',
+      'skill',
+      'wait',
+      'groupRepeat',
+      'partnerRepeat',
+      'opponentRepeat',
+      ...tail,
+    ]
+  }
   if (direction === 'variety') {
     return [
       'groupRepeat',
@@ -158,7 +169,7 @@ export const resolveMeetingRuleProfile = (
       maxWaitMinutes: MEETING_MAX_WAIT_MINUTES,
       finalIdleLimitMinutes: MEETING_FINAL_IDLE_LIMIT_MINUTES,
     },
-    priorityOrder: priorityOrder('balanced'),
+    priorityOrder: priorityOrder(settings.shuffleDirection),
   }
 }
 
@@ -384,7 +395,7 @@ export const preflightMeetingGeneration = (
     const maximumSpecialGames =
       settings.courtCount *
         Math.floor(schedulingMinutes / settings.normalGameMinutes) *
-        (allowsFixedCourtGuestOverflow(activePlayers, settings) ? 2 : 1)
+        (isTwoGuestComposition(settings) || allowsFixedCourtGuestOverflow(activePlayers, settings) ? 2 : 1)
     if (plannedSpecialGames > maximumSpecialGames) {
       issues.push({
         code: 'insufficient-special-capacity',
@@ -395,3 +406,18 @@ export const preflightMeetingGeneration = (
 
   return issues
 }
+
+export const isTwoGuestComposition = (settings: MatchSettings) =>
+  settings.specialComposition === 'two-plus-two'
+
+export const allowsSpecialComposition = (players: Player[], settings: MatchSettings) => {
+  const count = players.filter((player) => player.isGuest).length
+  if (count === 0) return true
+  if (!isTwoGuestComposition(settings)) return !settings.singleGuestPerMatch || count === 1
+  return count === 2 || (settings.specialShortagePolicy === 'flexible' && count === 1)
+}
+
+// An explicitly accepted shortage is reported as unassigned, not as a wait
+// violation. Played games retain all attendance, overlap and wait checks.
+export const acceptsUnassignedSpecial = (player: Player, settings: MatchSettings) =>
+  isTwoGuestComposition(settings) && settings.specialShortageAccepted === true && player.isGuest

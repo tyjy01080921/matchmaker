@@ -8082,3 +8082,36 @@ textarea {
     min-height: 24px;
   }
 }
+
+
+.special-composition-select {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  font-size: 12px;
+}
+
+.special-composition-select select {
+  width: 100%;
+  min-width: 0;
+}
+
+.special-shortage-dialog {
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+
+.special-shortage-dialog p {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.special-shortage-dialog .dialog-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.special-shortage-dialog .dialog-actions button {
+  min-height: 42px;
+}

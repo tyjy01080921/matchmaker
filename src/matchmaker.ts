@@ -51,6 +51,11 @@ import {
 } from './matchmaker/engine'
 import {
   allowsFixedCourtGuestOverflow,
+  allowsSpecialComposition,
+  acceptsUnassignedSpecial,
+  isTwoGuestComposition,
+  plannedOrdinaryGuestGames,
+  meetingSchedulingMinutes,
   eventMatchParticipantIds,
   MEETING_FINAL_IDLE_LIMIT_MINUTES,
   plannedGuestGames,
@@ -427,8 +432,9 @@ export const analyzeScheduleWait = (
   settings: MatchSettings,
   options: MeetingScheduleAnalysisOptions = {},
 ): ScheduleWaitAnalysis => {
-  const activePlayers = players.filter((player) => player.active)
   const matches = schedule.rounds.flatMap((round) => round.matches)
+  const activePlayers = players.filter((player) => player.active &&
+    !(acceptsUnassignedSpecial(player, settings) && playerScheduledMatches(matches, player.id).length === 0))
   const bookingMinutes = getBookingDurationMinutes(
     settings.startTime,
     settings.endTime,
@@ -578,6 +584,7 @@ export const analyzeParticipantWaitLimitViolations = (
       options.eligibleFromOffsetMinutesByPlayer?.[player.id] ?? 0,
     )
     if (scheduledMatches.length === 0) {
+      if (acceptsUnassignedSpecial(player, settings)) continue
       const waitMinutes = Math.max(0, analysisEndMinutes - eligibleFrom)
       if (waitMinutes > WAIT_PRIORITY_MINUTES) {
         violations.push({
@@ -1101,6 +1108,12 @@ export const validateMeetingSchedule = (
       )
     ) {
       issues.add('스페셜 인원 제한 위반')
+    }
+    if (!match.isEventMatch && isTwoGuestComposition(settings) &&
+      (!allowsSpecialComposition(matchPlayers, settings) ||
+        (matchPlayers.filter((player) => player.isGuest).length === 2 &&
+          match.teamA.filter((player) => player.isGuest).length !== 1))) {
+      issues.add('스페셜 2+2 구성 위반')
     }
     const window = matchTimeWindow(match)
     if (
@@ -3439,6 +3452,7 @@ const pickAdaptiveSpecialGroup = (
           const guestsInGroup = group.filter((player) => player.isGuest)
           const regularsInGroup = group.filter((player) => !player.isGuest)
           if (guestsInGroup.length === 0 || regularsInGroup.length === 0) continue
+          if (!allowsSpecialComposition(group, settings)) continue
           const expectedPendingCount = Math.min(
             regularsInGroup.length,
             remainingCoverage,
@@ -3505,6 +3519,16 @@ const pickSpecialGroup = (
   allowExtraSpecial: boolean,
   pacing: RoundPacing,
 ): [Player, Player, Player, Player] | null => {
+  if (isTwoGuestComposition(settings)) {
+    const exact = pickAdaptiveSpecialGroup(
+      activePlayers, usedIds, history, random, conditions, pacing,
+      allowExtraSpecial, { ...settings, specialShortagePolicy: 'strict' },
+    )
+    if (exact || settings.specialShortagePolicy !== 'flexible') return exact
+    return pickSingleGuestSpecialGroup(
+      activePlayers, usedIds, history, random, conditions, allowExtraSpecial, settings,
+    )
+  }
   if (settings.singleGuestPerMatch) {
     return pickSingleGuestSpecialGroup(
       activePlayers,
@@ -3939,6 +3963,7 @@ const pickGeneralGroup = (
             companionCandidates[c],
           ]
           if (!isValidGuestGroup(group, settings.singleGuestPerMatch)) continue
+          if (!allowsSpecialComposition(group, settings)) continue
           const currentGroupKey = groupKey(group)
           if (seenGroupKeys.has(currentGroupKey)) continue
           seenGroupKeys.add(currentGroupKey)
@@ -6448,6 +6473,11 @@ export const replanMeetingSchedule = (
         pacing,
         hasGuest(group),
       )
+      if (isTwoGuestComposition(input.settings) && group.filter((player) => player.isGuest).length === 2) {
+        const pairing = teamPairingOptions(group).find(([team]) => team.filter((player) => player.isGuest).length === 1)!
+        match.teamA = pairing[0]
+        match.teamB = pairing[1]
+      }
       match.id = `cont-${revision}-s${slot.start}-c${slot.court}-${group
         .map((player) => player.id)
         .sort()
@@ -6509,6 +6539,11 @@ export const replanMeetingSchedule = (
       )
       .map((guest) => `${guest.name.trim() || '스페셜'} 남은 경기 0경기`),
   ]
+  if (isTwoGuestComposition(input.settings)) {
+    const replacements = createdMatches.filter((match) => match.isSpecial &&
+      matchPlayers(match).filter((player) => player.isGuest).length === 1).length
+    if (replacements) warnings.push(`2+2 대체 구성: 스페셜 1 + 참가자 3 · ${replacements}경기`)
+  }
   const metadata = continuationScheduleMetadata(rounds)
   const generatedSchedule: Schedule = {
     rounds,
@@ -6576,6 +6611,12 @@ export const replanMeetingSchedule = (
       )
     ) {
       failureIssues.push('스페셜 인원 제한 위반')
+    }
+    if (!match.isEventMatch && !lockedIdSet.has(match.id) && isTwoGuestComposition(input.settings) &&
+      (!allowsSpecialComposition(playersInMatch, input.settings) ||
+        (playersInMatch.filter((player) => player.isGuest).length === 2 &&
+          match.teamA.filter((player) => player.isGuest).length !== 1))) {
+      failureIssues.push('스페셜 2+2 구성 위반')
     }
     if (
       continuationMode === 'late-special-unlimited' &&
@@ -8104,4 +8145,69 @@ export const calculateStats = (
     if (pointDiff !== 0) return pointDiff
     return a.player.name.localeCompare(b.player.name)
   })
+}
+
+
+// Reserve both special players together so a 2+2 game consumes one appearance
+// from each player's budget, while leaving the other courts available.
+export const planTwoGuestReservations = (players: Player[], settings: MatchSettings) => {
+  const active = players.filter((player) => player.active)
+  const guests = active.filter((player) => player.isGuest)
+  const duration = settings.normalGameMinutes
+  const end = settings.specialLimitEnabled && settings.specialScheduleMode !== 'spread' && settings.specialTimeLimitEnabled
+    ? Math.min(meetingSchedulingMinutes(settings), settings.specialTimeLimitMinutes)
+    : meetingSchedulingMinutes(settings)
+  const counts = new Map<string, number>()
+  const slots: (import('./matchmaker/engine').PlannedMeetingSlot & { kind: 'special'; guestId: string })[] = []
+  const event = getConfiguredEventMatchWindow(settings)
+  for (let start = 0; start + duration <= end; start += duration) {
+    const used = new Set<string>()
+    const eventIds = new Set(eventMatchUnavailablePlayerIds(settings, start))
+    const regulars = active.filter((player) => !player.isGuest &&
+      (player.specialMatchEligible ?? true) && !eventIds.has(player.id) &&
+      isPlayerAvailableForMeetingSlot(player, settings, start, duration))
+    let regularSeats = regulars.length
+    for (let court = 1; court <= settings.courtCount; court += 1) {
+      if (event && court === settings.eventMatch.court && start < event.end && event.start < start + duration) continue
+      const available = guests.filter((guest) => !used.has(guest.id) && !eventIds.has(guest.id) &&
+        isPlayerAvailableForMeetingSlot(guest, settings, start, duration) &&
+        (counts.get(guest.id) ?? 0) < plannedOrdinaryGuestGames(guest, active, settings) &&
+        (settings.specialScheduleMode !== 'spread' || (() => {
+          const window = resolveMeetingAttendanceWindow(guest, settings)
+          const target = Math.max(1, plannedOrdinaryGuestGames(guest, active, settings))
+          const spacing = Math.max(duration, (Math.min(end, window.end) - window.start) / target)
+          return start >= window.start + Math.floor((counts.get(guest.id) ?? 0) * spacing / duration) * duration
+        })()))
+        .sort((a, b) => (counts.get(a.id) ?? 0) - (counts.get(b.id) ?? 0) || a.id.localeCompare(b.id))
+      const selected = available.length >= 2 && regularSeats >= 2 ? available.slice(0, 2)
+        : settings.specialShortagePolicy === 'flexible' && regularSeats >= 3 ? available.slice(0, 1) : []
+      if (!selected.length) continue
+      regularSeats -= 4 - selected.length
+      slots.push({ id: `paired-c${court}-s${start}`, court, start, duration,
+        kind: 'special', guestId: selected[0].id, roamingGuestId: selected[1]?.id })
+      for (const guest of selected) {
+        used.add(guest.id)
+        counts.set(guest.id, (counts.get(guest.id) ?? 0) + 1)
+      }
+    }
+  }
+  return slots
+}
+
+export const twoGuestShortageReasons = (players: Player[], settings: MatchSettings): string[] => {
+  if (!isTwoGuestComposition(settings)) return []
+  const active = players.filter((player) => player.active)
+  const guests = active.filter((player) => player.isGuest)
+  const regulars = active.filter((player) => !player.isGuest && (player.specialMatchEligible ?? true))
+  const issues: string[] = []
+  if (guests.length < 2) issues.push(`출전 가능한 스페셜 ${guests.length}명 · 2명 필요`)
+  if (regulars.length < 2) issues.push(`스페셜 경기 참가자 ${regulars.length}명 · 2명 필요`)
+  if (issues.length) return issues
+  const planned = planTwoGuestReservations(active, { ...settings, specialShortagePolicy: 'strict' })
+  for (const guest of guests) {
+    const count = planned.filter((slot) => slot.guestId === guest.id || slot.roamingGuestId === guest.id).length
+    const target = plannedOrdinaryGuestGames(guest, active, settings)
+    if (count < target) issues.push(`${guest.name.trim() || '스페셜'}: 2+2 예상 배정 ${count}/${target}경기 · 참석 시간·인원·코트 제한`)
+  }
+  return issues
 }
