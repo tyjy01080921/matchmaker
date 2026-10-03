@@ -1,4 +1,4 @@
-import { planTwoGuestReservations } from '../matchmaker'
+import { countTwoGuestMatches, planTwoGuestReservations } from '../matchmaker'
 import type {
   Match,
   MatchSettings,
@@ -2543,12 +2543,9 @@ const candidatesForSlot = (
   if (slot.kind !== 'special') return generalCandidates(
     activePlayers, state, slot, usedIds, profile, settings, requiredIds,
   )
-  const exact = specialCandidates(activePlayers, state, slot, usedIds, profile, settings, requiredIds)
-  if (exact.length || !isTwoGuestComposition(settings) || settings.specialShortagePolicy !== 'flexible' || !slot.roamingGuestId) return exact
-  return [slot.guestId, slot.roamingGuestId].flatMap((guestId) => specialCandidates(
-    activePlayers, state, { ...slot, guestId, roamingGuestId: undefined, plannedPlayerIds: undefined },
-    usedIds, profile, settings, requiredIds,
-  ))
+  // Only the full-horizon planner may authorize a 1+3 reservation. A local
+  // candidate failure (skill, repetition, or temporary rest) is not permission.
+  return specialCandidates(activePlayers, state, slot, usedIds, profile, settings, requiredIds)
 }
 
 const chooseBatch = (
@@ -3087,7 +3084,7 @@ const scheduleWarnings = (
   return warnings
 }
 
-export const generateMeetingScheduleV2 = (
+const generateMeetingScheduleV2Pass = (
   players: Player[],
   settings: MatchSettings,
   seedOffset = 0,
@@ -3240,6 +3237,24 @@ export const generateMeetingScheduleV2 = (
     ...clubQualityWarnings,
   ]
   return schedule
+}
+
+export const generateMeetingScheduleV2 = (
+  players: Player[],
+  settings: MatchSettings,
+  seedOffset = 0,
+): Schedule => {
+  if (!isTwoGuestComposition(settings) || settings.specialShortagePolicy !== 'flexible' ||
+    !planTwoGuestReservations(players, settings).some((slot) => !slot.roamingGuestId)) {
+    return generateMeetingScheduleV2Pass(players, settings, seedOffset)
+  }
+  const paired = generateMeetingScheduleV2Pass(players, {
+    ...settings, specialShortagePolicy: 'strict',
+  }, seedOffset)
+  const flexible = generateMeetingScheduleV2Pass(players, settings, seedOffset)
+  // Regular-player selection also changes with extra games. Retain the strict
+  // result if those additions would displace an actually feasible 2+2 match.
+  return countTwoGuestMatches(flexible) >= countTwoGuestMatches(paired) ? flexible : paired
 }
 
 type WaitTargetMetrics = {
@@ -3822,6 +3837,7 @@ const candidateStyleScore = (candidate: GenerationCandidate) => {
 
 const candidateScore = (candidate: GenerationCandidate) => [
   candidate.metrics.structuralIssues.length,
+  isTwoGuestComposition(candidate.settings) ? -countTwoGuestMatches(candidate.schedule) : 0,
   candidate.metrics.twoGuestCoverageDeficitCount,
   Number(
     Math.max(
@@ -3888,6 +3904,8 @@ const generateMeetingScheduleV2OptimizedAtEventTime = (
   attemptCount = 3,
 ) => {
   const maximumAttempts = Math.min(9, Math.max(1, Math.floor(attemptCount)))
+  const pairedTarget = isTwoGuestComposition(settings)
+    ? planTwoGuestReservations(players, { ...settings, specialShortagePolicy: 'strict' }).length : 0
   const candidates: GenerationCandidate[] = []
   for (let index = 0; index < maximumAttempts; index += 1) {
     const schedule = generateMeetingScheduleV2(players, settings, index)
@@ -3899,6 +3917,7 @@ const generateMeetingScheduleV2OptimizedAtEventTime = (
     }
     candidates.push(candidate)
     if (
+      (!isTwoGuestComposition(settings) || countTwoGuestMatches(schedule) >= pairedTarget) &&
       settings.shuffleDirection === 'balanced' &&
       isSuccessfulCandidate(candidate) &&
       meetsClubQualityTarget(candidate, players)
@@ -3955,6 +3974,7 @@ const automaticEventCandidateScore = (
   centerDistance: number,
 ) => [
   candidate.metrics.structuralIssues.length,
+  isTwoGuestComposition(candidate.settings) ? -countTwoGuestMatches(candidate.schedule) : 0,
   Number(
     Math.max(
       candidate.metrics.maximumWaitMinutes,
@@ -3993,6 +4013,10 @@ export const generateMeetingScheduleV2Optimized = (
     )
   }
 
+  const pairedTarget = isTwoGuestComposition(settings)
+    ? Math.max(0, ...automaticStartTimes.map((startTime) => planTwoGuestReservations(players, {
+        ...settings, specialShortagePolicy: 'strict', eventMatch: { ...settings.eventMatch, startTime },
+      }).length)) : 0
   let best: { candidate: GenerationCandidate; score: number[] } | null = null
   for (const [timeIndex, startTime] of automaticStartTimes.entries()) {
     const generatedCandidate = generateMeetingScheduleV2OptimizedAtEventTime(
@@ -4012,7 +4036,8 @@ export const generateMeetingScheduleV2Optimized = (
     if (best === null || compareNumberTuples(score, best.score) < 0) {
       best = { candidate, score }
     }
-    if (meetsPreferredWaitTarget(candidate)) return candidate
+    if ((!isTwoGuestComposition(settings) || countTwoGuestMatches(candidate.schedule) >= pairedTarget) &&
+      meetsPreferredWaitTarget(candidate)) return candidate
   }
 
   return repairMeetingWaits(

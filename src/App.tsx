@@ -6959,7 +6959,7 @@ function App() {
           <section className="info-dialog special-shortage-dialog" role="dialog" aria-modal="true" aria-labelledby="special-shortage-title">
             <div className="dialog-heading"><strong id="special-shortage-title">2+2 구성 확인</strong></div>
             {specialShortage.reasons.map((reason) => <p key={reason}>{reason}</p>)}
-            <p>가능한 구성으로 진행하면 부족한 경기는 스페셜 1 + 참가자 3으로 대체합니다. 대체도 어려운 경기는 배정하지 않습니다.</p>
+            <p>전체 시간에서 2+2를 먼저 배정합니다. 시간상 함께 출전할 수 없는 남은 경기만 스페셜 1 + 참가자 3으로 대체합니다. 대체도 어려우면 미배정으로 안내합니다.</p>
             <div className="dialog-actions">
               <button type="button" onClick={() => {
                 const choice = specialShortage

@@ -156,3 +156,147 @@ describe('스페셜 2 + 참가자 2', () => {
   })
 
 })
+
+describe('전체 시간에서 2+2 우선 배정', () => {
+  const flexible: MatchSettings = { ...settings, specialShortagePolicy: 'flexible' }
+  const specialMatches = (schedule: ReturnType<typeof generateMeetingScheduleV2>) =>
+    schedule.rounds.flatMap((round) => round.matches).filter((match) => match.isSpecial && !match.isEventMatch)
+  const guestCount = (match: ReturnType<typeof specialMatches>[number]) =>
+    [...match.teamA, ...match.teamB].filter((player) => player.isGuest).length
+
+  it('waits for the later guest instead of spending the early guest budget on 1+3', () => {
+    const roster = players()
+    roster[1].arrivalOffsetMinutes = 24
+    const strictPlan = planTwoGuestReservations(roster, settings)
+    const flexiblePlan = planTwoGuestReservations(roster, flexible)
+    expect(strictPlan).toHaveLength(2)
+    expect(flexiblePlan).toEqual(strictPlan)
+    expect(flexiblePlan.every((slot) => slot.start >= 24 && slot.roamingGuestId)).toBe(true)
+    const schedule = generateMeetingScheduleV2(roster, flexible)
+    expect(specialMatches(schedule)).toHaveLength(2)
+    expect(specialMatches(schedule).every((match) => guestCount(match) === 2)).toBe(true)
+    expect(analyzeMeetingScheduleV2(schedule, roster, flexible).structuralIssues).toEqual([])
+  })
+
+  it('reserves the shared time first and uses only residual appearances outside it', () => {
+    const roster = players()
+    roster[0].departureOffsetMinutes = 36
+    roster[1].arrivalOffsetMinutes = 24
+    const slots = planTwoGuestReservations(roster, flexible)
+    const pairs = slots.filter((slot) => slot.roamingGuestId)
+    expect(pairs).toHaveLength(1)
+    expect(pairs[0].start).toBe(24)
+    expect(slots.filter((slot) => !slot.roamingGuestId)).toHaveLength(2)
+    const schedule = generateMeetingScheduleV2(roster, flexible)
+    expect(specialMatches(schedule).filter((match) => guestCount(match) === 2)).toHaveLength(1)
+    expect(specialMatches(schedule).filter((match) => guestCount(match) === 1)).toHaveLength(2)
+    expect(schedule.guestGameCounts).toMatchObject({ p0: 2, p1: 2 })
+    expect(analyzeMeetingScheduleV2(schedule, roster, flexible).structuralIssues).toEqual([])
+  })
+
+  it('does not insert an early fallback that would exhaust the rest allowance before a pair', () => {
+    const roster = players()
+    roster[0].arrivalOffsetMinutes = 0
+    roster[1].arrivalOffsetMinutes = 24
+    const constrained = { ...flexible, specialGameLimit: 3, specialParticipantTarget: 8 }
+    const slots = planTwoGuestReservations(roster, constrained)
+    expect(slots.filter((slot) => slot.roamingGuestId).map((slot) => slot.start)).toEqual([24, 36])
+    expect(slots.filter((slot) => !slot.roamingGuestId).map((slot) => slot.start)).toEqual([0])
+    const schedule = generateMeetingScheduleV2(roster, constrained)
+    expect(specialMatches(schedule).filter((match) => guestCount(match) === 2)).toHaveLength(2)
+    expect(analyzeMeetingScheduleV2(schedule, roster, constrained).structuralIssues).toEqual([])
+  })
+
+  it('does not treat spread preferences as a reason to replace a feasible 2+2', () => {
+    const roster = players()
+    roster[0].departureOffsetMinutes = 24
+    const slots = planTwoGuestReservations(roster, { ...flexible, specialScheduleMode: 'spread' })
+    expect(slots).toHaveLength(2)
+    expect(slots.every((slot) => slot.roamingGuestId)).toBe(true)
+    expect(slots.map((slot) => slot.start)).toEqual([0, 12])
+  })
+
+  it('pairs guests with short attendance windows before spending flexible guests', () => {
+    const roster = players(4)
+    roster[2].departureOffsetMinutes = 12
+    roster[3].arrivalOffsetMinutes = 12
+    const slots = planTwoGuestReservations(roster, { ...flexible, specialGameLimit: 1 })
+    expect(slots).toHaveLength(2)
+    expect(slots.every((slot) => slot.roamingGuestId)).toBe(true)
+    expect(new Set(slots.flatMap((slot) => [slot.guestId, slot.roamingGuestId])).size).toBe(4)
+  })
+
+  it('allows 1+3 when no attendance overlap remains', () => {
+    const roster = players()
+    roster[0].departureOffsetMinutes = 24
+    roster[1].arrivalOffsetMinutes = 24
+    const slots = planTwoGuestReservations(roster, flexible)
+    expect(slots).toHaveLength(4)
+    expect(slots.every((slot) => !slot.roamingGuestId)).toBe(true)
+    const schedule = generateMeetingScheduleV2(roster, flexible)
+    expect(specialMatches(schedule).every((match) => guestCount(match) === 1)).toBe(true)
+    expect(specialMatches(schedule).length).toBeGreaterThan(0)
+  })
+
+  it('keeps future pairs and completed games when replanning after play starts', () => {
+    const roster = players()
+    roster[1].arrivalOffsetMinutes = 24
+    const original = generateMeetingScheduleV2(roster, settings)
+    const locked = original.rounds[0].matches
+    const result = replanMeetingSchedule({
+      schedule: original, players: roster, previousPlayers: roster, settings: flexible,
+      results: Object.fromEntries(locked.map((match) => [match.id, {
+        teamAScore: '21', teamBScore: '12', completed: true, note: '',
+      }])), assignments: {}, lockedMatchIds: locked.map((match) => match.id),
+      continuation: makeDefaultMeetingContinuationState(),
+    })
+    expect(result.failureIssues).toEqual([])
+    const matches = result.schedule.rounds.flatMap((round) => round.matches)
+    for (const match of locked) expect(matches.find((next) => next.id === match.id)).toEqual(match)
+    const createdSpecial = specialMatches(result.schedule).filter((match) => result.createdMatchIds.includes(match.id))
+    expect(createdSpecial).toHaveLength(2)
+    expect(createdSpecial.every((match) => guestCount(match) === 2)).toBe(true)
+  })
+
+  it('keeps the same 2+2 reservations through an event and its required rest', () => {
+    const roster = players()
+    const eventSettings: MatchSettings = { ...flexible,
+      eventMatch: { ...settings.eventMatch, enabled: true, scheduleMode: 'fixed', startTime: '09:12', court: 1,
+        participants: [roster[0], ...roster.slice(2, 5)].map((player) => ({ name: player.name, playerId: player.id })) as MatchSettings['eventMatch']['participants'],
+      },
+    }
+    const strict = planTwoGuestReservations(roster, { ...eventSettings, specialShortagePolicy: 'strict' })
+    const fallback = planTwoGuestReservations(roster, eventSettings)
+    expect(strict).toHaveLength(2)
+    expect(fallback).toEqual(strict)
+    expect(fallback.some((slot) => slot.start === 12 || slot.start === 24)).toBe(false)
+  })
+
+  it('does not turn a group-repeat rejection into permission for 1+3', () => {
+    const roster = players(2, 3)
+    const repeated: MatchSettings = { ...flexible, courtCount: 1, endTime: '10:24',
+      specialGameLimit: 7, specialParticipantTarget: 3 }
+    const schedule = generateMeetingScheduleV2(roster, repeated)
+    const matches = specialMatches(schedule)
+    expect(matches.length).toBeGreaterThan(0)
+    expect(matches.length).toBeLessThan(7)
+    expect(matches.every((match) => guestCount(match) === 2)).toBe(true)
+    expect(schedule.warnings.join(' ')).toContain('스페셜 경기 목표 미달')
+  })
+
+  it('preserves required rest leading into a fixed event as well as after it', () => {
+    const roster = players()
+    roster[0].arrivalOffsetMinutes = 0
+    const eventSettings: MatchSettings = { ...flexible,
+      eventMatch: { ...settings.eventMatch, enabled: true, scheduleMode: 'fixed', startTime: '09:24', court: 1,
+        participants: [roster[0], ...roster.slice(2, 5)].map((player) => ({ name: player.name, playerId: player.id })) as MatchSettings['eventMatch']['participants'],
+      },
+    }
+    const slots = planTwoGuestReservations(roster, eventSettings)
+    expect(slots.map((slot) => slot.start)).toEqual([0, 48])
+    expect(slots.every((slot) => slot.roamingGuestId)).toBe(true)
+    const schedule = generateMeetingScheduleV2(roster, eventSettings)
+    expect(analyzeMeetingScheduleV2(schedule, roster, eventSettings).structuralIssues).toEqual([])
+  })
+
+})

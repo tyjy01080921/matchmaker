@@ -3518,15 +3518,21 @@ const pickSpecialGroup = (
   conditions: MatchConditionOptions,
   allowExtraSpecial: boolean,
   pacing: RoundPacing,
+  reservation?: TwoGuestReservation,
 ): [Player, Player, Player, Player] | null => {
   if (isTwoGuestComposition(settings)) {
-    const exact = pickAdaptiveSpecialGroup(
-      activePlayers, usedIds, history, random, conditions, pacing,
-      allowExtraSpecial, { ...settings, specialShortagePolicy: 'strict' },
-    )
-    if (exact || settings.specialShortagePolicy !== 'flexible') return exact
+    if (!reservation) return null
+    const guestIds = new Set([reservation.guestId, reservation.roamingGuestId])
+    const reservedPlayers = activePlayers.filter((player) => !player.isGuest || guestIds.has(player.id))
+    if (reservation.roamingGuestId) {
+      return pickAdaptiveSpecialGroup(
+        reservedPlayers, usedIds, history, random, conditions, pacing,
+        allowExtraSpecial, { ...settings, specialShortagePolicy: 'strict' },
+      )
+    }
+    if (settings.specialShortagePolicy !== 'flexible') return null
     return pickSingleGuestSpecialGroup(
-      activePlayers, usedIds, history, random, conditions, allowExtraSpecial, settings,
+      reservedPlayers, usedIds, history, random, conditions, allowExtraSpecial, settings,
     )
   }
   if (settings.singleGuestPerMatch) {
@@ -5410,6 +5416,8 @@ const generateSchedulePass = (
       Math.ceil(bookingMinutes / normalGameMinutes) +
       (conditions.strictSkillLimit ? bookingMinutes : 0),
   )
+  const twoGuestReservations = isTwoGuestComposition(settings)
+    ? planTwoGuestReservations(activePlayers, settings) : []
   let stalledRounds = 0
 
   for (let roundNumber = 1; roundNumber <= maxAutoRounds; roundNumber += 1) {
@@ -5457,8 +5465,12 @@ const generateSchedulePass = (
           conditions,
           allowExtraSpecial,
           pacing,
+          twoGuestReservations.find((slot) => slot.start === startOffset && slot.court === court),
         )
-        if (!group) break
+        if (!group) {
+          if (isTwoGuestComposition(settings)) continue
+          break
+        }
 
         const match = createMatch(
           roundNumber,
@@ -5470,6 +5482,11 @@ const generateSchedulePass = (
           pacing,
           true,
         )
+        if (isTwoGuestComposition(settings) && group.filter((player) => player.isGuest).length === 2) {
+          const [teamA, teamB] = teamPairingOptions(group).find(([team]) => team.filter((player) => player.isGuest).length === 1)!
+          match.teamA = teamA
+          match.teamB = teamB
+        }
         match.startOffsetMinutes = startOffset
         match.durationMinutes = normalGameMinutes
         matches.push(match)
@@ -6016,7 +6033,7 @@ const continuationScheduleMetadata = (rounds: Round[]) => {
   return { specialCompletedIds, guestGameCounts }
 }
 
-export const replanMeetingSchedule = (
+const replanMeetingSchedulePass = (
   input: ReplanMeetingScheduleInput,
 ): MeetingReplanResolution => {
   const allMatches = meetingScheduleWithoutEventMatches(input.schedule).rounds
@@ -6365,6 +6382,24 @@ export const replanMeetingSchedule = (
         player.isGuest ? { ...player, guestGameLimit: 0 } : player,
       )
     : activePlayers
+  const planningSettings = continuationMode === 'late-special-unlimited' ? unlimitedSettings : input.settings
+  const twoGuestReservations = isTwoGuestComposition(input.settings)
+    ? planTwoGuestReservations(schedulerPlayers, planningSettings, {
+        slots,
+        playedMatches: lockedMatches,
+        guestGameCounts: continuationMode === 'late-special-unlimited'
+          ? Object.fromEntries(activeGuests.map((guest) => [guest.id, 0]))
+          : history.guestGameCounts,
+        eligibleFrom: playerAvailableAt,
+      }) : []
+  const reservationFor = (slot: MeetingContinuationSlot) => twoGuestReservations.find((entry) =>
+    entry.start === slot.start && entry.court === slot.court && entry.duration === slot.duration,
+  )
+  if (isTwoGuestComposition(input.settings)) {
+    slots.sort((a, b) => a.start - b.start ||
+      Number(Boolean(reservationFor(b)?.roamingGuestId)) - Number(Boolean(reservationFor(a)?.roamingGuestId)) ||
+      Number(Boolean(reservationFor(b))) - Number(Boolean(reservationFor(a))) || a.court - b.court)
+  }
   const slotsByStart = new Map<number, MeetingContinuationSlot[]>()
   for (const slot of slots) {
     slotsByStart.set(slot.start, [...(slotsByStart.get(slot.start) ?? []), slot])
@@ -6417,8 +6452,9 @@ export const replanMeetingSchedule = (
         }
       }
       let group: [Player, Player, Player, Player] | null = null
-      const specialFirst = continuationMode === 'late-special-unlimited' ||
-        slot.preferSpecial
+      const reservation = reservationFor(slot)
+      const specialFirst = isTwoGuestComposition(input.settings) ? Boolean(reservation)
+        : continuationMode === 'late-special-unlimited' || slot.preferSpecial
       if (specialFirst && activeGuests.length > 0) {
         group = pickSpecialGroup(
           schedulerPlayers,
@@ -6431,6 +6467,7 @@ export const replanMeetingSchedule = (
           conditions,
           true,
           pacing,
+          reservation,
         )
       }
       if (!group) {
@@ -6448,6 +6485,7 @@ export const replanMeetingSchedule = (
       if (
         !group &&
         !specialFirst &&
+        !isTwoGuestComposition(input.settings) &&
         activeGuests.length > 0
       ) {
         group = pickSpecialGroup(
@@ -6669,6 +6707,20 @@ export const replanMeetingSchedule = (
     warnings,
     failureIssues: [...new Set(failureIssues)],
   }
+}
+
+export const replanMeetingSchedule = (
+  input: ReplanMeetingScheduleInput,
+): MeetingReplanResolution => {
+  if (!isTwoGuestComposition(input.settings) || input.settings.specialShortagePolicy !== 'flexible') {
+    return replanMeetingSchedulePass(input)
+  }
+  const paired = replanMeetingSchedulePass({
+    ...input, settings: { ...input.settings, specialShortagePolicy: 'strict' },
+  })
+  const flexible = replanMeetingSchedulePass(input)
+  return countTwoGuestMatches(flexible.schedule) >= countTwoGuestMatches(paired.schedule)
+    ? flexible : paired
 }
 
 export const appendGeneralCourtGames = (
@@ -8148,50 +8200,137 @@ export const calculateStats = (
 }
 
 
-// Reserve both special players together so a 2+2 game consumes one appearance
-// from each player's budget, while leaving the other courts available.
-export const planTwoGuestReservations = (players: Player[], settings: MatchSettings) => {
+type TwoGuestReservation = import('./matchmaker/engine').PlannedMeetingSlot & {
+  kind: 'special'
+  guestId: string
+}
+
+type TwoGuestPlanningContext = {
+  slots?: Array<{ court: number; start: number; duration: number }>
+  playedMatches?: Match[]
+  guestGameCounts?: Record<string, number>
+  eligibleFrom?: Record<string, number>
+}
+
+export const countTwoGuestMatches = (schedule: Schedule) =>
+  schedule.rounds.flatMap((round) => round.matches).filter((match) =>
+    !match.isEventMatch && match.isSpecial &&
+    matchPlayers(match).filter((player) => player.isGuest).length === 2,
+  ).length
+
+// Plan the complete 2+2 schedule before spending any remaining budget on 1+3.
+// A later fallback cannot consume a reserved appearance, court, or required rest.
+export const planTwoGuestReservations = (
+  players: Player[],
+  settings: MatchSettings,
+  context: TwoGuestPlanningContext = {},
+): TwoGuestReservation[] => {
   const active = players.filter((player) => player.active)
   const guests = active.filter((player) => player.isGuest)
   const duration = settings.normalGameMinutes
   const end = settings.specialLimitEnabled && settings.specialScheduleMode !== 'spread' && settings.specialTimeLimitEnabled
     ? Math.min(meetingSchedulingMinutes(settings), settings.specialTimeLimitMinutes)
     : meetingSchedulingMinutes(settings)
-  const counts = new Map<string, number>()
-  const slots: (import('./matchmaker/engine').PlannedMeetingSlot & { kind: 'special'; guestId: string })[] = []
   const event = getConfiguredEventMatchWindow(settings)
-  for (let start = 0; start + duration <= end; start += duration) {
-    const used = new Set<string>()
-    const eventIds = new Set(eventMatchUnavailablePlayerIds(settings, start))
-    const regulars = active.filter((player) => !player.isGuest &&
-      (player.specialMatchEligible ?? true) && !eventIds.has(player.id) &&
-      isPlayerAvailableForMeetingSlot(player, settings, start, duration))
-    let regularSeats = regulars.length
-    for (let court = 1; court <= settings.courtCount; court += 1) {
-      if (event && court === settings.eventMatch.court && start < event.end && event.start < start + duration) continue
-      const available = guests.filter((guest) => !used.has(guest.id) && !eventIds.has(guest.id) &&
-        isPlayerAvailableForMeetingSlot(guest, settings, start, duration) &&
-        (counts.get(guest.id) ?? 0) < plannedOrdinaryGuestGames(guest, active, settings) &&
-        (settings.specialScheduleMode !== 'spread' || (() => {
-          const window = resolveMeetingAttendanceWindow(guest, settings)
-          const target = Math.max(1, plannedOrdinaryGuestGames(guest, active, settings))
-          const spacing = Math.max(duration, (Math.min(end, window.end) - window.start) / target)
-          return start >= window.start + Math.floor((counts.get(guest.id) ?? 0) * spacing / duration) * duration
-        })()))
-        .sort((a, b) => (counts.get(a.id) ?? 0) - (counts.get(b.id) ?? 0) || a.id.localeCompare(b.id))
-      const selected = available.length >= 2 && regularSeats >= 2 ? available.slice(0, 2)
-        : settings.specialShortagePolicy === 'flexible' && regularSeats >= 3 ? available.slice(0, 1) : []
-      if (!selected.length) continue
-      regularSeats -= 4 - selected.length
-      slots.push({ id: `paired-c${court}-s${start}`, court, start, duration,
-        kind: 'special', guestId: selected[0].id, roamingGuestId: selected[1]?.id })
-      for (const guest of selected) {
-        used.add(guest.id)
-        counts.set(guest.id, (counts.get(guest.id) ?? 0) + 1)
-      }
+  const eventIds = eventMatchParticipantIds(settings)
+  const played = context.playedMatches ?? []
+  const counts = new Map(guests.map((guest) => [guest.id,
+    context.guestGameCounts?.[guest.id] ?? played.filter((match) =>
+      !match.isEventMatch && match.isSpecial && matchPlayers(match).some((player) => player.id === guest.id),
+    ).length,
+  ]))
+  const targets = new Map(guests.map((guest) => [guest.id,
+    plannedOrdinaryGuestGames(guest, active, settings),
+  ]))
+  const slots: TwoGuestReservation[] = []
+  const times = (context.slots ?? Array.from(
+    { length: Math.floor(end / duration) }, (_, index) =>
+      Array.from({ length: settings.courtCount }, (_, court) => ({
+        start: index * duration, court: court + 1, duration,
+      })),
+  ).flat()).filter((slot) => slot.start + slot.duration <= end)
+    .sort((a, b) => a.start - b.start || a.court - b.court)
+  const overlaps = (a: { start: number; duration: number }, b: { start: number; duration: number }) =>
+    a.start < b.start + b.duration && b.start < a.start + a.duration
+  const playedWindows = (player: Player) => played
+    .filter((match) => matchPlayers(match).some((member) => member.id === player.id))
+    .map((match) => ({ start: matchTimeWindow(match).start, duration: matchTimeWindow(match).end - matchTimeWindow(match).start }))
+  const canAttend = (player: Player, slot: (typeof times)[number]) =>
+    slot.start >= (context.eligibleFrom?.[player.id] ?? 0) &&
+    isPlayerAvailableForMeetingSlot(player, settings, slot.start, slot.duration) &&
+    !playedWindows(player).some((window) => overlaps(window, slot)) &&
+    !(event && eventIds.has(player.id) && overlaps(slot, {
+      start: event.start, duration: event.end - event.start + duration,
+    }))
+  const courtFree = (slot: (typeof times)[number]) =>
+    !slots.some((assigned) => assigned.court === slot.court && overlaps(assigned, slot)) &&
+    !played.some((match) => match.court === slot.court && overlaps(slot, {
+      start: matchTimeWindow(match).start, duration: matchTimeWindow(match).end - matchTimeWindow(match).start,
+    })) && !(event && slot.court === settings.eventMatch.court && overlaps(slot, {
+      start: event.start, duration: event.end - event.start,
+    }))
+  const canReserve = (guest: Player, slot: (typeof times)[number]) => {
+    if ((counts.get(guest.id) ?? 0) >= (targets.get(guest.id) ?? 0) || !canAttend(guest, slot)) return false
+    const reserved = slots.filter((entry) => entry.guestId === guest.id || entry.roamingGuestId === guest.id)
+    if (reserved.some((entry) => overlaps(entry, slot))) return false
+    if (!usesMeetingAttendanceGameLimit(guest)) return true
+    // Check the entire timeline, including future pairs, when inserting an earlier 1+3.
+    const priorWindows = playedWindows(guest)
+    const eventWindows = event && eventIds.has(guest.id) &&
+      !priorWindows.some((window) => window.start === event.start)
+      ? [{ start: event.start, duration: event.end - event.start }] : []
+    const windows = [...priorWindows, ...eventWindows, ...reserved, slot]
+      .sort((a, b) => a.start - b.start)
+    let streak = 0
+    let previousEnd = -1
+    for (const window of windows) {
+      streak = previousEnd === window.start ? streak + 1 : 1
+      if (streak > maximumConsecutiveMeetingGames(guest)) return false
+      previousEnd = window.start + window.duration
+    }
+    return true
+  }
+  const remainingRegularSeats = (slot: (typeof times)[number]) =>
+    active.filter((player) => !player.isGuest && (player.specialMatchEligible ?? true) && canAttend(player, slot)).length -
+    slots.filter((entry) => overlaps(entry, slot)).reduce((sum, entry) => sum + (entry.roamingGuestId ? 2 : 3), 0)
+  const opportunities = new Map(guests.map((guest) => [guest.id,
+    new Set(times.filter((slot) => canAttend(guest, slot)).map((slot) => slot.start)).size,
+  ]))
+  const availableGuests = (slot: (typeof times)[number], spread: boolean) => guests
+    .filter((guest) => {
+      if (!canReserve(guest, slot)) return false
+      if (!spread) return true
+      const window = resolveMeetingAttendanceWindow(guest, settings)
+      const spacing = Math.max(duration, (Math.min(end, window.end) - window.start) / Math.max(1, targets.get(guest.id) ?? 0))
+      return slot.start >= window.start + Math.floor((counts.get(guest.id) ?? 0) * spacing / duration) * duration
+    })
+    .sort((a, b) =>
+      (opportunities.get(a.id) ?? 0) - (opportunities.get(b.id) ?? 0) ||
+      (counts.get(a.id) ?? 0) - (counts.get(b.id) ?? 0) || a.id.localeCompare(b.id),
+    )
+  const reserve = (slot: (typeof times)[number], selected: Player[]) => {
+    slots.push({ ...slot, id: `paired-c${slot.court}-s${slot.start}`,
+      kind: 'special', guestId: selected[0].id, roamingGuestId: selected[1]?.id })
+    selected.forEach((guest) => counts.set(guest.id, (counts.get(guest.id) ?? 0) + 1))
+  }
+  const reservePairs = (spread: boolean) => {
+    for (const slot of times) {
+      if (!courtFree(slot) || remainingRegularSeats(slot) < 2) continue
+      const available = availableGuests(slot, spread)
+      if (available.length >= 2) reserve(slot, available.slice(0, 2))
     }
   }
-  return slots
+  reservePairs(settings.specialScheduleMode === 'spread')
+  // Spacing is a preference, not a reason to replace a feasible pair with 1+3.
+  if (settings.specialScheduleMode === 'spread') reservePairs(false)
+  if (settings.specialShortagePolicy === 'flexible') {
+    for (const slot of times) {
+      if (!courtFree(slot) || remainingRegularSeats(slot) < 3) continue
+      const available = availableGuests(slot, false)
+      if (available.length) reserve(slot, available.slice(0, 1))
+    }
+  }
+  return slots.sort((a, b) => a.start - b.start || Number(Boolean(b.roamingGuestId)) - Number(Boolean(a.roamingGuestId)) || a.court - b.court)
 }
 
 export const twoGuestShortageReasons = (players: Player[], settings: MatchSettings): string[] => {
