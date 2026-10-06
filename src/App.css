@@ -2758,6 +2758,35 @@ textarea {
   gap: 6px;
 }
 
+.early-departure-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
+
+.early-departure-actions > span {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.early-departure-actions button {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.early-departure-actions button.danger {
+  border-color: #d8a5a5;
+  color: #a12f2f;
+  background: #fff4f4;
+}
+
 .player-attendance-fields > label:not(.attendance-priority-option) {
   min-width: 0;
   color: var(--muted);
@@ -7867,6 +7896,29 @@ textarea {
   background: #edf1f0;
 }
 
+.available-court-picker {
+  display: flex;
+  min-height: 24px;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.available-court-picker button {
+  min-height: 24px;
+  padding: 2px 7px;
+  border-color: var(--green);
+  color: #fff;
+  background: var(--green);
+  font-size: 9px;
+  font-weight: 950;
+}
+
+.available-court-picker button.secondary {
+  border-color: #b8c6c3;
+  color: var(--muted);
+  background: #edf2f1;
+}
+
 .available-waiting-empty {
   display: grid;
   min-width: min(320px, calc(100vw - 30px));
@@ -7897,7 +7949,7 @@ textarea {
   flex: 1 1 auto;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-rows: none;
-  grid-auto-rows: minmax(184px, auto);
+  grid-auto-rows: max-content;
   align-content: start;
   gap: 6px;
   padding: 6px 8px 8px;
@@ -7907,14 +7959,25 @@ textarea {
 }
 
 .available-progress-mode .progress-court-lane {
-  height: 100%;
+  height: auto;
   min-height: 184px;
 }
 
 .available-progress-mode .progress-court-matches {
   min-height: 0;
-  grid-template-rows: minmax(0, 1fr);
-  overflow: hidden;
+  grid-template-rows: max-content;
+  overflow: visible;
+}
+
+.available-progress-mode .progress-match-card {
+  height: auto;
+  grid-template-rows: auto auto auto;
+  overflow: visible;
+}
+
+.available-progress-mode .progress-result-actions {
+  min-height: 29px;
+  overflow: visible;
 }
 
 .available-progress-mode .progress-court-empty {
@@ -8114,4 +8177,42 @@ textarea {
 
 .special-shortage-dialog .dialog-actions button {
   min-height: 42px;
+}
+
+.replan-style-dialog {
+  width: min(560px, calc(100vw - 24px));
+}
+
+.replan-style-dialog .dialog-heading span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.replan-style-options {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.replan-style-options > button {
+  display: grid;
+  min-height: 56px;
+  justify-items: start;
+  gap: 4px;
+  padding: 9px 12px;
+  text-align: left;
+}
+
+.replan-style-options > button strong {
+  color: var(--navy);
+  font-size: 13px;
+}
+
+.replan-style-options > button span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
 }

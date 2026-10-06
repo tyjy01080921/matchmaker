@@ -83,7 +83,7 @@ import {
 import { SharedScheduleFinder } from './SharedScheduleFinder'
 import type { SharedScheduleCandidate } from './sharedSchedule'
 import {
-  assignAvailableMeetingMatchToFirstEmptyCourt,
+  assignAvailableMeetingMatch,
   buildAvailableMeetingCourtLanes,
   buildMeetingCourtLanes,
   buildTournamentCourtLanes,
@@ -93,7 +93,6 @@ import {
   getMeetingSequenceNumber,
   getProgressWinnerSide,
   getUndoableTournamentMatchId,
-  initializeAvailableMeetingAssignments,
   toggleMeetingWinner,
   toggleProgressWinner,
   updateProgressScore,
@@ -346,6 +345,17 @@ const meetingAnalysisStyleOptions: Array<{
     description: '통과 대진 중 최대·평균 대기가 짧은 조합을 고릅니다.',
   },
 ]
+
+const meetingShuffleDirectionLabels: Record<
+  MatchSettings['shuffleDirection'],
+  string
+> = {
+  balanced: '기존 균형 방식',
+  skill: '유사 레벨 대진',
+  mixed: '레벨 믹스 · 팀 균형',
+  wait: '대기 시간 최소',
+  variety: '파트너 · 상대 반복 최소',
+}
 
 const matchConditionKeys: MatchConditionKey[] = [
   'fairGames',
@@ -1949,6 +1959,7 @@ function App() {
     replan?: boolean
   } | null>(null)
   const [meetingAnalysisOpen, setMeetingAnalysisOpen] = useState(false)
+  const [meetingReplanStyleOpen, setMeetingReplanStyleOpen] = useState(false)
   const [meetingAnalysisStyle, setMeetingAnalysisStyle] =
     useState<MeetingAnalysisStyle>('skill')
   const [participantReplanHelpOpen, setParticipantReplanHelpOpen] = useState<
@@ -2139,16 +2150,41 @@ function App() {
       schedule,
     ],
   )
-  const meetingReplanLockedMatchIds = useMemo(
-    () => getMeetingReplanLockedMatchIds(
+  const meetingReplanLockedMatchIds = useMemo(() => {
+    const lockedIds = getMeetingReplanLockedMatchIds(
       schedule,
       results,
       meetingCourtAssignments,
       generatedMeetingSettings.courtAssignmentMode,
-    ),
+    )
+    const immediatelyDepartedIds = new Set(
+      players
+        .filter((player) => {
+          const generated = generatedMeetingPlayers.find(
+            (candidate) => candidate.id === player.id,
+          )
+          return Boolean(generated?.active && !player.active)
+        })
+        .map((player) => player.id),
+    )
+    if (immediatelyDepartedIds.size === 0) return lockedIds
+    const matchesById = new Map(
+      schedule.rounds
+        .flatMap((round) => round.matches)
+        .map((match) => [match.id, match]),
+    )
+    return lockedIds.filter((matchId) => {
+      if (results[matchId]?.completed) return true
+      const match = matchesById.get(matchId)
+      return !match || [...match.teamA, ...match.teamB]
+        .every((player) => !immediatelyDepartedIds.has(player.id))
+    })
+  },
     [
+      generatedMeetingPlayers,
       generatedMeetingSettings.courtAssignmentMode,
       meetingCourtAssignments,
+      players,
       results,
       schedule,
     ],
@@ -2746,8 +2782,7 @@ function App() {
   const canReplanMeeting =
     hasPlayerDraftChanges &&
     !hasMeetingSettingsDraftChanges &&
-    completedMatches > 0 &&
-    completedMatches < totalMatches &&
+    meetingReplanLockedMatchIds.length < totalMatches &&
     !isMeetingGenerating &&
     !isMeetingReplanning
   const courtSchedules: Round[] = Array.from(
@@ -3444,6 +3479,50 @@ function App() {
     setNotice('모임 전체 시간 참석으로 변경됨')
   }
 
+  const markPlayerEarlyDeparture = (
+    player: Player,
+    mode: 'after-current' | 'now',
+  ) => {
+    const lockedIds = new Set(getMeetingReplanLockedMatchIds(
+      schedule,
+      results,
+      meetingCourtAssignments,
+      generatedMeetingSettings.courtAssignmentMode,
+    ))
+    const currentMatch = schedule.rounds
+      .flatMap((round) => round.matches)
+      .find((match) =>
+        lockedIds.has(match.id) &&
+        !results[match.id]?.completed &&
+        [...match.teamA, ...match.teamB].some(
+          (candidate) => candidate.id === player.id,
+        ),
+      )
+
+    if (mode === 'after-current' && currentMatch) {
+      const bookingMinutes = getBookingDurationMinutes(
+        generatedMeetingSettings.startTime,
+        generatedMeetingSettings.endTime,
+      )
+      const departureOffsetMinutes = Math.min(
+        bookingMinutes,
+        matchEndOffset(currentMatch),
+      )
+      updatePlayer(player.id, {
+        active: true,
+        departureOffsetMinutes:
+          departureOffsetMinutes >= bookingMinutes
+            ? undefined
+            : departureOffsetMinutes,
+      })
+      setNotice(`${playerDisplayName(player, displayNames)} · 현재 경기 후 퇴장`)
+    } else {
+      updatePlayer(player.id, { active: false })
+      setNotice(`${playerDisplayName(player, displayNames)} · 즉시 퇴장`)
+    }
+    resetMeetingTargetRoundsForRosterChange()
+  }
+
   const updatePreferredPartnerDraft = (player: Player, value: string) => {
     setPreferredPartnerDrafts((current) => ({ ...current, [player.id]: value }))
     const resolution = resolvePreferredPartnerNames(value, player, players)
@@ -3641,16 +3720,6 @@ function App() {
       if (totalMatches === 0) {
         setNotice('먼저 친목 대진을 생성해 주세요.')
         return
-      }
-      if (generatedMeetingSettings.courtAssignmentMode === 'available') {
-        setMeetingCourtAssignments((current) =>
-          initializeAvailableMeetingAssignments(
-            schedule,
-            generatedMeetingSettings.courtCount,
-            current,
-            results,
-          ),
-        )
       }
       try {
         window.localStorage.setItem(
@@ -4918,12 +4987,13 @@ function App() {
     generateBookingSchedule(meetingAnalysisStyle)
   }
 
-  const startMeetingReplan = (shortagePolicy?: 'strict' | 'flexible') => {
+  const startMeetingReplan = (
+    shortagePolicy?: 'strict' | 'flexible',
+    shuffleDirection = generatedMeetingSettings.shuffleDirection,
+  ) => {
     if (!canReplanMeeting) {
       if (hasMeetingSettingsDraftChanges) {
         setNotice('설정 변경은 전체 대진을 다시 생성해 주세요.')
-      } else if (completedMatches === 0) {
-        setNotice('완료 경기 1개부터 남은 대진을 다시 생성할 수 있습니다.')
       } else if (!hasPlayerDraftChanges) {
         setNotice('변경된 참가자 명단이 없습니다.')
       } else {
@@ -4934,10 +5004,11 @@ function App() {
 
     const shortageReasons = twoGuestShortageReasons(players, generatedMeetingSettings)
     if (!shortagePolicy && shortageReasons.length) {
-      setSpecialShortage({ reasons: shortageReasons, direction: settings.shuffleDirection, replan: true })
+      setSpecialShortage({ reasons: shortageReasons, direction: shuffleDirection, replan: true })
       return
     }
     const replanSettings = { ...generatedMeetingSettings,
+      shuffleDirection,
       specialShortagePolicy: shortagePolicy ?? generatedMeetingSettings.specialShortagePolicy,
       specialShortageAccepted: Boolean(shortagePolicy) || generatedMeetingSettings.specialShortageAccepted }
     const lockedCount = meetingReplanLockedMatchIds.length
@@ -4957,6 +5028,7 @@ function App() {
     const confirmed = window.confirm(
       [
         `완료 ${completedMatches}경기와 현재 ${currentCount}경기를 유지합니다.`,
+        `재생성 방식: ${meetingShuffleDirectionLabels[shuffleDirection]}`,
         `예정 ${replacementCount}경기를 변경된 명단으로 다시 생성할까요?`,
         lateGuestCount > 0
           ? `스페셜 ${lateGuestCount}명 추가 · 남은 모든 경기에 일반 경기 시간을 적용합니다.`
@@ -5376,21 +5448,21 @@ function App() {
     setNotice('친목 완료 취소')
   }
 
-  const assignWaitingMeetingMatch = (matchId: string) => {
-    const assigned = assignAvailableMeetingMatchToFirstEmptyCourt(
+  const assignWaitingMeetingMatch = (matchId: string, court: number) => {
+    const assignments = assignAvailableMeetingMatch(
       schedule,
-      generatedMeetingSettings.courtCount,
       meetingCourtAssignments,
       results,
+      court,
       matchId,
     )
-    if (!assigned.court) {
+    if (assignments === meetingCourtAssignments) {
       setNotice('배정할 수 없습니다. 빈 코트와 참가자 상태를 확인하세요.')
       return
     }
-    setMeetingCourtAssignments(assigned.assignments)
+    setMeetingCourtAssignments(assignments)
     setNotice(
-      `${assigned.court}코트 · 전체 ${getMeetingSequenceNumber(schedule, matchId)}번 배정`,
+      `${court}코트 · 전체 ${getMeetingSequenceNumber(schedule, matchId)}번 배정`,
     )
   }
 
@@ -6954,6 +7026,61 @@ function App() {
         </div>
       ) : null}
 
+      {meetingReplanStyleOpen ? (
+        <div
+          className="dialog-backdrop"
+          onClick={() => setMeetingReplanStyleOpen(false)}
+        >
+          <section
+            className="info-dialog replan-style-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="replan-style-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="dialog-heading">
+              <div>
+                <strong id="replan-style-title">남은 대진 재생성 방식</strong>
+                <span>완료·진행 중 경기는 유지하고 남은 경기에만 적용합니다.</span>
+              </div>
+              <button type="button" onClick={() => setMeetingReplanStyleOpen(false)}>
+                닫기
+              </button>
+            </div>
+            <div className="replan-style-options">
+              <button type="button" onClick={() => {
+                setMeetingReplanStyleOpen(false)
+                startMeetingReplan(undefined, generatedMeetingSettings.shuffleDirection)
+              }}>
+                <strong>기존 방식 유지</strong>
+                <span>{meetingShuffleDirectionLabels[generatedMeetingSettings.shuffleDirection]}</span>
+              </button>
+              <button type="button" onClick={() => {
+                setMeetingReplanStyleOpen(false)
+                startMeetingReplan(undefined, 'mixed')
+              }}>
+                <strong>레벨 믹스 · 팀 균형</strong>
+                <span>레벨을 섞고 양 팀의 합산 실력을 맞춥니다.</span>
+              </button>
+              <button type="button" onClick={() => {
+                setMeetingReplanStyleOpen(false)
+                startMeetingReplan(undefined, 'wait')
+              }}>
+                <strong>대기 시간 최소</strong>
+                <span>최대·평균 대기가 짧은 남은 대진을 우선합니다.</span>
+              </button>
+              <button type="button" onClick={() => {
+                setMeetingReplanStyleOpen(false)
+                startMeetingReplan(undefined, 'variety')
+              }}>
+                <strong>파트너 · 상대 반복 최소</strong>
+                <span>같은 파트너와 상대를 반복하는 횟수를 우선 줄입니다.</span>
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       {specialShortage ? (
         <div className="dialog-backdrop">
           <section className="info-dialog special-shortage-dialog" role="dialog" aria-modal="true" aria-labelledby="special-shortage-title">
@@ -6964,13 +7091,13 @@ function App() {
               <button type="button" onClick={() => {
                 const choice = specialShortage
                 setSpecialShortage(null)
-                if (choice.replan) startMeetingReplan('flexible')
+                if (choice.replan) startMeetingReplan('flexible', choice.direction)
                 else generateBookingSchedule(choice.direction, 'flexible')
               }}>가능한 구성으로 진행</button>
               <button type="button" onClick={() => {
                 const choice = specialShortage
                 setSpecialShortage(null)
-                if (choice.replan) startMeetingReplan('strict')
+                if (choice.replan) startMeetingReplan('strict', choice.direction)
                 else generateBookingSchedule(choice.direction, 'strict')
               }}>2+2 유지하고 진행</button>
               <button type="button" onClick={() => {
@@ -8384,15 +8511,13 @@ function App() {
                   title={
                     hasMeetingSettingsDraftChanges
                       ? '설정 변경은 전체 대진을 다시 생성해 주세요.'
-                      : completedMatches === 0
-                        ? '완료 경기 1개부터 사용할 수 있습니다.'
-                        : !hasPlayerDraftChanges
+                      : !hasPlayerDraftChanges
                           ? '참가자 명단을 변경하면 활성화됩니다.'
-                          : completedMatches >= totalMatches
+                          : meetingReplanLockedMatchIds.length >= totalMatches
                             ? '다시 생성할 예정 경기가 없습니다.'
                             : '완료와 현재 경기를 유지하고 남은 대진만 다시 생성합니다.'
                   }
-                  onClick={() => startMeetingReplan()}
+                  onClick={() => setMeetingReplanStyleOpen(true)}
                 >
                   {isMeetingReplanning ? '재생성 중' : '남은 대진 재생성'}
                 </button>
@@ -8659,6 +8784,26 @@ function App() {
                               {attendanceEditorOpen ? '닫기' : '변경'}
                             </button>
                           </div>
+                          {totalMatches > 0 && player.active && generatedMeetingPlayers.some(
+                            (candidate) => candidate.id === player.id && candidate.active,
+                          ) ? (
+                            <div className="early-departure-actions">
+                              <span>조기 퇴장</span>
+                              <button
+                                type="button"
+                                onClick={() => markPlayerEarlyDeparture(player, 'after-current')}
+                              >
+                                현재 경기 후
+                              </button>
+                              <button
+                                type="button"
+                                className="danger"
+                                onClick={() => markPlayerEarlyDeparture(player, 'now')}
+                              >
+                                즉시 퇴장
+                              </button>
+                            </div>
+                          ) : null}
                           {attendanceEditorOpen ? (
                             <div className="player-attendance-fields">
                               <label>

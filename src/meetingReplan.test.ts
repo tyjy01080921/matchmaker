@@ -116,6 +116,38 @@ const lockedSignature = (match: Match) => JSON.stringify({
 })
 
 describe('meeting continuation replanning', () => {
+  it('replans every unassigned match before any match is completed', () => {
+    const previousPlayers = Array.from({ length: 8 }, (_, index) =>
+      player(`p${index + 1}`),
+    )
+    const schedule = makeSchedule(previousPlayers)
+    const players = [
+      ...previousPlayers.map((candidate) =>
+        candidate.id === 'p8' ? { ...candidate, active: false } : candidate,
+      ),
+      player('late'),
+    ]
+
+    const result = replanMeetingSchedule({
+      schedule,
+      players,
+      previousPlayers,
+      settings,
+      results: {},
+      assignments: {},
+      lockedMatchIds: [],
+      continuation: makeDefaultMeetingContinuationState(),
+    })
+
+    expect(result.failureIssues).toEqual([])
+    expect(result.lockedMatchIds).toEqual([])
+    const createdPlayers = result.schedule.rounds
+      .flatMap((round) => round.matches)
+      .flatMap((match) => [...match.teamA, ...match.teamB])
+    expect(createdPlayers.some((candidate) => candidate.id === 'p8')).toBe(false)
+    expect(createdPlayers.some((candidate) => candidate.id === 'late')).toBe(true)
+  })
+
   it('preserves completed and current fixed-court matches while replacing only future players', () => {
     const previousPlayers = Array.from({ length: 8 }, (_, index) =>
       player(`p${index + 1}`),

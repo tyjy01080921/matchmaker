@@ -6122,9 +6122,6 @@ const replanMeetingSchedulePass = (
   })
 
   const baseFailureIssues: string[] = []
-  if (completedMatches.length === 0) {
-    baseFailureIssues.push('완료 경기가 없어 남은 대진을 구분할 수 없습니다.')
-  }
   if (replacedMatches.length === 0) {
     baseFailureIssues.push('다시 생성할 예정 경기가 없습니다.')
   }

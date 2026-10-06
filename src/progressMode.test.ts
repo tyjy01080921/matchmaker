@@ -255,6 +255,19 @@ describe('progress mode helpers', () => {
     })
   })
 
+  it('places a waiting match on the empty court selected by the operator', () => {
+    const match = meetingMatchWithPlayers('manual', 1, 0, ['a', 'b', 'c', 'd'])
+    const schedule: Schedule = {
+      rounds: [{ id: 'round-1', number: 1, matches: [match], resting: [] }],
+      warnings: [],
+      specialCompletedIds: [],
+      guestGameCounts: {},
+    }
+
+    expect(assignAvailableMeetingMatch(schedule, {}, {}, 2, match.id))
+      .toEqual({ manual: { court: 2, dispatchOrder: 1 } })
+  })
+
   it('skips a blocked sequence match and assigns the first playable match', () => {
     const first = meetingMatchWithPlayers('first', 1, 0, ['a', 'b', 'c', 'd'])
     const second = meetingMatchWithPlayers('second', 2, 0, ['e', 'f', 'g', 'h'])

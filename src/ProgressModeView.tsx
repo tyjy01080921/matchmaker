@@ -658,7 +658,7 @@ type AvailableMeetingProgressModeProps = Omit<ProgressHeaderProps, 'modeLabel'> 
   onWinner: (matchId: string, winnerSide: MatchWinnerSide) => void
   onComplete: (matchId: string) => void
   onUndo: (matchId: string) => void
-  onAssignMatch: (matchId: string) => void
+  onAssignMatch: (matchId: string, court: number) => void
   onCancelAssignment: (matchId: string) => void
 }
 
@@ -678,10 +678,10 @@ export const AvailableMeetingProgressMode = ({
   ...headerProps
 }: AvailableMeetingProgressModeProps) => {
   const [completedOpen, setCompletedOpen] = useState(false)
+  const [courtPickerMatchId, setCourtPickerMatchId] = useState<string | null>(null)
   const emptyCourts = lanes
     .filter((lane) => !lane.active)
     .map((lane) => lane.court)
-  const nextEmptyCourt = emptyCourts[0]
   const courtPage = useCourtPage(lanes, false, true)
   const sequence = getMeetingMatchSequence(schedule)
   const pendingMatches = sequence.filter(
@@ -696,14 +696,13 @@ export const AvailableMeetingProgressMode = ({
   const allDone = headerProps.totalCount > 0 &&
     headerProps.completedCount >= headerProps.totalCount
 
-  const assignMatch = (match: Match) => {
-    const targetCourt = match.isEventMatch ? match.court : nextEmptyCourt
-    if (!targetCourt) return
+  const assignMatch = (match: Match, targetCourt: number) => {
     const sequenceNumber = getMeetingSequenceNumber(schedule, match.id)
     if (!window.confirm(
       `전체 ${sequenceNumber}번 경기를 ${targetCourt}코트로 배정할까요?`,
     )) return
-    onAssignMatch(match.id)
+    onAssignMatch(match.id, targetCourt)
+    setCourtPickerMatchId(null)
   }
 
   return (
@@ -727,8 +726,8 @@ export const AvailableMeetingProgressMode = ({
               <span>{pendingMatches.length}경기</span>
             </div>
             <small>
-              {nextEmptyCourt
-                ? `빈 코트 ${emptyCourts.length}개 · ${nextEmptyCourt}코트부터 배정`
+              {emptyCourts.length > 0
+                ? `빈 코트 ${emptyCourts.length}개 · 코트를 선택해 배정`
                 : '경기 완료 후 배치 버튼이 활성화됩니다.'}
             </small>
           </header>
@@ -744,9 +743,12 @@ export const AvailableMeetingProgressMode = ({
                 results,
                 match.id,
               )
+              const selectableCourts = match.isEventMatch
+                ? emptyCourts.filter((court) => court === match.court)
+                : emptyCourts
               const targetCourtAvailable = match.isEventMatch
                 ? emptyCourts.includes(match.court)
-                : Boolean(nextEmptyCourt)
+                : emptyCourts.length > 0
               const sequenceNumber = getMeetingSequenceNumber(schedule, match.id)
               return (
                 <article
@@ -766,14 +768,35 @@ export const AvailableMeetingProgressMode = ({
                     teamBName={teamName(match, 'B')}
                     compact
                   />
-                  <button
-                    type="button"
-                    className="available-assign-button"
-                    disabled={!assignable || !targetCourtAvailable}
-                    onClick={() => assignMatch(match)}
-                  >
-                    배치
-                  </button>
+                  {courtPickerMatchId === match.id ? (
+                    <div className="available-court-picker" role="group" aria-label="배치할 빈 코트">
+                      {selectableCourts.map((court) => (
+                        <button
+                          type="button"
+                          key={court}
+                          onClick={() => assignMatch(match, court)}
+                        >
+                          {court}코트
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => setCourtPickerMatchId(null)}
+                      >
+                        취소
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="available-assign-button"
+                      disabled={!assignable || !targetCourtAvailable}
+                      onClick={() => setCourtPickerMatchId(match.id)}
+                    >
+                      배치
+                    </button>
+                  )}
                 </article>
               )
             }) : (
