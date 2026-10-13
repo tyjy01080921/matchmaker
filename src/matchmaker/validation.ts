@@ -1,3 +1,4 @@
+import { unequalFixedRotationIds, fixedPartnerIssues, fixedPartnersAllowTeams, hasFixedPartners, maximumSpecialGroupMeetings } from '../matchmaker'
 import { acceptsUnassignedSpecial, allowsSpecialComposition, isTwoGuestComposition } from './rules'
 import { getBookingDurationMinutes } from '../scheduleTime'
 import { isPreferredPartnerPair } from '../preferredPartners'
@@ -36,6 +37,7 @@ export type MeetingV2Metrics = {
   gameCounts: Record<string, number>
   tightGameCounts: Record<string, number>
   standardGameSpread: number
+  comparableGameSpread: number
   zeroGameStandardParticipants: number
   warmupMatches: number
   tightMatches: number
@@ -379,6 +381,7 @@ export const analyzeMeetingScheduleV2 = (
   options: {
     allowedAttendanceMatchIds?: Iterable<string>
     allowedConsecutiveMatchIds?: Iterable<string>
+    allowedFixedPartnerMatchIds?: Iterable<string>
   } = {},
 ): MeetingV2Metrics => {
   const matches = schedule.rounds.flatMap((round) => round.matches)
@@ -390,7 +393,9 @@ export const analyzeMeetingScheduleV2 = (
   const allowedConsecutiveMatchIds = new Set(
     options.allowedConsecutiveMatchIds ?? [],
   )
-  const structuralIssues = new Set<string>()
+  const structuralIssues = new Set<string>(fixedPartnerIssues(players))
+  const fixedEnabled = hasFixedPartners(players)
+  const allowedFixedPartnerMatchIds = new Set(options.allowedFixedPartnerMatchIds ?? [])
   const allowGuestOverflow = allowsFixedCourtGuestOverflow(
     activePlayers,
     settings,
@@ -402,6 +407,11 @@ export const analyzeMeetingScheduleV2 = (
 
   for (const match of matches) {
     const assignedPlayers = matchPlayers(match)
+    if (fixedEnabled && !match.isSpecial && !match.isEventMatch &&
+      !allowedFixedPartnerMatchIds.has(match.id) &&
+      !fixedPartnersAllowTeams(match.teamA, match.teamB, players)) {
+      structuralIssues.add('상호 고정 파트너 배정 위반')
+    }
     const window = matchWindow(match)
     if (
       assignedPlayers.length !== 4 ||
@@ -644,8 +654,15 @@ export const analyzeMeetingScheduleV2 = (
   if (zeroGameStandardParticipants > 0) {
     successIssues.push(`0경기 일반 참가자 ${zeroGameStandardParticipants}명`)
   }
-  if (standardGameSpread > MEETING_MAX_STANDARD_GAME_SPREAD) {
-    successIssues.push(`일반 참가자 경기 수 차 ${standardGameSpread}경기`)
+  const rotatingIds = unequalFixedRotationIds(players)
+  const comparableCounts = standardPlayers.filter((player) => !rotatingIds.has(player.id))
+    .map((player) => gameCounts[player.id] ?? 0)
+  const comparableSpread = comparableCounts.length > 0
+    ? Math.max(...comparableCounts) - Math.min(...comparableCounts) : 0
+  if (comparableSpread > MEETING_MAX_STANDARD_GAME_SPREAD) {
+    successIssues.push(`일반 참가자 경기 수 차 ${comparableSpread}경기`)
+  } else if (standardGameSpread > MEETING_MAX_STANDARD_GAME_SPREAD) {
+    qualityIssues.push(`고정 파트너 교대 경기 수 차 ${standardGameSpread}경기`)
   }
   const maximumWaitMinutes = Math.max(0, ...waits.map((wait) => wait.maximum))
   const maximumFinalIdleMinutes = Math.max(0, ...waits.map((wait) => wait.final))
@@ -657,8 +674,9 @@ export const analyzeMeetingScheduleV2 = (
   if (maximumFinalIdleMinutes >= MEETING_FINAL_IDLE_LIMIT_MINUTES) {
     successIssues.push(`마지막 경기 후 ${maximumFinalIdleMinutes}분`)
   }
-  if (groupMetrics.maximum > MEETING_MAX_GROUP_MEETINGS) {
-    successIssues.push(`동일 4인 최대 ${groupMetrics.maximum}경기`)
+  const maximumSpecialRepeats = maximumSpecialGroupMeetings(schedule)
+  if (maximumSpecialRepeats > MEETING_MAX_GROUP_MEETINGS) {
+    successIssues.push(`스페셜 동일 4인 최대 ${maximumSpecialRepeats}경기`)
   }
   if (twoGuestCoverage.deficitCount > 0) {
     successIssues.push(
@@ -694,6 +712,7 @@ export const analyzeMeetingScheduleV2 = (
     gameCounts,
     tightGameCounts,
     standardGameSpread,
+    comparableGameSpread: comparableSpread,
     zeroGameStandardParticipants,
     warmupMatches,
     tightMatches,

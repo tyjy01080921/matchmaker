@@ -1,3 +1,4 @@
+import { fixedPartnersAllowTeams, maximumSpecialGroupMeetings } from '../matchmaker'
 import { describe, expect, it } from 'vitest'
 import {
   defaultMatchConditionOptions,
@@ -6,6 +7,7 @@ import {
 } from '../defaultData'
 import type { MatchSettings, Player, Schedule } from '../types'
 import {
+  getConfiguredEventMatchWindow,
   generateMeetingScheduleV2,
   generateMeetingScheduleV2Optimized,
   generateMeetingScheduleV2WithWaitResolution,
@@ -535,7 +537,7 @@ describe('meeting V2 rules', () => {
     )
   }, 20000)
 
-  it('preserves exact special counts when a 24-minute repair is infeasible', () => {
+  it('preserves fixed partners and exact special counts when a 24-minute repair is infeasible', () => {
     const roster: Array<[string, Player['gender'], Player['level']]> = [
       ['김학관', 'male', 'A'],
       ['김시현', 'male', 'D'],
@@ -645,9 +647,16 @@ describe('meeting V2 rules', () => {
     const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
 
     expect(metrics.structuralIssues).toEqual([])
-    expect(metrics.maximumWaitMinutes).toBe(36)
-    expect(metrics.maximumFinalIdleMinutes).toBe(36)
-    expect(metrics.maximumWaitMinutes).toBeLessThanOrEqual(36)
+    // These three participants mutually designate two partners each. A repair
+    // may no longer split them to reach the former 36-minute cadence.
+    expect(metrics.maximumWaitMinutes).toBeGreaterThan(MEETING_MAX_WAIT_MINUTES)
+    expect(resolution.waitLimitFailure?.maximumWaitMinutes).toBe(metrics.maximumWaitMinutes)
+    expect(resolution.waitLimitFailure?.maximumFinalIdleMinutes).toBe(metrics.maximumFinalIdleMinutes)
+    for (const match of schedule.rounds.flatMap((round) => round.matches)) {
+      if (!match.isSpecial && !match.isEventMatch) {
+        expect(fixedPartnersAllowTeams(match.teamA, match.teamB, players)).toBe(true)
+      }
+    }
     expect(resolution.waitLimitFailure).not.toBeNull()
     expect(
       resolution.waitLimitFailure?.recommendations.every(
@@ -698,7 +707,7 @@ describe('meeting V2 rules', () => {
       schedule.rounds
         .flatMap((round) => round.matches)
         .find((match) => match.isEventMatch)?.startOffsetMinutes,
-    ).toBe(120)
+    ).toBe(getConfiguredEventMatchWindow(resolution.resolvedSettings)?.start)
   }, 40000)
 
   it('keeps structural and success rules separate from ordered preferences', () => {
@@ -1655,7 +1664,7 @@ describe('meeting V2 generation', () => {
     )
     expect(metrics.participantsOverWaitLimit).toBe(0)
     expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
-    expect(metrics.maximumGroupMeetings).toBeLessThanOrEqual(2)
+    expect(maximumSpecialGroupMeetings(schedule)).toBeLessThanOrEqual(2)
   }, 20000)
 
   it('fills the remaining special seat with a previously played participant', () => {
@@ -1730,23 +1739,24 @@ describe('meeting V2 generation', () => {
       MEETING_MAX_WAIT_MINUTES,
     )
     expect(metrics.standardGameSpread).toBeLessThanOrEqual(1)
-    expect(metrics.maximumGroupMeetings).toBeLessThanOrEqual(2)
+    expect(maximumSpecialGroupMeetings(schedule)).toBeLessThanOrEqual(2)
     expect(metrics.structuralIssues).toEqual([])
-    expect(metrics.maximumFinalIdleMinutes).toBeGreaterThanOrEqual(30)
-    expect(metrics.successIssues).toContain(
+    expect(metrics.maximumFinalIdleMinutes).toBeLessThanOrEqual(settings.normalGameMinutes)
+    expect(metrics.successIssues).not.toContain(
       `마지막 경기 후 ${metrics.maximumFinalIdleMinutes}분`,
     )
   }, 20000)
 
-  it('stops at two identical four-player meetings when repetition protection is on', () => {
-    const players = makePlayers(4)
+  it('fills the booking with repeated general matches rather than leaving courts idle', () => {
+    const players = makePlayers(4).map((player) => ({ ...player, level: 'B' as const, gender: 'male' as const }))
     const settings: MatchSettings = {
       ...defaultSettings,
       courtCount: 1,
       startTime: '18:00',
       endTime: '19:00',
-      targetRoundCount: 3,
-      pacingRoundCount: 3,
+      normalGameMinutes: 12,
+      targetRoundCount: 5,
+      pacingRoundCount: 5,
       roundCountLocked: true,
       conditionOptions: {
         ...defaultMatchConditionOptions,
@@ -1755,10 +1765,12 @@ describe('meeting V2 generation', () => {
       },
     }
     const schedule = generateMeetingScheduleV2(players, settings)
-    expect(schedule.rounds.flatMap((round) => round.matches)).toHaveLength(2)
-    expect(schedule.warnings).toContain(
-      '동일 4인 2회 제한으로 일부 코트가 비었습니다.',
-    )
+    expect(schedule.rounds.flatMap((round) => round.matches)).toHaveLength(5)
+    const metrics = analyzeMeetingScheduleV2(schedule, players, settings)
+    expect(metrics.maximumBetweenWaitMinutes).toBe(0)
+    expect(metrics.maximumFinalIdleMinutes).toBe(0)
+    expect(metrics.structuralIssues).toEqual([])
+    expect(schedule.warnings).not.toContain('동일 4인 2회 제한으로 일부 코트가 비었습니다.')
   })
 
   it('can place multiple guests together only when the setting allows it', () => {

@@ -44,6 +44,7 @@ import {
 import { getBookingDurationMinutes } from './scheduleTime'
 import {
   eventMatchUnavailablePlayerIds,
+  generateMeetingScheduleV2,
   generateMeetingScheduleV2WithWaitResolution,
   getConfiguredEventMatchWindow,
   insertConfiguredEventMatch,
@@ -75,6 +76,7 @@ export {
 }
 
 type HistoryState = {
+  fixedPartnerRoster?: Player[]
   games: Record<string, number>
   fairGameCredits: Record<string, number>
   rests: Record<string, number>
@@ -1061,6 +1063,7 @@ export const validateMeetingSchedule = (
     allowedInactiveMatchIds?: Iterable<string>
     allowedAttendanceMatchIds?: Iterable<string>
     allowedConsecutiveMatchIds?: Iterable<string>
+    allowedFixedPartnerMatchIds?: Iterable<string>
   } = {},
 ): string[] => {
   const issues = new Set<string>()
@@ -1075,11 +1078,18 @@ export const validateMeetingSchedule = (
   const allowedConsecutiveMatchIds = new Set(
     options.allowedConsecutiveMatchIds ?? [],
   )
+  const fixedEnabled = hasFixedPartners(players)
+  const allowedFixedPartnerMatchIds = new Set(options.allowedFixedPartnerMatchIds ?? [])
   const allowGuestOverflow = allowsFixedCourtGuestOverflow(players, settings)
 
   if (findScheduleOverlapDetail(schedule)) issues.add('참가자 동시간 중복')
 
   for (const match of matches) {
+    if (fixedEnabled && !match.isSpecial && !match.isEventMatch &&
+      !allowedFixedPartnerMatchIds.has(match.id) &&
+      !fixedPartnersAllowTeams(match.teamA, match.teamB, players)) {
+      issues.add('상호 고정 파트너 배정 위반')
+    }
     const matchPlayers = [...match.teamA, ...match.teamB]
     if (
       matchPlayers.length !== 4 ||
@@ -1210,12 +1220,14 @@ export const validateMeetingFairness = (
   const zeroGameCount = [...gameCountByPlayer.values()].filter(
     (count) => count === 0,
   ).length
+  const rotatingIds = unequalFixedRotationIds(players)
   const standardCounts = players
     .filter(
       (player) =>
         player.active &&
         !player.isGuest &&
         !player.gameCountFlexible &&
+        !rotatingIds.has(player.id) &&
         player.arrivalOffsetMinutes === undefined &&
         player.departureOffsetMinutes === undefined,
     )
@@ -1359,9 +1371,9 @@ export const rankMeetingSwapCandidates = (
         quality.standardGameSpread > Math.max(1, baseQuality.standardGameSpread) ||
         quality.participantsOverWaitLimit > baseQuality.participantsOverWaitLimit ||
         quality.teamSkillDangerMatches > baseQuality.teamSkillDangerMatches ||
-        quality.maximumGroupMeetings > Math.max(
+        maximumSpecialGroupMeetings(swapped.schedule) > Math.max(
           MAX_GROUP_MEETINGS,
-          baseQuality.maximumGroupMeetings,
+          maximumSpecialGroupMeetings(schedule),
         )
       ) {
         return []
@@ -1464,6 +1476,55 @@ const matchConditions = (settings: MatchSettings): MatchConditionOptions => {
   return conditions
 }
 
+// Mutual preferences are hard constraints in general matches; one-sided requests
+// retain their existing soft preference behavior. Keep the roster intact so an
+// unavailable fixed partner cannot silently turn a request into a soft preference.
+export const mutualPartnerIds = (player: Player, players: Player[]) =>
+  [...new Set(player.preferredPartnerIds ?? [])].filter((id) => id !== player.id &&
+    players.some((other) => !other.isGuest && other.id === id &&
+      (other.preferredPartnerIds ?? []).includes(player.id)))
+
+export const fixedPartnerIssues = (players: Player[]) => players
+  .filter((player) => !player.isGuest && mutualPartnerIds(player, players).length > 2)
+  .map((player) => `${player.name}: 상호 고정 파트너는 최대 2명입니다.`)
+
+export const hasFixedPartners = (players: Player[]) => players.some((player) =>
+  !player.isGuest && mutualPartnerIds(player, players).length > 0)
+
+// A path of rotating fixed partners has endpoints with one partner and inner
+// players with two. Equal appearances are impossible when both edges rotate.
+export const unequalFixedRotationIds = (players: Player[]) => {
+  const neighbors = new Map(players.filter((player) => !player.isGuest)
+    .map((player) => [player.id, mutualPartnerIds(player, players)]))
+  const visited = new Set<string>()
+  const unequal = new Set<string>()
+  for (const id of neighbors.keys()) {
+    if (visited.has(id)) continue
+    const component: string[] = []
+    const pending = [id]
+    while (pending.length) {
+      const next = pending.pop()!
+      if (visited.has(next)) continue
+      visited.add(next)
+      component.push(next)
+      pending.push(...(neighbors.get(next) ?? []))
+    }
+    if (component.some((member) => neighbors.get(member)?.length === 1) &&
+      component.some((member) => neighbors.get(member)?.length === 2)) {
+      component.forEach((member) => unequal.add(member))
+    }
+  }
+  return unequal
+}
+
+export const fixedPartnersAllowTeams = (teamA: Team, teamB: Team, players: Player[]) =>
+  [teamA, teamB].every((team) => team.every((player, index) => {
+    const currentPlayer = players.find((candidate) => candidate.id === player.id) ?? player
+    if (!currentPlayer.preferredPartnerIds?.length) return true
+    const ids = mutualPartnerIds(currentPlayer, players)
+    return ids.length === 0 || ids.includes(team[1 - index].id)
+  }))
+
 const pairKey = (a: string, b: string) => [a, b].sort().join('__')
 
 const preferredPartnerBonus = (
@@ -1483,6 +1544,18 @@ const preferredPartnerBonus = (
 
 const groupKey = (players: Player[]) =>
   players.map((player) => player.id).sort().join('__')
+
+// Repeated general matches are allowed to keep courts busy. Only special
+// matches retain their existing repetition cap and participant coverage rules.
+export const maximumSpecialGroupMeetings = (schedule: Schedule) => {
+  const counts = new Map<string, number>()
+  for (const match of schedule.rounds.flatMap((round) => round.matches)) {
+    if (!match.isSpecial || match.isEventMatch) continue
+    const key = groupKey([...match.teamA, ...match.teamB])
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  return Math.max(0, ...counts.values())
+}
 
 const makeRandom = (seed: number) => {
   let value = seed || 1
@@ -2495,16 +2568,23 @@ const bestPairing = (
   random: () => number,
   conditions: MatchConditionOptions,
   pacing: RoundPacing,
+  enforceFixed = false,
 ): Pairing => {
-  const options = teamPairingOptions(players)
+  const options = teamPairingOptions(players).filter(([teamA, teamB]) =>
+    !enforceFixed || fixedPartnersAllowTeams(teamA, teamB, history.fixedPartnerRoster ?? players))
 
   return options
     .map(([teamA, teamB]) => ({
       teamA,
       teamB,
       score: scorePairing(teamA, teamB, history, random, conditions, pacing),
+      rotationPriority: enforceFixed ? [teamA, teamB].reduce((sum, [left, right]) =>
+        preferredPartnerStrength(left, right) === 2
+          ? sum + 100 / (1 + (history.partners[pairKey(left.id, right.id)] ?? 0))
+          : sum, 0) : 0,
     }))
     .sort((a, b) => {
+      if (a.rotationPriority !== b.rotationPriority) return b.rotationPriority - a.rotationPriority
       if (conditions.levelBalance) {
         const balanceGap = pairingTeamLevelGap(a) - pairingTeamLevelGap(b)
         if (balanceGap !== 0) return balanceGap
@@ -2590,7 +2670,7 @@ const createMatch = (
   const pairing = isSpecial
     ? bestSingleGuestPairing(players, history, random, conditions) ??
       bestPairing(players, history, random, conditions, pacing)
-    : bestPairing(players, history, random, conditions, pacing)
+    : bestPairing(players, history, random, conditions, pacing, true)
   return {
     id: `r${round}-c${court}-${players.map((player) => player.id).join('-')}`,
     round,
@@ -3641,6 +3721,11 @@ const pickGeneralGroup = (
   preferBalancedGenderComposition = false,
   genderBatchPlan: GenderBatchPlan | null = null,
 ): [Player, Player, Player, Player] | null => {
+  const fixedRoster = history.fixedPartnerRoster ?? activePlayers
+  const fixedEnabled = hasFixedPartners(fixedRoster)
+  const fixedGroupAllowed = (group: [Player, Player, Player, Player]) =>
+    !fixedEnabled || teamPairingOptions(group).some(([teamA, teamB]) =>
+      fixedPartnersAllowTeams(teamA, teamB, fixedRoster))
   const selectionConditions = conditions
   const phaseWeights = getPacedMeetingPhaseWeights(pacing)
   const concentratedPhase = phaseWeights.composition >= 1
@@ -3968,17 +4053,12 @@ const pickGeneralGroup = (
             companionCandidates[b],
             companionCandidates[c],
           ]
+          if (!fixedGroupAllowed(group)) continue
           if (!isValidGuestGroup(group, settings.singleGuestPerMatch)) continue
           if (!allowsSpecialComposition(group, settings)) continue
           const currentGroupKey = groupKey(group)
           if (seenGroupKeys.has(currentGroupKey)) continue
           seenGroupKeys.add(currentGroupKey)
-          if (
-            conditions.groupRepeat &&
-            !groupHasMeetingCapacity(group, history)
-          ) {
-            continue
-          }
           const spreadTier = conditions.levelBalance
             ? groupSkillCompatibilityTier(group)
             : 0
@@ -4085,7 +4165,7 @@ const pickGeneralGroup = (
   const considerRecoveryGroup = (
     group: [Player, Player, Player, Player],
   ) => {
-    if (conditions.groupRepeat && !groupHasMeetingCapacity(group, history)) return
+    if (!fixedGroupAllowed(group)) return
     if (groupSkillCompatibilityTier(group) > maximumRecoverySkillTier) return
     const missedWaitDeadlineCount = Math.max(
       0,
@@ -5899,6 +5979,7 @@ const generateScheduleCandidate = (
   settings: MatchSettings,
   preferBalancedGenderComposition: boolean,
 ): Schedule => {
+  if (hasFixedPartners(players)) return generateMeetingScheduleV2(players, settings)
   const initialSchedule = generateSchedulePass(
     players,
     settings,
@@ -6162,6 +6243,7 @@ const replanMeetingSchedulePass = (
   const revision = Math.max(0, previousContinuation.revision) + 1
 
   const history = makeHistory(activePlayers)
+  history.fixedPartnerRoster = input.players
   const eventPlayerIds = eventMatchParticipantIds(input.settings)
   for (const player of activePlayers.filter((candidate) =>
     eventPlayerIds.has(candidate.id),
@@ -6709,6 +6791,14 @@ const replanMeetingSchedulePass = (
 export const replanMeetingSchedule = (
   input: ReplanMeetingScheduleInput,
 ): MeetingReplanResolution => {
+  const partnerIssues = fixedPartnerIssues(input.players)
+  if (partnerIssues.length) return {
+    schedule: input.schedule,
+    continuation: input.continuation ?? makeDefaultMeetingContinuationState(),
+    lockedMatchIds: input.lockedMatchIds,
+    replacedMatchIds: [], createdMatchIds: [], progressOffsetMinutes: 0,
+    warnings: partnerIssues, failureIssues: partnerIssues,
+  }
   if (!isTwoGuestComposition(input.settings) || input.settings.specialShortagePolicy !== 'flexible') {
     return replanMeetingSchedulePass(input)
   }
@@ -6725,6 +6815,11 @@ export const appendGeneralCourtGames = (
   players: Player[],
   settings: MatchSettings,
 ): { schedule: Schedule; addedMatchIds: string[] } => {
+  const partnerIssues = fixedPartnerIssues(players)
+  if (partnerIssues.length) return {
+    schedule: { ...schedule, warnings: [...schedule.warnings, ...partnerIssues] },
+    addedMatchIds: [],
+  }
   const activePlayers = players.filter((player) => player.active)
   const activeRegulars = activePlayers.filter((player) => !player.isGuest)
   if (activeRegulars.length < 4) {
@@ -6751,6 +6846,7 @@ export const appendGeneralCourtGames = (
       .map((player) => player.id),
   )
   const history = makeHistory(activePlayers, plannedSpecialIds)
+  history.fixedPartnerRoster = players
   for (const match of existingMatches) {
     if (match.isEventMatch) continue
     history.currentStartOffset = match.startOffsetMinutes ?? 0
@@ -7326,12 +7422,6 @@ export const reduceGeneralGenderImbalanceMatches = (
                 removedGroupKeys,
                 nextMatches.flatMap(matchGroupAssignmentKeys),
               )
-              if (
-                conditions.groupRepeat &&
-                groupStats.maximum > MAX_GROUP_MEETINGS
-              ) {
-                continue
-              }
               const partnerStats = projectedAssignmentStats(
                 partnerCounts,
                 removedPartnerKeys,
@@ -7475,12 +7565,6 @@ export const reduceGeneralGenderImbalanceMatches = (
               removedGroupKeys,
               nextMatches.flatMap(matchGroupAssignmentKeys),
             )
-            if (
-              conditions.groupRepeat &&
-              groupStats.maximum > MAX_GROUP_MEETINGS
-            ) {
-              continue
-            }
             const partnerStats = projectedAssignmentStats(
               partnerCounts,
               removedPartnerKeys,
@@ -7588,7 +7672,7 @@ const candidateQualityFailure = (
     ) / normalGameMinutes,
     missingMatchCapacity,
     conditions.groupRepeat
-      ? Math.max(0, quality.maximumGroupMeetings - MAX_GROUP_MEETINGS)
+      ? Math.max(0, maximumSpecialGroupMeetings(schedule) - MAX_GROUP_MEETINGS)
       : 0,
     skillFailure,
   ]
@@ -7735,7 +7819,7 @@ const rebalanceStandardGameCounts = (
             }
             if (
               conditions.groupRepeat &&
-              quality.maximumGroupMeetings > MAX_GROUP_MEETINGS
+              maximumSpecialGroupMeetings(candidateSchedule) > MAX_GROUP_MEETINGS
             ) {
               continue
             }
@@ -7885,6 +7969,12 @@ const compareMultiObjectiveCandidates = (
     if (waitDifference !== 0) return waitDifference
   }
 
+  const waitPriorityDifference = compareNumberTuples(
+    [left.wait.maximumWaitMinutes, left.wait.maximumFinalIdleMinutes, left.quality.averageWaitMinutes],
+    [right.wait.maximumWaitMinutes, right.wait.maximumFinalIdleMinutes, right.quality.averageWaitMinutes],
+  )
+  if (waitPriorityDifference !== 0) return waitPriorityDifference
+
   const categoryComparisons = [
     ...(conditions.levelBalance ? [skillCategoryComparison] : []),
     (candidate: ScheduleCandidate, other: ScheduleCandidate) =>
@@ -7920,6 +8010,9 @@ export const generateScheduleWithWaitOptimization = (
   settings: MatchSettings,
   attemptCount = 3,
 ): Schedule => {
+  if (hasFixedPartners(players)) {
+    return generateMeetingScheduleV2WithWaitResolution(players, settings, attemptCount).schedule
+  }
   const conditions = matchConditions(settings)
   const shuffleDirection = settings.shuffleDirection ?? 'balanced'
   const largeMeeting = players.filter((player) => player.active).length >= 40
@@ -7999,7 +8092,6 @@ export const generateScheduleWithWaitOptimization = (
   const deferredSchedule = conditions.levelBalance
     ? deferSkillWarningMatches(genderOptimizedSchedule, players, settings)
     : genderOptimizedSchedule
-  const finalQuality = analyzeScheduleQuality(deferredSchedule, players, settings)
   const finalScheduledMinutes = deferredSchedule.rounds
     .flatMap((round) => round.matches)
     .reduce(
@@ -8019,9 +8111,9 @@ export const generateScheduleWithWaitOptimization = (
   )
   const groupCapacityWarning =
     conditions.groupRepeat &&
-    finalQuality.maximumGroupMeetings >= MAX_GROUP_MEETINGS &&
+    maximumSpecialGroupMeetings(deferredSchedule) >= MAX_GROUP_MEETINGS &&
     unusedCourtMinutes >= settings.normalGameMinutes
-      ? '동일 4인 2회 제한으로 일부 코트가 비었습니다.'
+      ? '스페셜 동일 4인 2회 제한으로 일부 코트가 비었습니다.'
       : null
   const completedSchedule = groupCapacityWarning
     ? {

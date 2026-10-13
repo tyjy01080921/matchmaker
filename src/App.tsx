@@ -19,6 +19,7 @@ import {
   samplePlayers,
 } from './defaultData'
 import {
+  maximumSpecialGroupMeetings,
   analyzeParticipantWaitLimitViolations,
   twoGuestShortageReasons,
   analyzeScheduleQuality,
@@ -2196,6 +2197,7 @@ function App() {
       generatedMeetingSettings,
       {
         allowedAttendanceMatchIds: meetingReplanLockedMatchIds,
+        allowedFixedPartnerMatchIds: meetingReplanLockedMatchIds,
         allowedConsecutiveMatchIds: meetingReplanLockedMatchIds,
       },
     ),
@@ -2333,11 +2335,8 @@ function App() {
   const gameSpreadWarning = scheduleQualityAnalysis.standardGameSpread > 1
     ? `일반 참가자 경기 수 차 ${scheduleQualityAnalysis.standardGameSpread}경기`
     : null
-  const groupRepeatWarning = scheduleQualityAnalysis.maximumGroupMeetings > 2
-    ? `동일 4인 최대 ${scheduleQualityAnalysis.maximumGroupMeetings}경기`
-    : null
-  const opponentRepeatWarning = scheduleQualityAnalysis.maximumOpponentMeetings > 6
-    ? `같은 상대 최대 ${scheduleQualityAnalysis.maximumOpponentMeetings}회`
+  const groupRepeatWarning = maximumSpecialGroupMeetings(schedule) > 2
+    ? `스페셜 동일 4인 최대 ${maximumSpecialGroupMeetings(schedule)}경기`
     : null
   const candidateQualityWarning = scheduleWarningsForStatus.find((warning) =>
     warning.startsWith('동시 품질조건 후보 없음'),
@@ -2346,7 +2345,6 @@ function App() {
     scheduleWaitAnalysis.exceedsLimit ||
     gameSpreadWarning ||
     groupRepeatWarning ||
-    opponentRepeatWarning ||
     skillBalanceWarning ||
     (
       meetingUsesClubQuality &&
@@ -2367,13 +2365,11 @@ function App() {
       ...(genderCompositionReviewNotice ? [genderCompositionReviewNotice] : []),
       ...(gameSpreadWarning ? [gameSpreadWarning] : []),
       ...(groupRepeatWarning ? [groupRepeatWarning] : []),
-      ...(opponentRepeatWarning ? [opponentRepeatWarning] : []),
     ],
     [
       gameSpreadWarning,
       genderCompositionReviewNotice,
       groupRepeatWarning,
-      opponentRepeatWarning,
       reconciledSpecialWarnings,
       scheduleWaitAnalysis.warning,
       scheduleWarningsForStatus,
@@ -2392,7 +2388,7 @@ function App() {
           schedule,
           generatedMeetingPlayers,
           generatedMeetingSettings,
-          meetingAnalysisOptions,
+          { ...meetingAnalysisOptions, allowedFixedPartnerMatchIds: meetingReplanLockedMatchIds },
         ),
         ...validateMeetingFairness(
           schedule,
@@ -2417,7 +2413,6 @@ function App() {
           scheduleWaitAnalysis.warning,
           gameSpreadWarning,
           groupRepeatWarning,
-          opponentRepeatWarning,
           skillBalanceWarning,
           genderCompositionReviewNotice,
         ]
@@ -2438,11 +2433,11 @@ function App() {
     isMeetingGenerating,
     meetingOperationLabel,
     meetingAnalysisOptions,
+    meetingReplanLockedMatchIds,
     schedule,
     gameSpreadWarning,
     genderCompositionReviewNotice,
     groupRepeatWarning,
-    opponentRepeatWarning,
     candidateQualityWarning,
     hasMeetingQualityWarning,
     skillBalanceWarning,
@@ -4393,8 +4388,8 @@ function App() {
       nextQuality.teamSkillDangerMatches > baseQuality.teamSkillDangerMatches
         ? `큰 실력 차 ${nextQuality.teamSkillDangerMatches}경기`
         : '',
-      nextQuality.maximumGroupMeetings > Math.max(2, baseQuality.maximumGroupMeetings)
-        ? `동일 4인 최대 ${nextQuality.maximumGroupMeetings}경기`
+      maximumSpecialGroupMeetings(swapped.schedule) > Math.max(2, maximumSpecialGroupMeetings(schedule))
+        ? `스페셜 동일 4인 최대 ${maximumSpecialGroupMeetings(swapped.schedule)}경기`
         : '',
       nextWait.maximumWaitMinutes > baseWait.maximumWaitMinutes
         ? `최장 대기 ${nextWait.maximumWaitMinutes}분`
@@ -4507,6 +4502,7 @@ function App() {
             ...meetingAnalysisOptions,
             allowedInactiveMatchIds: meetingReplanLockedMatchIds,
             allowedAttendanceMatchIds: meetingReplanLockedMatchIds,
+            allowedFixedPartnerMatchIds: meetingReplanLockedMatchIds,
             allowedConsecutiveMatchIds: meetingReplanLockedMatchIds,
           },
         ),
@@ -8723,7 +8719,8 @@ function App() {
                             <input
                               className="preferred-partner-input"
                               aria-label={`${displayName} 선호 파트너`}
-                              placeholder="선호 파트너 최대 3명 · 쉼표 구분"
+                              title="상호 지정한 최대 2명과 일반 경기 고정 · 적게 뛴 파트너부터 배정"
+                              placeholder="선호 최대 3명 · 상호 고정 최대 2명"
                               value={
                                 preferredPartnerDrafts[player.id] ??
                                 preferredPartnerNames(player, players)

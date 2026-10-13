@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { defaultMatchConditionOptions, defaultSettings } from './defaultData'
 import {
+  maximumSpecialGroupMeetings,
   analyzeScheduleQuality,
   analyzeScheduleWait,
   calculateStats,
@@ -237,7 +238,7 @@ describe('matchmaker condition simulation', () => {
     expectHardScheduleInvariants(schedule, players, settings)
   })
 
-  it('keeps the same four-player group at two meetings even without alternatives', () => {
+  it('allows a repeated general group to fill rounds beyond the former cap', () => {
     const players = makeSimulationPlayers()
       .filter((player) => !player.isGuest)
       .slice(0, 5)
@@ -268,9 +269,9 @@ describe('matchmaker condition simulation', () => {
 
     expect(withinCapacity.rounds).toHaveLength(10)
     expect(Math.max(...groupCounts(withinCapacity))).toBe(2)
-    expect(beyondCapacity.rounds).toHaveLength(10)
-    expect(Math.max(...groupCounts(beyondCapacity))).toBe(2)
-    expect(beyondCapacity.warnings).toContain(
+    expect(beyondCapacity.rounds).toHaveLength(11)
+    expect(Math.max(...groupCounts(beyondCapacity))).toBeGreaterThanOrEqual(3)
+    expect(beyondCapacity.warnings).not.toContain(
       '동일 4인 2회 제한으로 일부 코트가 비었습니다.',
     )
   })
@@ -418,7 +419,7 @@ describe('matchmaker condition simulation', () => {
     expect(quality.maximumOpponentMeetings).toBeLessThanOrEqual(6)
   }, 30000)
 
-  it('limits repeated opponents when a 16-person meeting includes a special guest', () => {
+  it('keeps waits and fair game counts bounded while allowing repeated opponents', () => {
     const players = makeSimulationPlayers()
     const settings: MatchSettings = {
       ...defaultSettings,
@@ -440,7 +441,7 @@ describe('matchmaker condition simulation', () => {
 
     expect(validateMeetingFairness(schedule, players)).toEqual([])
     expect(quality.maximumPartnerMeetings).toBeLessThanOrEqual(3)
-    expect(quality.maximumOpponentMeetings).toBeLessThanOrEqual(7)
+    expect(analyzeScheduleWait(schedule, players, settings).maximumWaitMinutes).toBeLessThanOrEqual(25)
   }, 30000)
 
   it('keeps the user 57-player sample within 25 minutes with 12-minute games', () => {
@@ -646,7 +647,7 @@ describe('matchmaker condition simulation', () => {
     expect(quality.individualSkillDangerMatches).toBe(0)
     expect(quality.individualSkillWarningMatches).toBeLessThanOrEqual(5)
     expect(quality.standardGameSpread).toBeLessThanOrEqual(1)
-    expect(quality.maximumGroupMeetings).toBeLessThanOrEqual(2)
+    expect(maximumSpecialGroupMeetings(schedule)).toBeLessThanOrEqual(2)
     expect(wait.maximumWaitMinutes).toBeLessThanOrEqual(25)
   }, 30000)
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { defaultSettings } from '../defaultData'
 import {
+  maximumSpecialGroupMeetings,
   analyzeScheduleQuality,
   analyzeScheduleWait,
   generateScheduleWithWaitOptimization,
@@ -81,7 +82,7 @@ describe('meeting V2 comparison gate', () => {
     expect(v2Wait.maximumWaitMinutes).toBeLessThanOrEqual(
       Math.max(25, legacyWait.maximumWaitMinutes),
     )
-    expect(v2Quality.maximumGroupMeetings).toBeLessThanOrEqual(2)
+    expect(maximumSpecialGroupMeetings(v2)).toBeLessThanOrEqual(2)
     expect(v2Quality.teamSkillDangerMatches).toBeLessThanOrEqual(
       legacyQuality.teamSkillDangerMatches,
     )

@@ -8,6 +8,7 @@ import {
 } from './defaultData'
 import {
   analyzeParticipantWaitLimitViolations,
+  maximumSpecialGroupMeetings,
   analyzeScheduleQuality,
   analyzeScheduleWait,
   appendGeneralCourtGames,
@@ -2399,7 +2400,7 @@ describe('generateSchedule', () => {
     }
   }, 30000)
 
-  it('caps repeated four-player groups in a 56-player meeting', () => {
+  it('keeps courts full while allowing repeated general groups in a 56-player meeting', () => {
     const guest = makeTestPlayer('repeat-guest', '스페셜', 'none', false, true)
     const regulars = Array.from({ length: 55 }, (_, index) =>
       makeTestPlayer(
@@ -2458,7 +2459,8 @@ describe('generateSchedule', () => {
         ).length,
     )
 
-    expect(enabled.maxMeetings).toBeLessThanOrEqual(2)
+    expect(maximumSpecialGroupMeetings(enabled.schedule)).toBeLessThanOrEqual(2)
+    expect(validateMeetingSchedule(enabled.schedule, [guest, ...regulars], settings)).toEqual([])
     expect(enabled.duplicates).toBeLessThanOrEqual(disabled.duplicates)
     expect(findScheduleOverlap(enabled.schedule)).toBeNull()
     expect(enabled.schedule.rounds).toHaveLength(12)
